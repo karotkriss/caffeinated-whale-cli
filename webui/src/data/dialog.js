@@ -5,6 +5,8 @@ import { instance, loadDetail, getJsonUrl } from './fleet'
 import { postJson } from './api'
 import { createJob } from './jobs'
 import { router } from '../router'
+import { trackJob } from './job-toasts'
+import { ensureRunning } from './start-gate'
 
 // One action dialog for the whole app (components/ActionDialog.vue renders it).
 export const dialogState = reactive({
@@ -38,14 +40,17 @@ export function openAction(id, ctx = {}) {
 // scale's confirm_scale, is answered on its job page.
 export async function runAction(id, ctx, values) {
   const a = ACTIONS[id]
+  const { startFirst } = availability(id, instance(ctx.project), null, values)
+  if (startFirst && !(await ensureRunning(ctx.project, a.label))) return null
   if (a.read) return openSite(ctx)
   const payload = a.request(ctx, values)
   dialogState.running = true
   try {
     const data = a.job ? await createJob(payload) : await postJson('/api/v1/actions', payload)
     if (a.job) {
+      // A running card follows the job from here; the job page is one click away.
       dialogState.open = false
-      await router.push(`/jobs/${data.id}`)
+      trackJob(data.id)
       return data
     }
     toast.success(a.done ? a.done(ctx, data?.outcome, values) : a.label, { description: a.cli(ctx, values) })

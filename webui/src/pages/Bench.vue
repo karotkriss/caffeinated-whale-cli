@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { PageHeader, Breadcrumbs, Button, Dropdown, Tabs, TabList, TabTrigger, TabPanel, Alert, LoadingText } from 'frappe-ui'
+import { Button, Dropdown, Tabs, TabList, TabTrigger, TabPanel, Alert, LoadingText } from 'frappe-ui'
 import StatusBadge from '../components/StatusBadge.vue'
+import PageHero from '../components/PageHero.vue'
+import PerformancePanel from '../components/PerformancePanel.vue'
 import ProcessTable from '../components/ProcessTable.vue'
 import SitesTable from '../components/SitesTable.vue'
 import AppsTable from '../components/AppsTable.vue'
@@ -11,7 +13,9 @@ import CommandLine from '../components/CommandLine.vue'
 import { instance as findInstance, loadDetail, benchName, setFocus, ago } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
-import { webIndicator } from '../data/web-indicator'
+import { openNewSite } from '../data/new-site-dialog'
+import { openTransfer } from '../data/transfer'
+import { useTabQuery } from '../data/tabs'
 
 const route = useRoute()
 const { project, bench: index } = route.params
@@ -23,18 +27,17 @@ const health = computed(() => inst.value?.benches?.find((b) => String(b.index) =
 const running = computed(() => inst.value?.container_running)
 // The latest probe failed: every health reading on the page is the last successful probe's, not live.
 const stale = computed(() => (running.value ? inst.value?.probe_error : null))
-const web = computed(() => webIndicator(health.value, { stale: stale.value }))
 const staleNote = computed(() => {
   const why = `${String(stale.value).replace(/\.$/, '')}.`
   return inst.value?.probed_at ? `${why} The health readings on this page (web port check, process rows, status badge) are from the last successful probe, ${ago(inst.value.probed_at * 1000)}.` : why
 })
-const tab = ref(route.query.tab || 'processes')
+const tab = useTabQuery('processes')
 const logsProcess = ref(route.query.process || null)
 const down = computed(() => (health.value?.processes || []).filter((p) => !p.up))
 const name = computed(() => (bench.value ? benchName(bench.value) : `#${index}`))
 const benchUp = computed(() => ['running', 'degraded'].includes(health.value?.overall))
 const ctx = computed(() => ({ project, bench: String(index), benchName: name.value }))
-const jobOption = (label, icon, verb) => ({ label: running.value ? label : `${label} (needs the instance running)`, icon, disabled: !running.value, onClick: () => openJob(verb, ctx.value) })
+const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(verb, ctx.value) })
 const more = computed(() => [
   menuOption('bench.restart', ctx.value, health.value),
   jobOption('Back up default site', 'lucide-database-backup', 'backup'),
@@ -51,22 +54,29 @@ function showLogs(process) {
   logsProcess.value = process
   tab.value = 'logs'
 }
+const heroFacts = computed(() => bench.value ? [
+  { label: 'Identity', value: `--bench ${bench.value.index}`, mono: true },
+  { label: 'Path', value: bench.value.path, mono: true },
+  { label: 'Web port', value: health.value?.web_port != null ? `${health.value.web_port}${health.value.web_http_code && !stale.value ? ' · HTTP ' + health.value.web_http_code : stale.value ? ' · unknown' : ''}` : 'unknown', mono: true },
+  { label: 'Default site', value: bench.value.default_site || 'none set' },
+  { label: 'Sites', value: String(bench.value.sites.length) },
+  { label: 'Apps', value: String(bench.value.available_apps.length) },
+] : [])
 </script>
 
 <template>
-  <PageHeader>
-    <Breadcrumbs :items="[
+  <PageHero icon="lucide-layers" :title="name" :facts="heroFacts" :crumbs="[
       { label: 'Instances', route: '/instances' },
       { label: project, route: `/instances/${project}` },
       { label: name, route: route.path },
-    ]" />
-    <div class="flex items-center gap-2">
-      <StatusBadge class="max-md:hidden" :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="md" />
+    ]">
+    <template #badge><StatusBadge :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="lg" /></template>
+    <template #actions>
       <Button v-if="benchUp" icon-left="lucide-square" label="Stop bench" @click="openAction('bench.stop', ctx)" />
       <Button v-else variant="solid" icon-left="lucide-play" label="Start bench" @click="openAction('bench.start', ctx)" />
       <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
-    </div>
-  </PageHeader>
+    </template>
+  </PageHero>
 
   <LoadingText v-if="detail.loading && !detail.data" class="px-3 pt-5 sm:px-5" text="Reading the cache..." />
   <div v-else-if="!bench" class="px-3 pt-5 sm:px-5">
@@ -74,12 +84,6 @@ function showLogs(process) {
     <div class="mt-4 max-w-sm"><CommandLine :command="`cwcli inspect ${project} --update`" /></div>
   </div>
   <div v-else class="space-y-5 px-3 pb-20 pt-5 sm:px-5">
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm lg:grid-cols-4">
-      <div><dt class="text-ink-gray-5">Identity</dt><dd class="mt-1 font-mono text-ink-gray-8">--bench {{ bench.index }}</dd></div>
-      <div class="col-span-2 md:col-span-1"><dt class="text-ink-gray-5">Path</dt><dd class="mt-1 truncate font-mono text-ink-gray-8" :title="bench.path">{{ bench.path }}</dd></div>
-      <div><dt class="text-ink-gray-5">Web port</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ health?.web_port ?? 'unknown' }}<span v-if="web" class="ml-2 font-sans" :class="web.ok === null ? 'text-ink-gray-5' : web.ok ? 'text-ink-green-6' : 'text-ink-amber-6'">{{ web.label }}</span></dd></div>
-      <div><dt class="text-ink-gray-5">Default site</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ bench.default_site || 'none set' }}</dd></div>
-    </dl>
     <Alert v-if="stale" theme="gray" title="The last health probe failed" :description="staleNote" />
     <Alert
       v-if="running && benchUp && down.length"
@@ -103,6 +107,7 @@ function showLogs(process) {
         <TabTrigger value="sites" label="Sites"><template #suffix><span class="text-xs text-ink-gray-5">{{ bench.sites.length }}</span></template></TabTrigger>
         <TabTrigger value="apps" label="Apps"><template #suffix><span class="text-xs text-ink-gray-5">{{ bench.available_apps.length }}</span></template></TabTrigger>
         <TabTrigger value="logs" label="Logs" />
+        <TabTrigger value="performance" label="Performance" />
       </TabList>
       <TabPanel value="processes" class="pt-4">
         <ProcessTable v-if="running && health" :bench="health" :project="project" @logs="showLogs" />
@@ -113,7 +118,8 @@ function showLogs(process) {
         </div>
       </TabPanel>
       <TabPanel value="sites" class="pt-4">
-        <SitesTable :bench="bench" :route="(s) => `/instances/${project}/benches/${bench.index}/sites/${s.name}`" />
+        <div class="mb-3 flex justify-end gap-2"><Button variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index })" /></div>
+        <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :route="(s) => `/instances/${project}/benches/${bench.index}/sites/${s.name}`" />
       </TabPanel>
       <TabPanel value="apps" class="pt-4">
         <AppsTable :bench="bench" :project="project" />
@@ -125,6 +131,9 @@ function showLogs(process) {
           <p class="text-base text-ink-gray-7">Logs need {{ project }} running.</p>
           <div class="mx-auto mt-4 max-w-md"><CommandLine :command="`cwcli logs ${project} --bench ${bench.index} -f`" /></div>
         </div>
+      </TabPanel>
+      <TabPanel value="performance" class="pt-4">
+        <PerformancePanel :project="project" :bench="String(bench.index)" />
       </TabPanel>
     </Tabs>
   </div>

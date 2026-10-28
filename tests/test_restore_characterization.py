@@ -251,15 +251,20 @@ class TestEncryptionKeyMerge:
         container = FakeRestoreContainer(with_config_backup=True)
         _run_normal(monkeypatch, container)
 
-        # The heredoc write of site_config.json must carry the backup's key.
+        # The write of site_config.json carries the backup's key in its environment,
+        # never on the exec argv.
         writes = [
             c
             for c in container.exec_calls
             if "site_config.json" in FakeRestoreContainer._cmd_str(c["cmd"])
-            and "EOF" in FakeRestoreContainer._cmd_str(c["cmd"])
+            and (c["environment"] or {}).get("CWCLI_JSON")
         ]
-        assert writes, "expected a heredoc write of site_config.json"
-        assert any("KEY-FROM-BACKUP" in FakeRestoreContainer._cmd_str(w["cmd"]) for w in writes)
+        assert writes, "expected a write of site_config.json"
+        assert any("KEY-FROM-BACKUP" in w["environment"]["CWCLI_JSON"] for w in writes)
+        assert not any(
+            "KEY-FROM-BACKUP" in FakeRestoreContainer._cmd_str(c["cmd"])
+            for c in container.exec_calls
+        )
 
 
 class TestMigrateAndRestart:

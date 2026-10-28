@@ -811,6 +811,26 @@ def restore_apply(
             detail={"output": _decode(output)},
         )
 
+    # ``bench restore --force`` re-creates the db user on the connecting address, so
+    # widen it to '%' before the site is handed back (steering 041).
+    from . import db_access
+
+    widened, widen_warning = db_access.widen_after_create(
+        frappe_container,
+        plan.bench_path,
+        project=plan.project_name,
+        site=plan.site,
+        root_password=mariadb_root_password,
+    )
+    if widened:
+        emit(
+            RestoreStep(
+                phase="db_access", message=f"{plan.site}: database user now connects from any host"
+            )
+        )
+    if widen_warning is not None:
+        warnings.append(widen_warning)
+
     encryption_key_updated: bool | None = None
     if plan.site_config_backup_path:
         encryption_key_updated = _restore_encryption_key(frappe_container, plan, emit, warnings)
@@ -868,10 +888,9 @@ def _restore_encryption_key(
         current_config = json.loads(_decode(output))
         current_config["encryption_key"] = encryption_key
 
-        updated_json = json.dumps(current_config, indent=1)
-        write_cmd = f"cat > {quoted_site_config} << 'EOF'\n{updated_json}\nEOF"
-        exit_code, _ = frappe_container.exec_run(["sh", "-c", write_cmd], workdir=plan.bench_path)
-        if exit_code == 0:
+        if _write_json_in_container(
+            frappe_container, site_config_path, current_config, plan.bench_path
+        ):
             return True
         warnings.append(
             Message(
@@ -882,6 +901,180 @@ def _restore_encryption_key(
     except Exception as e:  # noqa: BLE001 - best-effort, never fatal
         warnings.append(Message("encryption_key.error", f"Could not update encryption key: {e}"))
         return None
+
+
+# Keys that belong to the TARGET site's database, never to the set being restored
+# (captain decision, 2026-10-27: the "db_user trap" of the staging16 move).
+DB_CONFIG_KEYS = ("db_name", "db_user", "db_password", "db_type", "db_host", "db_port", "db_socket")
+
+
+def _read_json_in_container(frappe_container, path: str, workdir: str) -> dict | None:
+    code, out = frappe_container.exec_run(["sh", "-c", f"cat {shlex.quote(path)}"], workdir=workdir)
+    if code != 0:
+        return None
+    try:
+        data = json.loads(_decode(out))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json_in_container(frappe_container, path: str, data: dict, workdir: str) -> bool:
+    code, _ = frappe_container.exec_run(
+        ["sh", "-c", f'printf "%s\\n" "$CWCLI_JSON" > {shlex.quote(path)}'],
+        workdir=workdir,
+        environment={"CWCLI_JSON": json.dumps(data, indent=1, sort_keys=True)},
+    )
+    return bool(code == 0)
+
+
+def snapshot_site_config(plan: RestorePlan, *, on_event: OnEvent = _noop) -> str | None:
+    """Copy the TARGET's live ``site_config.json`` aside before anything changes it.
+
+    Returns the in-container path of the copy (``site_config.json.pre-restore-<ts>``),
+    None when the site had no config yet."""
+    frappe_container = core_docker.get_frappe_container(plan.project_name)
+    live = f"{plan.bench_path}/sites/{plan.site}/site_config.json"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    copy = f"{live}.pre-restore-{stamp}"
+    code, _ = frappe_container.exec_run(
+        [
+            "sh",
+            "-c",
+            f"test -f {shlex.quote(live)} && cp -p {shlex.quote(live)} {shlex.quote(copy)}",
+        ],
+        workdir=plan.bench_path,
+    )
+    on_event(
+        RestoreStep(
+            phase="config",
+            message=f"Pre-restore copy of site_config.json: {copy if code == 0 else 'none (no config yet)'}",
+        )
+    )
+    return copy if code == 0 else None
+
+
+def merge_site_config(plan: RestorePlan, *, on_event: OnEvent = _noop) -> bool:
+    """The captain's config rule: the restored site carries the SET's app settings
+    (every key of the backed-up site_config) while the TARGET keeps its own database
+    keys (``DB_CONFIG_KEYS``), which ``bench restore`` has just written for this site.
+    Returns True when the merged config was written."""
+    if not plan.site_config_backup_path:
+        on_event(
+            RestoreNotice(
+                text="The set carries no site_config backup; the target's config is unchanged.",
+                level="warning",
+            )
+        )
+        return False
+    frappe_container = core_docker.get_frappe_container(plan.project_name)
+    backed = _read_json_in_container(
+        frappe_container, plan.site_config_backup_path, plan.bench_path
+    )
+    live_path = f"{plan.bench_path}/sites/{plan.site}/site_config.json"
+    live = _read_json_in_container(frappe_container, live_path, plan.bench_path) or {}
+    if backed is None:
+        on_event(
+            RestoreNotice(
+                text="The set's site_config backup could not be read; the target's config is unchanged.",
+                level="warning",
+            )
+        )
+        return False
+    merged = {k: v for k, v in backed.items() if k not in DB_CONFIG_KEYS}
+    for k in DB_CONFIG_KEYS:
+        if k in live:
+            merged[k] = live[k]
+    carried = sorted(k for k in merged if k not in DB_CONFIG_KEYS and live.get(k) != merged.get(k))
+    ok = _write_json_in_container(frappe_container, live_path, merged, plan.bench_path)
+    on_event(
+        RestoreStep(
+            phase="config",
+            message=(
+                f"site_config merged: {len(carried)} setting(s) carried from the set ({', '.join(carried[:8])}{'…' if len(carried) > 8 else ''}), database keys kept from the target"
+                if ok
+                else "site_config merge FAILED; the target keeps the config bench restore left"
+            ),
+        )
+    )
+    return ok
+
+
+def run_migrate_and_restart(plan: RestorePlan, *, on_event: OnEvent = _noop) -> bool:
+    """``bench migrate`` then a restart of the restored bench (the apply's own tail,
+    callable after a config merge). Returns the migrate verdict."""
+    frappe_container = core_docker.get_frappe_container(plan.project_name)
+    warnings: list[Message] = []
+    ok = _run_migrate(frappe_container, plan, on_event, warnings)
+    _restart(plan, on_event, warnings)
+    for w in warnings:
+        on_event(RestoreNotice(text=w.text, level="warning"))
+    return ok
+
+
+def post_checks(plan: RestorePlan, *, on_event: OnEvent = _noop) -> list[dict]:
+    """Proof the restored site answers: a database round trip through bench (``frappe.ping``)
+    and an HTTP probe of the bench's web port with the site as Host. Each check is a
+    ``{name, ok, detail}`` row; a login check needs a password and is not run here."""
+    from . import supervision
+
+    frappe_container = core_docker.get_frappe_container(plan.project_name)
+    checks: list[dict] = []
+    code, out = frappe_container.exec_run(
+        ["sh", "-c", f"bench --site {shlex.quote(plan.site)} execute frappe.ping"],
+        workdir=plan.bench_path,
+    )
+    text = _decode(out).strip()
+    checks.append(
+        {
+            "name": "database",
+            "ok": code == 0 and "pong" in text,
+            "detail": text[-120:] if text else f"exit {code}",
+        }
+    )
+    port: int | None
+    try:
+        ports = resolvers.resolve_assigned_ports(
+            frappe_container, [plan.bench_path], fill_defaults=False
+        )
+        assigned = ports.get(plan.bench_path)
+        port = int(assigned[0]) if assigned else None
+    except Exception:
+        port = None
+    if port:
+        try:
+            http = supervision.web_http_code(frappe_container, port=int(port), site=plan.site)
+        except Exception as exc:  # noqa: BLE001 - a probe failure is a reported check, not a crash
+            http = None
+            checks.append({"name": "web", "ok": False, "detail": f"probe failed: {exc}"})
+        else:
+            checks.append(
+                {
+                    "name": "web",
+                    "ok": http is not None,
+                    "detail": (
+                        f"HTTP {http} on port {port} for Host {plan.site}"
+                        if http is not None
+                        else "no answer"
+                    ),
+                }
+            )
+    else:
+        checks.append(
+            {
+                "name": "web",
+                "ok": False,
+                "detail": "the bench's web port is not known; start the bench and probe again",
+            }
+        )
+    for c in checks:
+        on_event(
+            RestoreStep(
+                phase="post-check",
+                message=f"{c['name']}: {'ok' if c['ok'] else 'FAILED'} - {c['detail']}",
+            )
+        )
+    return checks
 
 
 def _run_migrate(

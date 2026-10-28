@@ -42,7 +42,7 @@ from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .update import FORCE_HELP, NO_PREFLIGHT_HELP, run_app_update
+from .update import FIX_BRANCHES_HELP, FORCE_HELP, NO_PREFLIGHT_HELP, run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
 app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
@@ -633,6 +633,7 @@ def update_apps(
     ),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
     no_preflight: bool = typer.Option(False, "--no-preflight", help=NO_PREFLIGHT_HELP),
+    fix_branches: bool = typer.Option(False, "--fix-branches", help=FIX_BRANCHES_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -641,14 +642,17 @@ def update_apps(
 ):
     """Update app(s) and migrate affected sites (the canonical update path).
 
-    Updating 'frappe' runs 'bench update --reset', which hard-resets EVERY app in
-    the bench to its remote branch, backs up and migrates every site, and rebuilds.
-    A preflight runs first and refuses, with nothing changed, when bench would
-    certainly fail late (an app on a branch its remote lacks, an unreachable remote,
-    a detached HEAD, a site that cannot be opened, a held migrate lock, ...).
-    It also refuses when any app holds uncommitted changes or unpushed commits the
-    reset would discard; --force accepts that loss, and --no-preflight does not skip
-    this check. This is what the deprecated 'cwcli update' now delegates to.
+    Updating 'frappe' (or 'erpnext') is the core update: that app ALONE is reset to
+    its remote branch (never bench's bench-wide 'bench update --reset'), every site's
+    stale locks are cleared first and listed, the bench's requirements are
+    reinstalled, and every affected site migrates under the per-site maintenance
+    lifecycle. A preflight runs first and refuses, with nothing changed, when the
+    update would certainly fail late (an app on a branch its remote lacks, an
+    unreachable remote, a detached HEAD, a site that cannot be opened, a held
+    migrate lock, ...). It also refuses when the core app holds uncommitted changes
+    or unpushed commits the reset would discard; --force accepts that loss, and
+    --no-preflight does not skip this check. This is what the deprecated
+    'cwcli update' now delegates to.
 
     For any other app, --force hard-resets an app whose git update hits a CONFLICT
     (local changes) to its remote tracking branch, discarding those local changes,
@@ -668,6 +672,7 @@ def update_apps(
         no_recache=no_recache,
         force=force,
         no_preflight=no_preflight,
+        fix_branches=fix_branches,
         yes=yes,
         sites=sites,
         json_output=json_output,

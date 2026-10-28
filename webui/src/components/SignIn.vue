@@ -1,21 +1,50 @@
 <script setup>
-import CommandLine from './CommandLine.vue'
+// Username and password, nothing in the URL. A wrong pair and a locked account
+// are the two errors a person can act on; both are said in plain words.
+import { ref } from 'vue'
+import { Button, Checkbox, ErrorMessage, FormControl } from 'frappe-ui'
+import { signIn } from '../data/session'
+
+const username = ref('admin')
+const password = ref('')
+const remember = ref(false)
+const busy = ref(false)
+const error = ref('')
+
+async function submit() {
+  if (busy.value) return
+  error.value = ''
+  busy.value = true
+  try {
+    await signIn(username.value.trim(), password.value, remember.value)
+  } catch (e) {
+    if (e.code === 'auth.locked') error.value = `Too many failed sign-ins. Try again in ${e.retryAfter || 60} seconds.`
+    else if (e.code === 'auth.invalid') error.value = 'That username and password do not match.'
+    else error.value = e.message || 'Could not sign in.'
+    password.value = ''
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
   <div class="flex min-h-full items-center justify-center bg-surface-gray-1 px-4">
-    <div class="w-full max-w-md rounded-6 border border-outline-gray-1 bg-surface-base p-6">
+    <form class="w-full max-w-sm rounded-6 border border-outline-gray-1 bg-surface-base p-6" @submit.prevent="submit">
       <div class="flex items-center gap-3">
         <img src="/logo-whale.png" alt="" class="size-10 rounded-4" />
         <div>
           <h1 class="text-lg-semibold text-ink-gray-9">Sign in to cwcli</h1>
-          <p class="text-p-sm text-ink-gray-6">This daemon only answers a signed-in page.</p>
+          <p class="text-p-sm text-ink-gray-6">The web UI for your Frappe instances.</p>
         </div>
       </div>
-      <div class="mt-6 space-y-2">
-        <p class="text-p-sm text-ink-gray-7">Get a fresh one-time sign-in link from the terminal:</p>
-        <CommandLine command="cwcli ui" />
+      <div class="mt-6 space-y-4">
+        <FormControl v-model="username" label="Username" autocomplete="username" spellcheck="false" autofocus />
+        <FormControl v-model="password" label="Password" type="password" autocomplete="current-password" />
+        <Checkbox v-model="remember" label="Keep me signed in for 30 days" />
+        <ErrorMessage :message="error" />
+        <Button variant="solid" type="submit" class="w-full" label="Sign in" :loading="busy" />
       </div>
-    </div>
+    </form>
   </div>
 </template>

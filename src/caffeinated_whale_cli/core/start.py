@@ -404,6 +404,22 @@ def _start_bench(
             )
         )
 
+    # Steering 041: after a (re)start the container may sit on a new address; a site
+    # whose database user is scoped to the old one is refused with a bare 500.
+    from . import db_access
+
+    refused = db_access.postflight(
+        frappe_container,
+        resolved_path,
+        project=project_name,
+        bench_flag=resolvers.bench_cli_flag(project_name, resolved_path),
+    )
+    if refused is not None:
+        warnings.append(refused)
+        sites = ", ".join(s["site"] for s in (refused.detail or {}).get("sites", []))
+        emit(StartStepStart(phase="db_access", message=f"Database login refused for {sites}"))
+        emit(StartStepEnd(phase="db_access", status="warning"))
+
     return Result(
         status=Status.OK,
         data=StartOutcome(

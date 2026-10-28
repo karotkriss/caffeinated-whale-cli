@@ -49,6 +49,7 @@ new pins only show up by running the real update.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import operator
 import re
@@ -584,6 +585,7 @@ class PreflightOutcome:
     sites: int
     elapsed: float
     bench_path: str
+    facts: list[dict] = dataclasses.field(default_factory=list)  # the raw facts, for the fixes
 
     @property
     def blocked(self) -> bool:
@@ -799,10 +801,12 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         None,
     ),
     "app.frappe_dependency_unsatisfied": (
-        NOTICE,
+        BLOCKER,
         "requires {dep} {spec} ([tool.bench.frappe-dependencies]) but {dep} will be at "
-        "{version}; bench only warns and installs it anyway",
-        None,
+        "{version}; bench only warns, and the site migrate fails later (staging16, "
+        "2026-10-28). Fix: switch {fix_app} to {fix_branch}",
+        "cwcli apps checkout {q_project} {q_fix_app} {q_fix_branch}{selector_flag}, or re-run "
+        "with --fix-branches to have cwcli switch it (a confirmed step)",
     ),
     "content.unverified": (
         UNVERIFIED,
@@ -840,6 +844,8 @@ def classify(
             q_branch=shlex.quote(str(fact.get("branch") or "")),
             fetch_depth="--depth=1 " if fact.get("shallow_repo") else "",
             q_path=shlex.quote(str(fact.get("path") or "")),
+            q_fix_app=shlex.quote(str(fact.get("fix_app") or "")),
+            q_fix_branch=shlex.quote(str(fact.get("fix_branch") or "")),
         )
         fields["q_refspec"] = shlex.quote(
             "+refs/heads/{0}:refs/remotes/{1}/{0}".format(fact.get("branch"), fact.get("remote"))
@@ -1209,6 +1215,18 @@ def _content_facts(record: dict) -> list[dict]:
                     f"frappe-dependency {dep} {spec!r} could not be compared with {dep_version!r}",
                 )
             elif not ok:
+                # The fix moves whichever side is off the bench's frappe line onto it:
+                # the APP when it wants another frappe, or a sibling already on that
+                # line; the SIBLING when it is the one off the line. The spec's lower
+                # bound only answers when frappe's own major cannot be read.
+                frappe_major = _semver(
+                    version(installed("frappe")) if "frappe" in manifests else None
+                )
+                dep_major = _semver(dep_version)
+                wanted = _spec_floor_major(spec)
+                on_line = bool(frappe_major and dep_major and dep_major[0] == frappe_major[0])
+                fix_app = app if dep == "frappe" or on_line else dep
+                fix_major = frappe_major[0] if frappe_major else wanted
                 facts.append(
                     {
                         "code": "app.frappe_dependency_unsatisfied",
@@ -1216,9 +1234,49 @@ def _content_facts(record: dict) -> list[dict]:
                         "dep": dep,
                         "spec": spec,
                         "version": str(dep_version),
+                        "fix_app": fix_app,
+                        "fix_branch": f"version-{fix_major}" if fix_major is not None else None,
                     }
                 )
     return facts
+
+
+def _spec_floor_major(spec: str) -> int | None:
+    """The major a SimpleSpec's lower bound names (``>=16,<17`` -> 16, ``~=15.2`` -> 15,
+    ``==14.*`` -> 14); None when it has no lower bound."""
+    for part in spec.split(","):
+        m = re.match(r"^\s*(?:>=|~=|==|\^|>)\s*v?(\d+)", part.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def fixable_branches(facts: list[dict]) -> list[tuple[str, str]]:
+    """``(app, branch)`` pairs the dependency mismatches say to switch, deduplicated."""
+    out: list[tuple[str, str]] = []
+    for f in facts:
+        if (
+            f.get("code") == "app.frappe_dependency_unsatisfied"
+            and f.get("fix_app")
+            and f.get("fix_branch")
+        ):
+            pair = (str(f["fix_app"]), str(f["fix_branch"]))
+            if pair not in out:
+                out.append(pair)
+    return out
+
+
+def untracked_branches(facts: list[dict]) -> list[tuple[str, str, str, bool]]:
+    """``(app, remote, branch, shallow)`` for every branch the remote's fetch refspec does
+    not cover (``git.branch_not_tracked``)."""
+    return [
+        (str(f["app"]), str(f["remote"]), str(f["branch"]), bool(f.get("shallow_repo")))
+        for f in facts
+        if f.get("code") == "git.branch_not_tracked"
+        and f.get("app")
+        and f.get("remote")
+        and f.get("branch")
+    ]
 
 
 def _site_facts(container, bench_path: str, sites: list[str]) -> list[dict]:
@@ -1305,6 +1363,7 @@ def run_preflight(
         sites=len(sites),
         elapsed=time.monotonic() - started,
         bench_path=bench_path,
+        facts=facts,
     )
 
 

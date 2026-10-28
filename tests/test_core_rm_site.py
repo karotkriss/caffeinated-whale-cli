@@ -218,9 +218,16 @@ class TestSuccess:
         assert site_tar.stat().st_mode & 0o777 == 0o600
         assert drop_dir.stat().st_mode & 0o777 == 0o700
         assert drop_dir.parent.stat().st_mode & 0o777 == 0o700
-        # The verified backup is in the same host archive, byte for byte.
-        backups = drop_dir / "backups"
-        assert {f.name: f.read_bytes() for f in backups.iterdir()} == container.artifacts
+        # The verified backup now lives in the backup store outside the instances
+        # (captain decision 1, 2026-10-27), byte for byte; the drop archive keeps the tar.
+        from caffeinated_whale_cli.core import backup_store
+
+        newest = backup_store.list_sets("proj", SITE)[0]
+        assert newest.reason == "before-removal"
+        assert {
+            p.filename: (Path(newest.path) / p.filename).read_bytes() for p in newest.parts
+        } == container.artifacts
+        assert not list((drop_dir / "backups").iterdir())
 
         prune_calls = [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
         assert prune_calls == [["rm", "-rf", f"{BENCH}/archived/sites/{SITE}"]]

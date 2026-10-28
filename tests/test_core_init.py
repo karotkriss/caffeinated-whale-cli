@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from caffeinated_whale_cli.core import db_access
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import init as core_init
@@ -187,6 +188,9 @@ def patched(monkeypatch, tmp_path):
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: cleared.append(name))
     monkeypatch.setattr(config_utils, "add_custom_path", lambda path: (added.append(path), True)[1])
     monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
+    # The post-create database-user widen reads the new site's site_config.json and
+    # MariaDB, neither of which these fakes model; tests/test_core_db_access.py owns it.
+    monkeypatch.setattr(db_access, "widen_after_create", lambda *a, **k: (False, None))
     return SimpleNamespace(cleared=cleared, added=added)
 
 

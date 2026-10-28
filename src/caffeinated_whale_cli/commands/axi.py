@@ -45,6 +45,8 @@ from ..core import inspect as core_inspect
 from ..core import label as core_label
 from ..core import list as core_list
 from ..core import logs as core_logs
+from ..core import new_bench as core_new_bench
+from ..core import new_site as core_new_site
 from ..core import restart as core_restart
 from ..core import rm as core_rm
 from ..core import rm_bench as core_rm_bench
@@ -544,8 +546,10 @@ def exit_for(kind: ErrorKind) -> int:
 
 
 def emit_result(data, *, warnings=None) -> None:
-    """Emit a single DTO as TOON, folding in any warnings."""
-    typer.echo(toon.encode(asdict(data), warnings=warnings or []))
+    """Emit a single DTO as TOON, folding in any warnings. A plain dict (a verb whose
+    answer is assembled from several core calls) is encoded as it is."""
+    body = data if isinstance(data, dict) else asdict(data)
+    typer.echo(toon.encode(body, warnings=warnings or []))
 
 
 def emit_axi_error(error: CwcliError) -> None:
@@ -838,6 +842,150 @@ def axi_unlock(
     assert result.data is not None  # OK/WARNING always carries an UnlockOutcome
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ------------------------------------------------------------------------------ new-site
+
+
+@app.command("new-site")
+def axi_new_site(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Argument(..., help="The new site's name, e.g. shop.localhost."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    apps: list[str] = typer.Option(
+        None, "--app", help="An app already on the bench to install (repeatable)."
+    ),
+    default: bool = typer.Option(False, "--default", help="Make it the bench's default site."),
+    dev_mode: bool = typer.Option(False, "--dev-mode", help="Turn developer mode on for it."),
+    admin_password: str = typer.Option(
+        None,
+        "--admin-password",
+        help="Administrator password; prefer the CWCLI_ADMIN_PASSWORD env var.",
+    ),
+    db_root_password: str = typer.Option(
+        None,
+        "--db-root-password",
+        help="MariaDB root password; default: the one remembered at init (or CWCLI_DB_ROOT_PASSWORD).",
+    ),
+) -> None:
+    """Create a site on an existing bench; emit the report as TOON.
+
+    The Administrator password comes from CWCLI_ADMIN_PASSWORD or --admin-password
+    (the flag wins); omitting both is a usage error. A stopped instance and an
+    ambiguous multi-bench project are usage errors, as for `axi backup`.
+    """
+    import os as _os
+
+    password = admin_password or _os.environ.get("CWCLI_ADMIN_PASSWORD")
+    if not password:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "new_site.admin_password_required",
+                "An Administrator password is required.",
+                hint="Set CWCLI_ADMIN_PASSWORD (recommended) or pass --admin-password.",
+            )
+        )
+        raise typer.Exit(2)
+    try:
+        result = core_new_site.new_site(
+            project,
+            site=site,
+            admin_password=password,
+            bench=bench,
+            apps=list(apps or []),
+            default=default,
+            developer_mode=dev_mode,
+            db_root_password=db_root_password or _os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+    assert result.data is not None
+    from ..utils import cache as _cache
+
+    _cache.recache_project(project, bench_path=result.data.bench_path, warnings=[])
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+# ----------------------------------------------------------------------------- new-bench
+
+
+@app.command("new-bench")
+def axi_new_bench(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    name: str = typer.Argument(..., help="The new bench's folder name."),
+    site: str = typer.Option(
+        None, "--site", help="The bench's first site (default: <name>.localhost)."
+    ),
+    version: str = typer.Option(
+        "16", "--version", help="Frappe version: a major (16) or a tag (16.3.0)."
+    ),
+    frappe_branch: str = typer.Option(
+        None, "--frappe-branch", help="A raw Frappe git ref instead of --version."
+    ),
+    frappe_url: str = typer.Option(None, "--frappe-url", help="A Frappe fork to build from."),
+    erpnext: bool = typer.Option(False, "--erpnext", help="Install ERPNext on the first site."),
+    apps: list[str] = typer.Option(
+        None, "--app", help="An extra app (git URL or name) to fetch and install (repeatable)."
+    ),
+    admin_password: str = typer.Option(
+        None, "--admin-password", help="Administrator password; prefer CWCLI_ADMIN_PASSWORD."
+    ),
+    db_root_password: str = typer.Option(
+        None, "--db-root-password", help="MariaDB root password; default: the remembered one."
+    ),
+) -> None:
+    """Add a bench to a running instance; emit the report as TOON.
+
+    The same provisioning as init's bench 0 (bench init for the version or fork,
+    configs, first site, optional ERPNext), then the bench's supervisor and any
+    extra apps. Blocks for the whole run.
+    """
+    import os as _os
+
+    from ..utils import cache as _cache
+
+    password = admin_password or _os.environ.get("CWCLI_ADMIN_PASSWORD")
+    if not password:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "new_bench.admin_password_required",
+                "An Administrator password is required.",
+                hint="Set CWCLI_ADMIN_PASSWORD (recommended) or pass --admin-password.",
+            )
+        )
+        raise typer.Exit(2)
+    try:
+        result = core_new_bench.new_bench(
+            project,
+            bench_name=name,
+            site_name=site or f"{name}.localhost",
+            admin_password=password,
+            frappe_ref=frappe_branch,
+            version=version,
+            frappe_url=frappe_url,
+            install_erpnext=erpnext,
+            apps=list(apps or []),
+            db_root_password=db_root_password or _os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
+            after_init=lambda path: _cache.recache_project(project, bench_path=path, warnings=[]),
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+    assert result.data is not None
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.data.started and not result.data.apps_failed else 1)
 
 
 # ---------------------------------------------------------------------------------- stop
@@ -1427,6 +1575,248 @@ def axi_label(
 apps_app = AxiTyper(help="Manage Frappe apps: structured, non-interactive.")
 app.add_typer(apps_app, name="apps")
 
+backups_app = AxiTyper(help="The backup store outside the instances: list, capture, verify.")
+app.add_typer(backups_app, name="backups")
+
+
+@backups_app.command("list")
+def axi_backups_list(
+    project: str = typer.Argument(None, help="Narrow to one instance."),
+    site: str = typer.Option(None, "--site", help="Narrow to one site."),
+) -> None:
+    """Every backup set in the store, newest first, with its verdict; TOON.
+
+    A set is ``project/site/id``; ``verified`` is the stored verdict of the checks run at
+    creation (dump complete, archives list, config parses). The disk budget rides along.
+    """
+    from ..core import backup_store as core_backup_store
+
+    sets = core_backup_store.list_sets(project, site)
+    emit_result(
+        {
+            "sets": [s.to_dict() for s in sets],
+            "count": len(sets),
+            "budget": core_backup_store.disk_budget(),
+        }
+    )
+
+
+db_access_app = AxiTyper(help="Site database users vs the frappe container's address.")
+app.add_typer(db_access_app, name="db-access")
+
+schedule_app = AxiTyper(help="Scheduled jobs: list, add, run now, remove.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("list")
+def axi_schedule_list() -> None:
+    """Every schedule with its next run, last result and the upcoming runs (7 days)."""
+    from ..core import schedules as core_schedules
+
+    emit_result(core_schedules.list_schedules())
+
+
+@schedule_app.command("add")
+def axi_schedule_add(
+    name: str = typer.Argument(..., help="A name for the schedule."),
+    verb: str = typer.Option(..., "--verb", help="The job to run."),
+    project: str = typer.Option(..., "--project", help="The instance."),
+    bench: str = typer.Option(None, "--bench", help="Bench index or label."),
+    site: str = typer.Option(None, "--site", help="The site (site verbs)."),
+    process: str = typer.Option(None, "--process", help="Process label (restart-process)."),
+    cron: str = typer.Option(None, "--cron", help="Five-field cron expression."),
+    at: str = typer.Option(None, "--at", help="Once, at an ISO time."),
+    unattended: bool = typer.Option(
+        False, "--allow-unattended", help="Updates and migrate may run unattended."
+    ),
+    missed: str = typer.Option("run", "--missed", help="run or skip."),
+    start_if_stopped: bool = typer.Option(
+        False, "--start-if-stopped", help="Start a stopped instance first."
+    ),
+    in_window: bool = typer.Option(
+        False, "--in-window", help="Only inside the maintenance window."
+    ),
+) -> None:
+    """Add a schedule (cron or once). Removals can never be scheduled."""
+    from ..core import schedules as core_schedules
+
+    sched: dict = {
+        "name": name,
+        "verb": verb,
+        "target": {
+            k: v
+            for k, v in {
+                "project": project,
+                "bench": bench,
+                "site": site,
+                "process": process,
+            }.items()
+            if v
+        },
+        "unattended": unattended,
+        "missed": missed,
+        "start_if_stopped": start_if_stopped,
+        "respect_window": in_window,
+    }
+    if at:
+        sched.update(kind="once", at=at)
+    else:
+        sched["cron"] = cron or ""
+    try:
+        emit_result(core_schedules.save(sched, by="axi"))
+    except CwcliError as e:
+        emit_axi_error(e)
+        raise typer.Exit(exit_for(e.kind)) from e
+
+
+@schedule_app.command("run-now")
+def axi_schedule_run(schedule: str = typer.Argument(..., help="The schedule id.")) -> None:
+    """Start the schedule's job now; the job record is the answer."""
+    from .. import jobs as core_jobs
+    from ..core import schedules as core_schedules
+
+    try:
+        rec = core_schedules.run_now(
+            schedule,
+            lambda verb, target, args, **kw: core_jobs.create_job(
+                verb,
+                target,
+                args,
+                consent=bool(kw.get("consent")),
+                origin={**(kw.get("origin") or {}), "via": "axi", "account": "axi"},
+            ),
+        )
+    except CwcliError as e:
+        emit_axi_error(e)
+        raise typer.Exit(exit_for(e.kind)) from e
+    emit_result({"job_id": rec["id"], "verb": rec["verb"], "state": rec.get("state")})
+
+
+@schedule_app.command("remove")
+def axi_schedule_rm(schedule: str = typer.Argument(..., help="The schedule id.")) -> None:
+    """Remove a schedule."""
+    from ..core import schedules as core_schedules
+
+    try:
+        core_schedules.delete(schedule)
+    except CwcliError as e:
+        emit_axi_error(e)
+        raise typer.Exit(exit_for(e.kind)) from e
+    emit_result({"removed": schedule})
+
+
+@db_access_app.command("check")
+def axi_db_access_check(
+    project: str = typer.Argument(..., help="The instance to check."),
+    bench: str = typer.Option(
+        None, "--bench", help="Bench index or label on a multi-bench instance."
+    ),
+) -> None:
+    """Which sites' database users would be refused from the container's current address.
+
+    A site user Frappe created is scoped to the container's address at the time; a restart
+    that changes the address refuses every login (``Access denied for user '_<hash>'@'<ip>'``).
+    ``ok: false`` rows name the allowed hosts and the container's current address; the
+    repair is ``cwcli db-access repair <project> --yes``.
+    """
+    from ..core import db_access as core_db_access
+    from ..core import resolvers as core_resolvers
+
+    try:
+        resolved = core_resolvers.resolve_container_and_bench(project, bench, None)
+        if not isinstance(resolved, tuple):
+            assert resolved.choice is not None
+            emit_axi_choice_as_usage_error(resolved.choice)
+            raise typer.Exit(2)
+        container, path, _ = resolved
+        rows = core_db_access.check(container, path, project=project)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    emit_result(
+        {"project": project, "sites": [a.to_dict() for a in rows], "ok": all(a.ok for a in rows)}
+    )
+    raise typer.Exit(0 if all(a.ok for a in rows) else 1)
+
+
+@backups_app.command("prune")
+def axi_backups_prune(
+    project: str = typer.Argument(..., help="The instance whose retention policy to apply."),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--apply", help="List what the policy would remove (default), or remove it."
+    ),
+) -> None:
+    """What the instance's retention policy keeps and removes; ``--apply`` removes it.
+
+    Pruning deletes backups, so the default only lists. A site's last good backup is
+    never removed. Each decision carries ``why``.
+    """
+    from ..core import backup_store as core_backup_store
+
+    try:
+        result = core_backup_store.prune(project, consent=not dry_run, dry_run=dry_run)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    emit_result(result.data or {})
+
+
+@backups_app.command("settings")
+def axi_backups_settings(
+    project: str = typer.Argument(..., help="The instance whose settings to read."),
+) -> None:
+    """The instance's backup settings: retention, safety, disk floor, schedule; TOON."""
+    from ..core import backup_store as core_backup_store
+
+    emit_result({"project": project, "settings": core_backup_store.settings(project)})
+
+
+@backups_app.command("capture")
+def axi_backups_capture(
+    project: str = typer.Argument(..., help="The instance."),
+    site: str = typer.Option(None, "--site", help="The site; defaults like `axi backup`."),
+    bench: str = typer.Option(None, "--bench", help="Bench index or label (multi-bench)."),
+    no_files: bool = typer.Option(False, "--no-files", help="Database and config only."),
+    reason: str = typer.Option("manual", "--reason", help="manual | scheduled | drill | ..."),
+    note: str = typer.Option(None, "--note", help="A note kept with the set."),
+) -> None:
+    """Back a site up INTO the store: verified copy-out, in-bench copies removed once
+    verified; TOON. Exit 1 when the set did not verify (it is kept, marked unverified).
+    Never starts a stopped instance (``confirm_start`` is an exit-2 usage error)."""
+    from ..core import backup_store as core_backup_store
+
+    try:
+        result = core_backup_store.capture(
+            project, site=site, bench=bench, with_files=not no_files, reason=reason, note=note
+        )
+    except CwcliError as e:
+        emit_axi_error(e)
+        raise typer.Exit(exit_for(e.kind)) from None
+    if result.status is CoreStatus.NEEDS_CHOICE and result.choice is not None:
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(code=2)
+    assert result.data is not None
+    emit_result(result.data.to_dict(), warnings=result.warnings)
+    raise typer.Exit(code=0 if result.data.verified else 1)
+
+
+@backups_app.command("verify")
+def axi_backups_verify(
+    key: str = typer.Argument(..., help="The set key, project/site/id.")
+) -> None:
+    """Re-run every check on a stored set; TOON. Exit 1 when a check fails."""
+    from ..core import backup_store as core_backup_store
+
+    bset = core_backup_store.find_set(key)
+    if bset is None:
+        emit_axi_error(
+            CwcliError(ErrorKind.NOT_FOUND, "backups.set_not_found", f"No backup set {key}")
+        )
+        raise typer.Exit(code=1)
+    verified = core_backup_store.verify_set(bset)
+    emit_result(verified.to_dict())
+    raise typer.Exit(code=0 if verified.verified else 1)
+
 
 @apps_app.command("list")
 def axi_apps_list(
@@ -1513,8 +1903,8 @@ def axi_apps_update(
         False,
         "--force",
         help=(
-            "DESTRUCTIVE. frappe: run 'bench update --reset' although it discards "
-            "uncommitted or unpushed app work (refused without --force). Other apps: on "
+            "DESTRUCTIVE. frappe: run the core reset although it discards the core "
+            "app's uncommitted or unpushed work (refused without --force). Other apps: on "
             "a git conflict, hard-reset to the remote tracking branch instead of "
             "failing. Also re-owns app repos git refuses for dubious ownership."
         ),
@@ -1523,9 +1913,18 @@ def axi_apps_update(
         False,
         "--no-preflight",
         help=(
-            "Updating frappe only: skip the checks before 'bench update --reset' (for a "
-            "false positive). bench then fails wherever it fails. The local-work check "
+            "Updating frappe only: skip the checks before the core reset (for a "
+            "false positive); the run then fails wherever it fails. The local-work check "
             "still runs; only --force passes it."
+        ),
+    ),
+    fix_branches: bool = typer.Option(
+        False,
+        "--fix-branches",
+        help=(
+            "Updating frappe: switch an app whose declared frappe-dependencies do not fit "
+            "this bench to the matching version-N branch first (otherwise that mismatch "
+            "refuses the update, naming the switch)."
         ),
     ),
 ) -> None:
@@ -1554,13 +1953,15 @@ def axi_apps_update(
     ONLY on a conflict - a clean update is untouched - and never on a non-conflict
     failure (network/auth).
 
-    Updating `frappe` runs a preflight before `bench update --reset`: every finding
+    Updating `frappe` (the core update: frappe alone is reset to its remote branch,
+    every site's stale locks are cleared and listed, requirements reinstalled, then the
+    per-site migrate) runs a preflight before the reset: every finding
     rides `preflight` (a `severity,code,app,site,message,remedy` table; branch on
     `code`), and a blocker sets `preflight_blocked: true` and exits 1 with NOTHING
     run. `--no-preflight` skips the checks for a false positive; it is not a safety
     gate, so it is offered here too.
 
-    The reset discards uncommitted and unpushed work in every app, so any such work
+    The reset discards uncommitted and unpushed work in the core app, so any such work
     (or work that could not be checked) sets `data_loss_refused: true`, names the
     apps in `data_loss_apps` and exits 1 with NOTHING run - under `--no-preflight`
     too. `--force` accepts the loss: the reset runs and `data_loss_apps` names the
@@ -1579,6 +1980,7 @@ def axi_apps_update(
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,
+            fix_branches=fix_branches,
         )
     except CwcliError as error:
         emit_axi_error(error)

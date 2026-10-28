@@ -26,6 +26,7 @@ import re
 import secrets
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -43,8 +44,14 @@ from caffeinated_whale_cli.core.stop import StopOutcome
 
 _TIMEOUT = 5.0
 _TOKEN = "s3cr3t-token-value"
-_LOGIN = "one-time-login-code"
+_PASSWORD = "correct horse battery"
 _ACTION = json.dumps({"action": "stop_instance", "project": "p"}).encode()
+
+
+@pytest.fixture(autouse=True)
+def _own_home(tmp_path, monkeypatch):
+    """Each test gets its own account store: admin / admin with the change forced."""
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
 
 
 @pytest.fixture
@@ -83,7 +90,7 @@ def _serve_on(host: str, token: str):
     hub = serve_cmd._Hub(fleet.set_focus)
     fleet.set_publish(hub.publish)
     fleet.bootstrap()
-    httpd = serve_cmd.make_server(host, 0, fleet, hub, token, _LOGIN)
+    httpd = serve_cmd.make_server(host, 0, fleet, hub, token)
     threading.Thread(
         target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
     ).start()
@@ -99,7 +106,7 @@ def _serve_on(host: str, token: str):
 def daemon(stopped):
     """The shipped daemon on its shipped DEFAULT_HOST with a per-launch token, as
     ``serve`` runs it when no ``CWCLI_SERVE_TOKEN`` is set: the token is random and
-    unknown to the caller, so the login code is the only way in."""
+    unknown to the caller, so the account is the only way in."""
     port, shutdown = _serve_on(serve_cmd.DEFAULT_HOST, secrets.token_urlsafe(32))
     try:
         yield f"http://127.0.0.1:{port}"
@@ -270,10 +277,8 @@ class TestRemoteBindRefusesWithoutAuth:
         bound = _stub_server(monkeypatch)
         serve_cmd.serve(port=0, host=serve_cmd.DEFAULT_HOST, interval=2.5)
         assert bound, "the ordinary loopback workflow must not require CWCLI_SERVE_TOKEN"
-        token, login_code = bound[0][4], bound[0][5]
+        token = bound[0][4]
         assert isinstance(token, str) and len(token) >= 32, "auth is never off"
-        assert isinstance(login_code, str) and len(login_code) >= 32
-        assert token != login_code
 
 
 class TestAuthIsAlwaysOn:
@@ -345,35 +350,67 @@ class TestAuthEnabled:
         assert stopped == []
 
 
+def _sign_in(base, username="admin", password="admin", remember=False, headers=None):
+    return _request(
+        base + "/api/v1/session",
+        data=json.dumps(
+            {"username": username, "password": password, "remember": remember}
+        ).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+
+
+def _jar(headers):
+    return headers["Set-Cookie"].split(";", 1)[0]
+
+
+def _set_password(base, jar, new, current=None):
+    return _request(
+        base + "/api/v1/session/password",
+        data=json.dumps({"new": new, "current": current}).encode(),
+        headers={"Content-Type": "application/json", "Cookie": jar},
+        method="POST",
+    )
+
+
+def _signed_in(base):
+    """A browser past the forced change: its cookie jar and the password it chose."""
+    jar = _jar(_sign_in(base)[2])
+    assert _set_password(base, jar, _PASSWORD)[0] == 200
+    return jar
+
+
 class TestBrowserSession:
-    """``EventSource`` cannot send headers, so a browser trades the token for a cookie."""
+    """``EventSource`` cannot send headers, so a browser signs in for a cookie."""
 
     def test_the_session_cookie_authenticates_subsequent_requests(self, guarded, stopped):
-        status, _, headers = _request(
+        status, _, headers = _sign_in(guarded)
+        assert status == 200
+        cookie = headers["Set-Cookie"]
+        assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+        assert "admin" not in cookie, "the cookie carries a session id, never a credential"
+        jar = _jar(headers)
+        assert _set_password(guarded, jar, _PASSWORD)[0] == 200
+        assert _request(guarded + "/api/v1/instances", headers={"Cookie": jar})[0] == 200
+        assert _post_action(guarded, {"Cookie": jar})[0] == 200
+        assert stopped == ["p"]
+
+    def test_the_bearer_token_does_not_open_a_session(self, guarded):
+        status, body, headers = _request(
             guarded + "/api/v1/session",
             data=b"{}",
             headers={"Authorization": f"Bearer {_TOKEN}", "Content-Type": "application/json"},
             method="POST",
         )
-        assert status == 200
-        cookie = headers["Set-Cookie"]
-        assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
-        assert _TOKEN not in cookie, "the cookie must carry a session id, never the token"
+        assert status == 401 and "Set-Cookie" not in headers
+        assert json.loads(body)["errors"][0]["title"] == "auth.invalid"
 
-        jar = cookie.split(";", 1)[0]
-        assert _request(guarded + "/api/v1/instances", headers={"Cookie": jar})[0] == 200
-        assert _post_action(guarded, {"Cookie": jar})[0] == 200
-        assert stopped == ["p"]
-
-    def test_an_unauthenticated_caller_cannot_open_a_session(self, guarded):
-        status, _, headers = _request(
-            guarded + "/api/v1/session",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+    def test_a_wrong_password_cannot_open_a_session(self, guarded):
+        status, body, headers = _sign_in(guarded, password="nope")
         assert status == 401
         assert "Set-Cookie" not in headers
+        assert json.loads(body)["errors"][0]["title"] == "auth.invalid"
 
     def test_a_forged_session_cookie_is_refused(self, guarded, stopped):
         port = guarded.rsplit(":", 1)[1]
@@ -427,16 +464,23 @@ class TestKeepAliveSurvivesEveryPostOutcome:
             conn.request(
                 "POST",
                 "/api/v1/session",
-                body=b"{}",
-                headers={
-                    "Authorization": f"Bearer {_TOKEN}",
-                    "Content-Type": "application/json",
-                },
+                body=json.dumps({"username": "admin", "password": "admin"}).encode(),
+                headers={"Content-Type": "application/json"},
             )
             first = conn.getresponse()
             assert first.status == 200
             jar = first.getheader("Set-Cookie").split(";", 1)[0]
             first.read()
+
+            conn.request(
+                "POST",
+                "/api/v1/session/password",
+                body=json.dumps({"new": _PASSWORD}).encode(),
+                headers={"Content-Type": "application/json", "Cookie": jar},
+            )
+            second = conn.getresponse()
+            assert second.status == 200
+            second.read()
 
             conn.request("GET", "/api/v1/instances", headers={"Cookie": jar, "Connection": "close"})
             assert conn.getresponse().status == 200
@@ -621,15 +665,9 @@ class TestS2HostAllowlist:
         )
         assert status == 403, path
 
-    def test_the_session_exchange_is_refused_and_the_code_survives(self, daemon):
-        status, body, headers = _request(
-            daemon + "/api/v1/session",
-            data=json.dumps({"code": _LOGIN}).encode(),
-            headers={"Content-Type": "application/json", **self._REBIND},
-            method="POST",
-        )
+    def test_the_sign_in_is_refused_too(self, daemon):
+        status, _, headers = _sign_in(daemon, headers=self._REBIND)
         assert status == 403 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 200, "a refused request must not burn the login code"
 
     @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
     def test_the_loopback_names_are_admitted(self, guarded, stopped, host):
@@ -704,7 +742,7 @@ class TestS2HostAllowlist:
     def test_the_bind_address_decides_remote_bind(self, stopped):
         fleet = core_fleet.Fleet()
         httpd = serve_cmd.make_server(
-            "127.0.0.1", 0, fleet, serve_cmd._Hub(fleet.set_focus), _TOKEN, _LOGIN
+            "127.0.0.1", 0, fleet, serve_cmd._Hub(fleet.set_focus), _TOKEN
         )
         try:
             assert httpd.RequestHandlerClass.remote_bind is False
@@ -712,28 +750,48 @@ class TestS2HostAllowlist:
             httpd.server_close()
 
 
-def _redeem(base, code=_LOGIN):
-    return _request(
-        base + "/api/v1/session",
-        data=json.dumps({"code": code}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+class TestAccountSignIn:
+    """A browser signs in with the administrator account; the first sign-in has to
+    pick a real password before anything else answers."""
 
-
-class TestOneTimeLoginCode:
-    """A browser signs in by redeeming the code the banner printed, exactly once."""
-
-    def test_the_code_buys_a_session_cookie_that_authenticates(self, daemon, stopped):
-        status, _, headers = _redeem(daemon)
+    def test_admin_admin_buys_a_cookie_but_nothing_else_until_the_password_changes(
+        self, daemon, stopped
+    ):
+        status, body, headers = _sign_in(daemon)
         assert status == 200
-        cookie = headers["Set-Cookie"]
-        assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
-        assert _LOGIN not in cookie, "the cookie carries a session id, never the code"
-        jar = cookie.split(";", 1)[0]
+        assert json.loads(body)["data"]["must_change_password"] is True
+        jar = _jar(headers)
+        status, body, _ = _request(daemon + "/api/v1/instances", headers={"Cookie": jar})
+        assert status == 403
+        assert json.loads(body)["errors"][0]["title"] == "auth.password_change_required"
+        assert _post_action(daemon, {"Cookie": jar})[0] == 403
+        assert stopped == [], "the gate runs before any action"
+        status, body, _ = _request(daemon + "/api/v1/session", headers={"Cookie": jar})
+        assert status == 200 and json.loads(body)["data"]["must_change_password"] is True
+
+    @pytest.mark.parametrize("weak", ["short", "admin", "ADMIN"])
+    def test_a_weak_first_password_is_refused(self, daemon, weak):
+        jar = _jar(_sign_in(daemon)[2])
+        status, body, _ = _set_password(daemon, jar, weak)
+        assert status == 400
+        assert json.loads(body)["errors"][0]["title"] == "password.weak"
+
+    def test_after_the_change_the_new_password_signs_in_and_the_default_does_not(
+        self, daemon, stopped
+    ):
+        jar = _signed_in(daemon)
         assert _request(daemon + "/api/v1/instances", headers={"Cookie": jar})[0] == 200
-        assert _post_action(daemon, {"Cookie": jar})[0] == 200
-        assert stopped == ["p"]
+        assert _sign_in(daemon)[0] == 401
+        status, body, _ = _sign_in(daemon, password=_PASSWORD)
+        assert status == 200 and json.loads(body)["data"]["must_change_password"] is False
+        assert _post_action(daemon, {"Cookie": jar})[0] == 200 and stopped == ["p"]
+
+    def test_a_later_change_needs_the_current_password(self, daemon):
+        jar = _signed_in(daemon)
+        status, body, _ = _set_password(daemon, jar, "another good one", current="wrong")
+        assert status == 412 and json.loads(body)["errors"][0]["title"] == "password.current_wrong"
+        assert _set_password(daemon, jar, "another good one", current=_PASSWORD)[0] == 200
+        assert _sign_in(daemon, password="another good one")[0] == 200
 
     def test_a_second_daemon_on_this_machine_does_not_sign_the_first_out(self, daemon, stopped):
         """Browsers do not scope cookies by port, so one jar holds both daemons'
@@ -742,55 +800,120 @@ class TestOneTimeLoginCode:
         try:
             jar: dict[str, str] = {}
             for base in (daemon, f"http://127.0.0.1:{port}"):
-                name, _, value = _redeem(base)[2]["Set-Cookie"].split(";", 1)[0].partition("=")
+                name, _, value = _sign_in(base)[2]["Set-Cookie"].split(";", 1)[0].partition("=")
                 jar[name] = value
             sent = "; ".join(f"{k}={v}" for k, v in jar.items())
-            assert _request(daemon + "/api/v1/instances", headers={"Cookie": sent})[0] == 200
+            assert _request(daemon + "/api/v1/session", headers={"Cookie": sent})[0] == 200
             assert (
-                _request(f"http://127.0.0.1:{port}/api/v1/instances", headers={"Cookie": sent})[0]
+                _request(f"http://127.0.0.1:{port}/api/v1/session", headers={"Cookie": sent})[0]
                 == 200
             )
         finally:
             shutdown()
 
-    def test_the_code_works_once(self, daemon):
-        assert _redeem(daemon)[0] == 200
-        status, body, headers = _redeem(daemon)
-        assert status == 401
-        assert "Set-Cookie" not in headers
-        assert json.loads(body)["errors"][0]["title"] == "auth.required"
+    def test_keep_me_signed_in_is_a_persistent_cookie(self, daemon):
+        _, _, headers = _sign_in(daemon, remember=True)
+        assert "Max-Age=2592000" in headers["Set-Cookie"]
+        _, _, headers = _sign_in(daemon, remember=False)
+        assert "Max-Age" not in headers["Set-Cookie"]
 
-    @pytest.mark.parametrize(
-        "body",
-        [b"{}", b'{"code": "wrong"}', b'{"code": 1}', b'{"code": null}', b"not json", b"[]"],
-    )
-    def test_anything_but_the_code_is_refused_and_does_not_burn_it(self, daemon, body):
-        status, _, headers = _request(
-            daemon + "/api/v1/session",
-            data=body,
-            headers={"Content-Type": "application/json"},
+    def test_five_failures_lock_the_account_and_the_address(self, daemon):
+        for _ in range(5):
+            assert _sign_in(daemon, password="nope")[0] == 401
+        status, body, headers = _sign_in(daemon)  # the RIGHT password, while locked
+        assert status == 429 and "Set-Cookie" not in headers
+        err = json.loads(body)["errors"][0]
+        assert err["title"] == "auth.locked" and 0 < err["retry_after"] <= 60
+        status, _, _ = _sign_in(daemon, username="other")  # the address is locked too
+        assert status == 429
+
+    def test_sign_out_here_and_everywhere_else(self, daemon):
+        here = _signed_in(daemon)
+        other = _jar(_sign_in(daemon, password=_PASSWORD)[2])
+        status, body, _ = _request(daemon + "/api/v1/session/sessions", headers={"Cookie": here})
+        rows = json.loads(body)["data"]
+        assert status == 200 and len(rows) == 2 and sum(r["current"] for r in rows) == 1
+        status, body, _ = _request(
+            daemon + "/api/v1/session/signout",
+            data=json.dumps({"others": True}).encode(),
+            headers={"Content-Type": "application/json", "Cookie": here},
             method="POST",
         )
-        assert status == 401 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 200
-
-    def test_a_cross_site_redemption_is_refused_and_does_not_burn_it(self, daemon):
+        assert status == 200 and json.loads(body)["data"]["closed"] == 1
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": other})[0] == 401
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": here})[0] == 200
         status, _, headers = _request(
-            daemon + "/api/v1/session",
-            data=json.dumps({"code": _LOGIN}).encode(),
-            headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+            daemon + "/api/v1/session/signout",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Cookie": here},
             method="POST",
         )
-        assert status == 403 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 200
+        assert status == 200 and "Max-Age=0" in headers["Set-Cookie"]
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": here})[0] == 401
 
-    def test_the_banner_prints_the_login_link_and_never_a_token(self, monkeypatch, capsys):
+    def test_a_password_change_signs_out_the_sessions_opened_before_it(self, daemon):
+        stale = _jar(_sign_in(daemon)[2])
+        here = _signed_in(daemon)
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": stale})[0] == 401
+        assert _request(daemon + "/api/v1/instances", headers={"Cookie": here})[0] == 200
+
+    def test_a_remote_bind_admits_the_default_password_only_with_the_token(self, stopped):
+        port, shutdown = _serve_on("0.0.0.0", _TOKEN)  # noqa: S104 - the remote-bind shape
+        try:
+            base = f"http://127.0.0.1:{port}"
+            status, body, headers = _sign_in(base)
+            assert status == 403 and "Set-Cookie" not in headers
+            assert json.loads(body)["errors"][0]["title"] == "auth.default_password_remote"
+            status, _, headers = _sign_in(base, headers={"Authorization": f"Bearer {_TOKEN}"})
+            assert status == 200 and "Set-Cookie" in headers
+        finally:
+            shutdown()
+
+    def test_a_host_reset_signs_everyone_out_and_forces_the_change_again(self, daemon):
+        from caffeinated_whale_cli.core import accounts as core_accounts
+
+        jar = _signed_in(daemon)
+        core_accounts.reset_password()
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": jar})[0] == 401
+        assert _sign_in(daemon, password=_PASSWORD)[0] == 401
+        status, body, _ = _sign_in(daemon)
+        assert status == 200 and json.loads(body)["data"]["must_change_password"] is True
+
+    def test_a_job_records_who_started_it(self, guarded, monkeypatch):
+        origins: list = []
+
+        def _create(verb, target, args, **kw):
+            origins.append(kw["origin"])
+            return {"id": "j1", "verb": verb}
+
+        monkeypatch.setattr(serve_cmd.core_jobs, "create_job", _create)
+        jar = _signed_in(guarded)
+        body = json.dumps({"verb": "restart", "target": {"project": "p"}}).encode()
+        for headers in (
+            {"Cookie": jar, "Content-Type": "application/json"},
+            {"Authorization": f"Bearer {_TOKEN}", "Content-Type": "application/json"},
+        ):
+            status, _, _ = _request(
+                guarded + "/api/v1/jobs", data=body, headers=headers, method="POST"
+            )
+            assert status == 202
+        assert [o["account"] for o in origins] == ["admin", "api"]
+
+    def test_no_response_names_the_password_or_a_session_id(self, daemon):
+        _, body, headers = _sign_in(daemon, password="nope")
+        text = body.decode() if isinstance(body, bytes) else body
+        assert "nope" not in text and "admin" not in text
+        _, body, headers = _sign_in(daemon)
+        text = body.decode() if isinstance(body, bytes) else body
+        assert _jar(headers).split("=", 1)[1] not in text
+
+    def test_the_banner_prints_the_page_link_and_never_a_token(self, monkeypatch, capsys):
         monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
         monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
         bound = _stub_server(monkeypatch)
         serve_cmd.serve(port=0, host="127.0.0.1", interval=2.5)
         out = capsys.readouterr().out
-        assert f"http://127.0.0.1:8765/#login={bound[0][5]}" in out
+        assert "http://127.0.0.1:8765/" in out and "#login" not in out
         assert _TOKEN not in out
 
     def test_an_ipv6_loopback_banner_brackets_the_host(self, monkeypatch, capsys):
@@ -800,7 +923,7 @@ class TestOneTimeLoginCode:
         serve_cmd.serve(port=0, host="::1", interval=2.5)
         out = capsys.readouterr().out
         assert "http://[::1]:8765" in out
-        assert f"http://[::1]:8765/#login={bound[0][5]}" in out
+        assert "http://[::1]:8765/" in out
         assert "http://::1:" not in out
 
     @pytest.mark.parametrize(
@@ -813,7 +936,7 @@ class TestOneTimeLoginCode:
             ("mybox.local", "192.168.1.20", "192.168.1.20"),
         ],
     )
-    def test_the_login_link_names_the_bound_address(
+    def test_the_page_link_names_the_bound_address(
         self, monkeypatch, capsys, host, resolves_to, link_host
     ):
         """Only a wildcard bind is reached via the outbound address; any other bind
@@ -825,7 +948,7 @@ class TestOneTimeLoginCode:
         bound = _stub_server(monkeypatch, resolves_to)
         serve_cmd.serve(port=0, host=host, interval=2.5)
         out = capsys.readouterr().out
-        assert f"http://{link_host}:8765/#login={bound[0][5]}" in out
+        assert f"http://{link_host}:8765/" in out
         remote_bind = not serve_cmd.is_loopback(host)
         assert serve_cmd.host_allowed(f"{link_host}:8765", remote_bind=remote_bind)
 
@@ -836,7 +959,7 @@ class TestOneTimeLoginCode:
         serve_cmd.serve(port=0, host="127.0.0.1", interval=2.5)
         out = capsys.readouterr().out
         assert "per-launch token" in out
-        assert re.search(r"#login=" + re.escape(bound[0][5]), out)
+        assert "#login" not in out
         assert bound[0][4] not in out
 
 
@@ -857,3 +980,34 @@ class TestMeta:
         monkeypatch.setattr(serve_cmd, "_running_build", "3.4.0:abcd")
         _status, body, _ = _request(daemon + "/api/v1/meta")
         assert json.loads(body)["build"] == "3.4.0:abcd"
+
+
+class TestDaemonQueries:
+    _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
+
+    @pytest.mark.parametrize("window", ["abc", "0", "-5", "nan"])
+    def test_a_bad_metrics_window_is_a_usage_error(self, guarded, window):
+        status, body, _ = _request(f"{guarded}/api/v1/metrics?window={window}", headers=self._AUTH)
+        assert status == 400
+        assert json.loads(body)["errors"][0]["title"] == "metrics.window_invalid"
+
+    def test_each_download_builds_its_tar_in_its_own_directory(self, guarded, monkeypatch):
+        used = []
+
+        def _export(key, dest_dir):
+            used.append(dest_dir)
+            out = dest_dir / f"{key}.tar"
+            out.write_bytes(key.encode())
+            return out
+
+        monkeypatch.setattr(serve_cmd.core_transfer, "export_tar", _export)
+        bodies = [
+            _request(f"{guarded}/api/v1/backups/download?key=k1", headers=self._AUTH)[1]
+            for _ in range(2)
+        ]
+        assert bodies == [b"k1", b"k1"]
+        assert used[0] != used[1]
+        deadline = time.monotonic() + 2
+        while any(d.exists() for d in used) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not any(d.exists() for d in used)

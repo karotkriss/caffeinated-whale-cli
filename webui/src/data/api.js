@@ -23,6 +23,7 @@ async function request(url, init = {}) {
   const res = await fetch(url, { headers: { Accept: 'application/json' }, ...init })
   const body = await res.json().catch(() => ({}))
   if (res.status === 401) session.signedOut = true
+  if (res.status === 403 && body?.errors?.[0]?.title === 'auth.password_change_required' && session.user) session.user.mustChange = true
   if (!res.ok) throw new ApiError(res.status, body?.errors?.[0])
   return body.data
 }

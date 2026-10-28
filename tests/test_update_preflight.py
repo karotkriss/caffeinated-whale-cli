@@ -870,13 +870,40 @@ def test_an_unsatisfied_frappe_dependency_is_a_notice_against_the_updated_versio
     )
 
     finding = by_code(bench.findings(), "app.frappe_dependency_unsatisfied")
-    assert (finding.severity, finding.app) == (up.NOTICE, "goodapp")
+    # 040 (staging16): a refusal, naming the switch, not a notice bench would only warn on.
+    assert (finding.severity, finding.app) == (up.BLOCKER, "goodapp")
+    assert "switch goodapp to version-" in finding.message
+    assert "--fix-branches" in finding.remedy
     assert "requires frappe >=16.5.0-dev,<17.0.0" in finding.message
     assert "frappe will be at 16.0.0" in finding.message
 
     # bench checks after resetting every app, so frappe's NEW version is the one compared.
     bench.publish("frappe", {"frappe/__init__.py": '__version__ = "16.5.0"\n'}, "version-16")
     assert bench.findings() == []
+
+
+@pytest.mark.parametrize(
+    "erpnext_branch, erpnext_version, spec, expected",
+    [
+        ("version-16", "16.0.0", ">=15.0.0,<16.0.0", ("goodapp", "version-16")),
+        ("version-15", "15.0.0", ">=16.0.0,<17.0.0", ("erpnext", "version-16")),
+    ],
+)
+def test_fix_branches_moves_whichever_side_is_off_the_frappe_line(
+    bench, erpnext_branch, erpnext_version, spec, expected
+):
+    bench.app("erpnext", erpnext_branch, version=erpnext_version)
+    bench.publish(
+        "erpnext",
+        {"pyproject.toml": pyproject("erpnext", version=erpnext_version)},
+        erpnext_branch,
+    )
+    bench.publish("goodapp", {"pyproject.toml": pyproject("goodapp", deps={"erpnext": spec})})
+
+    record = bench.run()
+    facts = record["findings"] + up._content_facts(record)
+
+    assert up.fixable_branches(facts) == [expected]
 
 
 def test_an_app_the_reset_does_not_move_is_checked_as_it_is_on_disk(bench):
