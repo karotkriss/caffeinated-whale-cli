@@ -18,8 +18,11 @@ export function benchRunning(project, bench) {
 }
 let settle = null
 
-export function ensureRunning(project, verb = '', { bench = null, benchLabel = null } = {}) {
-  if (!project || (instance(project)?.container_running && benchRunning(project, bench))) return Promise.resolve(true)
+// `bench` is the bench the page acts on: the start starts that one, so a
+// multi-bench instance never comes back asking which bench. `serving` also asks
+// when the container is up but that bench is not serving (Install apps).
+export function ensureRunning(project, verb = '', { bench = null, benchLabel = null, serving = false } = {}) {
+  if (!project || (instance(project)?.container_running && (!serving || benchRunning(project, bench)))) return Promise.resolve(true)
   return new Promise((resolve) => {
     settle?.(false)
     settle = resolve
@@ -51,8 +54,11 @@ async function startThenContinue() {
   startGate.starting = true
   startGate.error = null
   try {
-    const target = startGate.bench != null ? { project: startGate.project, bench: String(startGate.bench) } : { project: startGate.project }
-    const record = await createJob({ verb: 'start', target, args: {} })
+    // Without a bench, only the containers start: a multi-bench instance would otherwise ask which bench.
+    const spec = startGate.bench != null
+      ? { verb: 'start', target: { project: startGate.project, bench: String(startGate.bench) }, args: {} }
+      : { verb: 'start', target: { project: startGate.project }, args: { containers_only: true } }
+    const record = await createJob(spec)
     trackJob(record.id)
     const final = await waitForJob(record.id)
     if (final?.state !== 'succeeded') {

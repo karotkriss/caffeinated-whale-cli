@@ -19,10 +19,11 @@ function onOpen(open) {
         {{ startGate.verb ? `${startGate.verb} needs ${startGate.benchLabel ? `${startGate.project} and its bench ${startGate.benchLabel}` : startGate.project} running.` : `This needs ${startGate.project} running.` }}
         Start it now? The same question cwcli asks in a terminal; the verb runs once the instance is up.
       </p>
-      <div class="space-y-1.5">
+      <div v-if="startGate.bench != null" class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running</div>
-        <CommandLine :command="`cwcli start ${startGate.project}${startGate.bench != null ? ` --bench ${startGate.bench}` : ''}`" />
+        <CommandLine :command="`cwcli start ${startGate.project} --bench ${startGate.bench}`" />
       </div>
+      <p v-else class="text-sm text-ink-gray-5">Only {{ startGate.project }}'s containers are started; no bench is started.</p>
       <ErrorMessage :message="errorText" />
     </div>
     <template #actions>

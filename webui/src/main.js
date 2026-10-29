@@ -1,5 +1,5 @@
 import { createApp } from 'vue'
-import { boot } from './data/session' // first: strips the #login= code before the router reads the URL
+import { boot } from './data/session'
 import { router } from './router'
 import './style.css'
 import './premium/premium.css'

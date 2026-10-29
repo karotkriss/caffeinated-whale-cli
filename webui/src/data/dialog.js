@@ -46,7 +46,7 @@ export function openAction(id, ctx = {}) {
 export async function runAction(id, ctx, values) {
   const a = ACTIONS[id]
   const { startFirst } = availability(id, instance(ctx.project), null, values)
-  if (startFirst && !(await ensureRunning(ctx.project, a.label))) return null
+  if (startFirst && !(await ensureRunning(ctx.project, a.label, { bench: ctx.bench ?? null, benchLabel: ctx.benchName ?? null }))) return null
   if (a.read) return openSite(ctx)
   const payload = a.request(ctx, values)
   dialogState.running = true
@@ -82,7 +82,17 @@ async function openSite(ctx) {
       toast.warning(`${ctx.site} is not serving`, { description: 'No published port resolves for this bench; nothing was guessed.' })
       return null
     }
-    window.open(probe.url, '_blank', 'noopener')
+    // A browser opens a tab only while the click that asked for it is still live. After
+    // the start prompt's wait it is long gone and the tab would be blocked without a
+    // word, so the tab is offered on a button, whose own click opens it.
+    const open = () => window.open(probe.url, '_blank', 'noopener')
+    if (navigator.userActivation?.isActive === false) {
+      const offer = { duration: Infinity, action: { label: 'Open', onClick: open } }
+      if (probe.reachable) toast.success(`${ctx.site} is ready`, { ...offer, description: probe.url })
+      else toast.warning(`${probe.url} did not answer yet`, { ...offer, description: 'The bench may still be starting.' })
+      return probe
+    }
+    open()
     if (!probe.reachable) toast.warning(`${probe.url} did not answer`, { description: 'Opened anyway; the bench may still be starting.' })
     return probe
   } catch (e) {

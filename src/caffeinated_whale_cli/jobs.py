@@ -57,6 +57,7 @@ from .core import rm_site as core_rm_site
 from .core import scale as core_scale
 from .core import start as core_start
 from .core import stop as core_stop
+from .core import supervision as core_supervision
 from .core import transfer as core_transfer
 from .core import unlock as core_unlock
 from .core import update as core_update
@@ -866,6 +867,8 @@ def _project(target: dict[str, Any]) -> str:
 
 def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
     project = _project(target)
+    if _bench(target) is None:
+        return _restart_serving_benches(project, emit)
     resolved = core_resolvers.resolve_bench(project, _bench(target), None)
     if resolved is None:
         bench_path = core_resolvers.DEFAULT_BENCH_PATH
@@ -885,6 +888,54 @@ def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
         data={"stopped": _plain(stopped.data), "started": _plain(started.data)},
         warnings=[*bench_warnings, *stopped.warnings, *started.warnings],
         choice=started.choice,
+    )
+
+
+def _serving_bench_paths(project: str) -> list[str]:
+    """The benches serving under cwcli's supervisor or honcho / ``bench start``.
+
+    Read before anything is stopped; an unreadable process table raises.
+    """
+    container = core_docker.get_frappe_container(project)
+    if container.status != "running":
+        return []
+    paths = [str(b["path"]) for b in core_resolvers.cached_benches(project) if b.get("path")] or [
+        core_resolvers.DEFAULT_BENCH_PATH
+    ]
+    return [
+        p
+        for p in paths
+        if core_supervision.discover_stack(container, p, required=True).supervisor_up
+        or core_supervision.discover_unsupervised_stack(container, p, required=True).manager_up
+    ]
+
+
+def _restart_serving_benches(project: str, emit: _Recorder) -> Result:
+    """Restart the instance and bring back only the benches that were serving.
+
+    Never asks which bench, and never starts a bench that was not serving: with
+    none serving, only the containers come back.
+    """
+    serving = _serving_bench_paths(project)
+    stopped = core_stop.stop(project, on_event=emit)
+    if stopped.data is not None and stopped.data.db_clean_shutdown is False:
+        return stopped
+    if not serving:
+        warnings = _start_containers_only(project, core_start.resolve_project_containers(project))
+        return Result(
+            status=Status.OK,
+            data={"stopped": _plain(stopped.data), "started": [], "restarted_benches": []},
+            warnings=[*stopped.warnings, *warnings],
+        )
+    started = [core_start.start(project, bench_path=path, on_event=emit) for path in serving]
+    return Result(
+        status=(Status.WARNING if any(r.status is Status.WARNING for r in started) else Status.OK),
+        data={
+            "stopped": _plain(stopped.data),
+            "started": [_plain(r.data) for r in started],
+            "restarted_benches": serving,
+        },
+        warnings=[*stopped.warnings, *(w for r in started for w in r.warnings)],
     )
 
 
@@ -1114,6 +1165,93 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
     return Result(status=result.status, data=outcome, warnings=warnings)
 
 
+def _frappe_stopped(containers: list) -> bool:
+    return any(
+        c.labels.get("com.docker.compose.service") == "frappe" and c.status != "running"
+        for c in containers
+    )
+
+
+def _start_containers_only(project: str, containers: list) -> list[Message]:
+    """Start a project's stopped containers, never a bench, and wait for MariaDB.
+
+    Returns the start's warnings. A cold start returns before MariaDB serves, so
+    the wait runs then; a database that never comes up raises ``PRECONDITION``.
+    """
+    check_start_port_conflicts(project)
+    cold = any(c.status != "running" for c in containers)
+    warnings = core_start.start_stopped_containers(project, containers)
+    frappe = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"), None
+    )
+    if cold and frappe is not None:
+        ready, reason = rm_cmd._wait_for_db_ready(frappe)
+        if not ready:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "start.db_not_ready",
+                f"MariaDB for '{project}' did not become ready: {reason}",
+                hint=f"Check the database with 'cwcli status {project}', then retry.",
+            )
+    return warnings
+
+
+def _stop_again(project: str) -> list[Message]:
+    """Best-effort return to stopped, as ``cwcli rm``'s transient start does."""
+    try:
+        return list(core_stop.stop(project).warnings)
+    except Exception as e:
+        return [
+            Message(
+                "rm_bench.stop_failed",
+                f"Could not stop '{project}' again after the removal did not complete; "
+                f"it may still be running: {e}",
+            )
+        ]
+
+
+def _remove_bench(
+    project: str,
+    bench: str | None,
+    consent: bool,
+    secret_values: dict[str, str],
+    emit: _Recorder,
+) -> Result:
+    """Bring a stopped instance's containers up, never the bench, then remove the bench.
+
+    Starting the bench would make ``remove_bench`` refuse it as running. A removal
+    that does not complete returns a project it started to stopped.
+    """
+    containers = core_start.resolve_project_containers(project)
+    started = _frappe_stopped(containers)
+    try:
+        container_warnings = _start_containers_only(project, containers)
+        result = core_rm_bench.remove_bench(
+            project,
+            bench=bench,
+            auto_start=True,
+            consent=consent,
+            db_root_password=_db_root_password(secret_values),
+            on_event=emit,
+        )
+    except Exception:
+        if started:
+            for warning in _stop_again(project):
+                emit.lifecycle("warning", warning.text)
+        raise
+    stop_warnings = (
+        _stop_again(project)
+        if started and (result.status is Status.NEEDS_CHOICE or not _result_ok(result))
+        else []
+    )
+    return Result(
+        status=result.status,
+        data=result.data,
+        warnings=[*container_warnings, *result.warnings, *stop_warnings],
+        choice=result.choice,
+    )
+
+
 def _run_init(
     target: dict[str, Any], args: dict[str, Any], secret_values: dict[str, str], emit: _Recorder
 ) -> Result:
@@ -1297,6 +1435,11 @@ def _dispatch(
     bench = _bench(target)
     site = _site(target)
     if verb == "start":
+        if args.get("containers_only") is True:
+            containers = core_start.resolve_project_containers(project)
+            started = _frappe_stopped(containers)
+            warnings = _start_containers_only(project, containers)
+            return Result(status=Status.OK, data={"containers_started": started}, warnings=warnings)
         check_start_port_conflicts(project)
         return core_start.start(project, bench=bench, on_event=emit)
     if verb == "stop":
@@ -1458,13 +1601,7 @@ def _dispatch(
             on_event=emit,
         )
     if verb == "rm-bench":
-        return core_rm_bench.remove_bench(
-            project,
-            bench=bench,
-            consent=consent,
-            db_root_password=_db_root_password(secret_values),
-            on_event=emit,
-        )
+        return _remove_bench(project, bench, consent, secret_values, emit)
     if verb == "init":
         return _run_init(target, args, secret_values, emit)
     if verb == "apps-install":
