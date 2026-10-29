@@ -830,6 +830,7 @@ class TestInitInstance:
                 "up",
                 "-d",
                 "--no-deps",
+                "--no-recreate",
                 "mariadb",
             ]
         ]

@@ -912,7 +912,7 @@ def init_instance(
                 )
             )
             _run_host_command(
-                compose_base + ["up", "-d", "--no-deps", *missing_services],
+                compose_base + ["up", "-d", "--no-deps", "--no-recreate", *missing_services],
                 cwd=str(conf_dir),
                 phase="up",
                 emit=emit,
