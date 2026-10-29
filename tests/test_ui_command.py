@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import stat
+import subprocess
 import sys
+import time
+import urllib.request
 
 import pytest
 from typer.testing import CliRunner
@@ -381,56 +385,81 @@ class TestForeground:
         }
 
 
-_SURVIVOR = """
+_DAEMON = """
 import sys
 from caffeinated_whale_cli.commands import serve
-from caffeinated_whale_cli.core import fleet
+from caffeinated_whale_cli.core import app_catalog, fleet
 from caffeinated_whale_cli.core.envelope import Result, Status
 fleet.list_instances = lambda: Result(status=Status.OK, data=[])
 fleet.event_loop = fleet.probe_loop = lambda *a, **kw: None
 serve.KEEPALIVE_S = 0.1
+{network}
 from caffeinated_whale_cli.main import cli
 sys.argv = ["cwcli", "ui", "--foreground", "--no-browser", "--port", sys.argv[1]]
 cli()
 """
+# A fresh home starts the app-catalog scan: gh, GitLab, the marketplace and its logos.
+_NO_NETWORK = "app_catalog.CatalogStore.refresh = lambda self, publish=None: False"
+# The same scan offline: a marketplace index whose every logo fetch hangs.
+_LOGO_FETCHES_HANG = """
+import json, pathlib, time
+fetching = pathlib.Path(sys.argv[2])  # before cli() replaces argv
+app_catalog.credential = lambda host: None
+app_catalog.gitlab_hosts = lambda: []
+app_catalog.fetch_host_icon = lambda host: None
+def _fetch(url):
+    if url == app_catalog._MARKETPLACE_URL:
+        return json.dumps([
+            {"name": f"app{i}", "repo": f"https://github.com/acme/app{i}",
+             "logo_url": f"https://logo.invalid/{i}.png"}
+            for i in range(30)
+        ]).encode()
+    fetching.touch()
+    time.sleep(60)
+app_catalog._fetch_public = _fetch
+"""
+_TOKEN = "daemon-token"
+
+
+def _meta(port: int) -> int | None:
+    try:
+        return urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/meta", timeout=1).status
+    except OSError:
+        return None
+
+
+def _start_daemon(network: str, *args: str) -> tuple[subprocess.Popen, int]:
+    """The real daemon through ``cli()``, the entry the detached spawn uses, once it serves."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _DAEMON.format(network=network), str(port), *args],
+        env={**os.environ, "CWCLI_SERVE_TOKEN": _TOKEN},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 8
+    while _meta(port) != 200:
+        if proc.poll() is not None or time.monotonic() > deadline:
+            proc.kill()
+            proc.wait()
+            pytest.fail("daemon never came up")
+        time.sleep(0.05)
+    return proc, port
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGPIPE is POSIX-only")
 def test_a_browser_dropping_its_stream_does_not_kill_the_foreground_daemon(home):
     """``main.cli`` resets SIGPIPE to SIG_DFL for ``cwcli ls | head``; in the
     long-lived daemon that let a closed tab's next keepalive write kill the whole
-    process. Driven through the real ``cli()`` entry the detached spawn uses."""
-    import socket
-    import subprocess
-    import time
-    import urllib.request
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    env = {**os.environ, "CWCLI_SERVE_TOKEN": "sigpipe-token"}
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _SURVIVOR, str(port)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    def _meta():
-        try:
-            return urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/meta", timeout=1).status
-        except OSError:
-            return None
-
+    process."""
+    proc, port = _start_daemon(_NO_NETWORK)
     try:
-        deadline = time.monotonic() + 8
-        while _meta() != 200:
-            assert proc.poll() is None and time.monotonic() < deadline, "daemon never came up"
-            time.sleep(0.05)
         client = socket.create_connection(("127.0.0.1", port))
         client.sendall(
             f"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-            "Authorization: Bearer sigpipe-token\r\n\r\n".encode()
+            f"Authorization: Bearer {_TOKEN}\r\n\r\n".encode()
         )
         client.settimeout(2)
         seen = b""
@@ -447,10 +476,29 @@ def test_a_browser_dropping_its_stream_does_not_kill_the_foreground_daemon(home)
         time.sleep(1.0)  # ten keepalives: the second write after the RST raised SIGPIPE
 
         assert proc.poll() is None, f"daemon died (returncode {proc.returncode})"
-        assert _meta() == 200
+        assert _meta(port) == 200
     finally:
         proc.terminate()
         proc.wait(5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="terminate() is a hard kill on Windows")
+def test_a_catalog_scan_in_flight_does_not_hold_the_stopping_daemon_open(home, tmp_path):
+    """The startup catalog scan fetches every marketplace logo on a worker pool. A
+    ``concurrent.futures`` pool is joined at interpreter exit only after its workers
+    drain the whole queue, so a SIGTERM mid-scan outlived ``cwcli ui --stop``'s wait."""
+    fetching = tmp_path / "fetching"
+    proc, _ = _start_daemon(_LOGO_FETCHES_HANG, str(fetching))
+    try:
+        deadline = time.monotonic() + 8
+        while not fetching.exists():
+            assert time.monotonic() < deadline, "the scan never reached its logo fetches"
+            time.sleep(0.05)
+        proc.terminate()
+        proc.wait(ui_cmd._STOP_TIMEOUT_S)
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_a_frozen_exe_reenters_the_job_worker_through_the_hidden_job_flag(home, monkeypatch):
