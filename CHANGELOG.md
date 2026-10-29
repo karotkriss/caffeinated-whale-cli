@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-29
+
+### Added
+
+- **`cwcli ui` - a local web UI over your instances** - starts (or reuses) a daemon bound to `127.0.0.1` and opens the browser on it; `--port`, `--no-browser`, `--foreground` and `--stop` control it. The UI ships prebuilt inside the package, so no Node is needed.
+  - Every instance, bench, site and app in one place, with live process health, a resumable log pane with search and download, the `doctor` health check, a Ctrl+K command palette over the cache, notifications, and the equivalent `cwcli` command shown beside each action.
+  - Lifecycle actions and long verbs (`init`, `apps install`/`update`/`checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, `self-update`, new site, new bench) run as detached jobs with a durable event log, so they continue when the tab closes. Interrupt runs the command's own cleanup, a job whose process vanished reads as `unknown` instead of failed, and a failed job has a Retry button that never carries a destructive confirmation over.
+  - The destructive verbs (`rm`, `rm-site`, `rm-bench`, `apps checkout --reset`, a forced `frappe` update) each sit behind a typed confirmation of the exact name they destroy, and Settings writes (cache, search paths, auto-inspect, the credential bridge with a Start/Restart control, tips, agent hooks) go through the same code as `cwcli config`.
+  - An apps catalog of the Frappe apps on your GitHub, GitLab.com and self-hosted GitLab accounts, with logos, install state per bench, and install actions.
+  - Sign-in with an administrator account (`admin` / `admin`, with a forced change on first sign-in), server-side sessions, lockout after repeated failures, and Admin, Operator and Viewer roles. `cwcli admin reset-password` recovers the account from the host.
+  - Settings > Integrations: LDAP / Active Directory sign-in (directory users get the role their groups map to, re-checked at every sign-in) and a machine-wide S3 backup target, each turned on only after its connection test passes, with secrets encrypted at rest.
+  - Animated gradient themes on the sign-in page, the Instances hero and the sidebar, with an Appearance setting for the theme, light/dark/system, and turning the motion off; reduced-motion is honoured.
+  - The daemon refuses any request whose `Host` is not this machine, sends no CORS headers, and serves the page under a strict Content-Security-Policy.
+- **`cwcli backups` - a verified backup store outside every instance** - sets live under `~/.cwcli/backups/<project>/<site>/<id>/` and survive `cwcli rm`.
+  - `capture`, `verify`, `list`, `delete`, `restore` (into the same site, a new one, another bench or another instance), `transfer` (clone or move sites), `send`/`receive` over sendme, `download`/`upload` as a plain tar, and `drill` (restore into a throwaway site and check that it answers).
+  - Retention with `prune` (dry-run first) and `settings`, an optional daily backup, and encrypted off-site copies through `backups s3 configure|list|copy|fetch|prune` and `backups key export|import`.
+- **Community integrations** - `cwcli integrations list|add|update|remove` (and Settings > Integrations in the web UI) adds an integration from a GitHub, GitLab.com or self-hosted GitLab repository URL. cwcli reads the repository's declaration before running anything, shows the exact commit for review, installs only that commit into its own directory, starts it off, and audits every change. An integration can provide sign-in or the backup target.
+- **`cwcli schedule`** - puts any schedulable job (backups, prune, off-site copy, restore drill, updates, migrate, start/stop/restart, build, ...) on a daily, weekly, cron or one-off timetable, with fire-time guards (maintenance window, quiet hours, stopped instance, free disk and memory, one job per instance). Removals can never be scheduled, and an update or migrate needs `--allow-unattended`. `cwcli schedule daemon --install-service` keeps schedules firing on a shared install with no UI open; `cwcli axi schedule` is the agent spelling.
+- **`cwcli new-site`, `cwcli new-bench` and `cwcli dev-mode`** - add a site to an existing bench (with apps, `--default` and `--dev-mode`), add a bench to an existing instance, and turn developer mode on or off for a site. `cwcli axi new-site` and `cwcli axi new-bench` are the agent spellings.
+- **`cwcli db-access check|repair`** - finds sites whose database user is tied to an old container address (so the site answers a bare 500 after a container change) and renames the user to `'<user>'@'%'`; `start`, `restart` and the core update now report "database login refused for site X" instead.
+- **A preflight for `apps update <project> frappe`** - before the core update changes anything, cwcli checks in seconds what would otherwise fail late: a branch the remote lacks, a dead remote, a detached HEAD, a held migrate lock, a site database it cannot reach, new code needing a newer Python or Node, a Frappe major upgrade, or an app whose declared frappe-dependencies do not fit the bench. Any blocker refuses with nothing changed, exits 1, and names its cwcli remedy. `--no-preflight` skips the checks, and `--fix-branches` switches a mismatched app to the matching `version-N` branch first.
+- **A data-loss guard for `apps update <project> frappe`** - the update refuses while the app holds uncommitted changes or commits that exist on no remote (or work it cannot check), on every surface and even under `--no-preflight`; `--force` accepts the loss. The deprecated `cwcli update` gains `--force` for the same refusal.
+
+### Changed
+
+- **A core update resets only the app you name** - `apps update <project> frappe` now fetches and hard-resets the frappe app alone to its remote branch, clears every site's stale locks first, reinstalls the bench requirements, and migrates each site under the usual per-site maintenance mode, instead of running bench's bench-wide `bench update --reset`, which hard-reset every app on the bench and left the whole bench in maintenance mode when it failed.
+- **`rm`, `rm-site` and `rm-bench` move their verified backups into the backup store** as `before-removal` sets, so they outlive the instance; each notice names where the backup actually is.
+- **Site database users are created and restored as `'<user>'@'%'`**, so a site keeps working when its container gets a new address.
+- **`cwcli status` reports bench-wide maintenance mode and a paused scheduler** set in `common_site_config.json`, naming the bench and the command that clears them.
+
+### Fixed
+
+- **`rm-site` and `rm-bench` can no longer report success after losing a database** - both now take the same verified backup `cwcli rm` takes (dump and file archives copied to the host and checked) before `bench drop-site --no-backup`, and a failed backup drops nothing. Previously they relied on `bench drop-site --force`, which drops the database even when its own backup fails.
+- **`cwcli init` applies the database root password you give it to MariaDB** - a non-default password used to reach only `bench new-site` while MariaDB kept the template's default, so site creation failed with MySQL error 1045. The password is now stored owner-only and handed to MariaDB as a compose secret, and `rm-site`, `rm-bench`, `restore` and a re-run `init` reuse it. Failed init and drop steps now name the plain cause (rejected password, unreachable database, git authentication, disk full).
+- **Re-running `cwcli init` against a stopped instance starts its containers as they are** - it used to pull images and recreate the frappe container on a moved tag, which broke the bench's Python environment. A re-run that would change the instance's compose settings is refused with the changes named.
+- **`cwcli start` recreates a missing compose network** (for example after a WSL or Docker crash) instead of failing with a raw Docker 404; a missing network the project does not own is refused with the exact remedy.
+- **`restore --latest` finds backups of sites with hyphens in their names.**
+- **`axi run-tests` reports a failed Frappe test run as failed** - Frappe v14/v15 `bench run-tests` exits 0 on failing tests, and when its `allow_tests` guard refuses to run anything.
+- **Image pulls that fail in Docker's credential helper are retried**, and a missing or broken helper is named instead of a bare compose error.
+- **Background daemons start as fresh processes, not forks** - the credential bridge and auto-inspect no longer keep the calling command's arguments (looking like a hung `axi start`) or hold open its file descriptors and locks.
+- **Turning on start-at-boot no longer stops the running daemon** - the systemd units drop the `ExecStop` that killed it, an installed unit is repaired in place, and a daemon that dies at startup is reported with its exit code instead of reading as started.
+- **`cwcli doctor` judges `gh`/`glab` sign-in per allowed credential-bridge host**, and offers to start a stopped daemon.
+- **The credential bridge refuses clearly when the instance workspace is not writable** (an instance created by another user before shared mode), naming the path and the group-access remedy instead of a bare permission error.
+- **Importing cwcli no longer creates the cache directory** - read-only commands such as `--version` touch nothing; the directory is created on first cache use.
+
 ## [3.4.0] - 2026-09-30
 
 ### Added
