@@ -38,6 +38,17 @@ COMPOSE_TEMPLATE = """services:
       - "9000-9005:9000-9005"
 """
 
+# COMPOSE_TEMPLATE as an earlier `init --port 18000` left it: an existing
+# instance re-initialized with the same options finds nothing to change.
+COMPOSE_CUSTOMIZED_18000 = """services:
+  frappe:
+    image: docker.io/frappe/bench:v5.25.0
+    working_dir: /workspace
+    ports:
+      - "18000-18005:8000-8005"
+      - "19000-19005:9000-9005"
+"""
+
 # The real upstream shape (frappe_docker devcontainer-example): the bench
 # workspace is a bind mount and working_dir sits under it. Used for the
 # workspace-mount rewrite tests, which need the exact lines init_instance
@@ -844,6 +855,7 @@ class TestInitInstance:
         compose to come back up - skipping there would leave frappe down.
         """
         s = instance_setup(monkeypatch, tmp_path)
+        s.compose_path.write_text(COMPOSE_CUSTOMIZED_18000)
         sibling = SimpleNamespace(
             status="running", labels={"com.docker.compose.service": "mariadb"}
         )
@@ -871,6 +883,7 @@ class TestInitInstance:
             for service in core_init._EXPECTED_COMPOSE_SERVICES
         ]
         s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        s.compose_path.write_text(COMPOSE_CUSTOMIZED_18000)
 
         result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
 
@@ -890,6 +903,34 @@ class TestInitInstance:
         ]
         notices = [e for e in events if isinstance(e, core_init.InitNotice)]
         assert any(n.code == "instance.existing" for n in notices)
+
+    def test_a_stopped_instance_refuses_a_changed_port_and_keeps_its_compose(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A retry with a new --port cannot reach containers started with
+        `--no-recreate`, so init refuses instead of rewriting the compose file
+        to claim ports the live containers do not publish."""
+        stopped = [
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        original = COMPOSE_TEMPLATE.replace(
+            "docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.25.0"
+        )
+        original = original.replace(
+            "working_dir: /workspace/development", "working_dir: /workspace"
+        )
+        s.compose_path.write_text(original)
+
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=19000)
+
+        assert exc.value.kind is ErrorKind.CONFLICT
+        assert exc.value.code == "instance.settings_changed"
+        assert "port 8000 -> 19000" in str(exc.value)
+        assert s.compose_path.read_bytes() == original.encode()
+        assert s.host_calls == []
 
     def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
         """The skip is scoped to a RUNNING project. A stopped one holds no ports, so
