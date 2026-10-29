@@ -146,7 +146,7 @@ export const ACTIONS = {
     fields: [DB_ROOT_FIELD],
     cli: (c) => `cwcli rm-bench ${q(c.project)}${benchFlag(c)}`,
     says: (c) =>
-      `Backs up every site on bench ${c.benchName} to the host archive, drops each one (deleting its database and files), then deletes the bench directory. Nothing is dropped unless every backup succeeded. Other benches keep running.`,
+      `Backs up every site on bench ${c.benchName} to the host archive, drops each one (deleting its database and files), then deletes the bench directory. Nothing is dropped unless every backup succeeded. Other benches keep running. If ${c.project} is stopped, its containers are started first (no bench is started) and stopped again if the removal does not complete.`,
     request: (c, v) => ({ verb: 'rm-bench', target: { project: c.project, bench: c.bench }, args: {}, consent: true, ...secrets(v) }),
     done: (c) => `bench ${c.benchName} removed`,
   },
