@@ -5,7 +5,7 @@
 // and three.js would add ~160 kB gzip for it. Draws at half resolution (the
 // field is smooth; the browser upscales it) and at most 30 fps; stops drawing
 // when `animate` is false (effects off, reduced motion, hidden tab, scrolled out
-// of view) after painting one static frame. No WebGL at all falls back to the
+// of view) after painting one static frame. No WebGL, or a shader that fails to compile or link, falls back to the
 // CSS radial stand-in from themes.js.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { cssGradient } from './themes'
@@ -79,10 +79,17 @@ function compile(type, src) {
 function init() {
   gl = canvas.value.getContext('webgl', { antialias: false, depth: false, stencil: false, alpha: false, powerPreference: 'low-power' })
   if (!gl) { fallback.value = true; return false }
-  program = gl.createProgram()
-  gl.attachShader(program, compile(gl.VERTEX_SHADER, VERT))
-  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FRAG))
-  gl.linkProgram(program)
+  try {
+    program = gl.createProgram()
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, VERT))
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FRAG))
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program))
+  } catch {
+    gl = null
+    fallback.value = true
+    return false
+  }
   gl.useProgram(program)
   const buf = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, buf)
