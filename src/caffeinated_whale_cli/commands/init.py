@@ -618,6 +618,10 @@ def init(
     already-serving bench keeps running throughout. Re-running init against a
     stopped instance starts its existing containers as they are, without pulling
     images or recreating them, so its benches keep their Python environments.
+    If the re-run would change that instance's compose settings, such as a
+    different --port, init refuses with exit 1 and names each change; remove
+    the instance with `cwcli rm` (which backs it up) and run init again, or
+    rerun init without the changed options.
 
     If project_name is not provided, prompts interactively.
 
