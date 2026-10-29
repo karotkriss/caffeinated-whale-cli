@@ -5,9 +5,9 @@ import { reactive } from 'vue'
 
 import { can } from './session'
 
-export const SECTIONS = ['account', 'appearance', 'paths', 'cache', 'daemons', 'sources', 'agents', 'integrations', 'health', 'about']
+export const SECTIONS = ['account', 'appearance', 'paths', 'cache', 'daemons', 'sources', 'agents', 'integrations', 'hosts', 'health', 'about']
 // What only an Admin may change; everyone else sees their account, health and about.
-export const ADMIN_SECTIONS = new Set(['paths', 'cache', 'daemons', 'sources', 'agents', 'integrations'])
+export const ADMIN_SECTIONS = new Set(['paths', 'cache', 'daemons', 'sources', 'agents', 'integrations', 'hosts'])
 export const settingsDialog = reactive({ open: false, tab: 'paths' })
 
 export function openSettings(section = null) {

@@ -1,15 +1,19 @@
 import { computed, reactive } from 'vue'
-import { getJson, postJson } from './api'
+import { apiBase, getJson, postJson } from './api'
 
 // The backup store outside the instances (core.backup_store): one snapshot of every set
 // (newest first), the last good set per site with its age, the disk budget and each
 // instance's settings. Refreshed by the `backups` SSE frame after any job that changes it.
-export const backups = reactive({ data: null, loading: false, error: null })
+// A remote host's store is read through the hub's forward and kept under `remote[host]`;
+// the Backups page itself stays this machine's.
+export const backups = reactive({ data: null, remote: {}, loading: false, error: null })
 
-export async function loadBackups({ project = null } = {}) {
+export async function loadBackups({ project = null, host = null } = {}) {
   backups.loading = true
   try {
-    backups.data = await getJson(`/api/v1/backups${project ? `?project=${encodeURIComponent(project)}` : ''}`)
+    const data = await getJson(`${apiBase(host)}/backups${project ? `?project=${encodeURIComponent(project)}` : ''}`)
+    if (host) backups.remote[host] = data
+    else backups.data = data
     backups.error = null
   } catch (e) {
     backups.error = e
@@ -17,9 +21,11 @@ export async function loadBackups({ project = null } = {}) {
     backups.loading = false
   }
 }
-export function backupsLanded(frame) {
-  backups.data = frame
+export function backupsLanded(frame, host = null) {
+  if (host) backups.remote[host] = frame
+  else backups.data = frame
 }
+const dataFor = (host) => (host ? backups.remote[host] : backups.data)
 export const backupSettingsDialog = reactive({ open: false, project: null })
 export function openBackupSettings(project = null) { backupSettingsDialog.project = project; backupSettingsDialog.open = true }
 export async function loadRetention(project) {
@@ -29,8 +35,8 @@ export async function loadOffsite(project) {
   return getJson(`/api/v1/backups/offsite?project=${encodeURIComponent(project)}`)
 }
 // Download rides a plain fetch (the session cookie authenticates) and saves the tar.
-export async function downloadSet(set) {
-  const res = await fetch(`/api/v1/backups/download?key=${encodeURIComponent(set.key)}`)
+export async function downloadSet(set, host = null) {
+  const res = await fetch(`${apiBase(host)}/backups/download?key=${encodeURIComponent(set.key)}`)
   if (!res.ok) throw new Error(`download failed (HTTP ${res.status})`)
   const blob = await res.blob()
   const a = document.createElement('a')
@@ -51,7 +57,7 @@ export async function uploadSet(file, { project = null, site = null } = {}) {
   await loadBackups()
   return body.data
 }
-export function lastDrill(project, site) { return backups.data?.drills?.[`${project}/${site}`] || null }
+export function lastDrill(project, site, host = null) { return dataFor(host)?.drills?.[`${project}/${site}`] || null }
 export async function saveBackupSettings(project, values) {
   const data = await postJson('/api/v1/backups/settings', { project, values })
   if (backups.data?.settings) backups.data.settings[project] = data.settings
@@ -59,21 +65,21 @@ export async function saveBackupSettings(project, values) {
 }
 
 export const allSets = computed(() => backups.data?.sets || [])
-export function setsFor(project, site = null) {
-  return allSets.value.filter((s) => s.project === project && (!site || s.site === site))
+export function setsFor(project, site = null, host = null) {
+  return (dataFor(host)?.sets || []).filter((s) => s.project === project && (!site || s.site === site))
 }
-export function lastGood(project, site) {
-  return backups.data?.last_good?.[`${project}/${site}`] || null
+export function lastGood(project, site, host = null) {
+  return dataFor(host)?.last_good?.[`${project}/${site}`] || null
 }
-export function staleAfterDays(project) {
-  return backups.data?.settings?.[project]?.stale_after_days ?? 7
+export function staleAfterDays(project, host = null) {
+  return dataFor(host)?.settings?.[project]?.stale_after_days ?? 7
 }
 // amber once the last good set is older than the instance's stale_after_days; red with none.
-export function freshness(project, site) {
-  const lg = lastGood(project, site)
+export function freshness(project, site, host = null) {
+  const lg = lastGood(project, site, host)
   if (!lg) return { tone: 'red', label: 'no good backup', ageDays: null }
   const days = lg.age_days == null ? null : Math.floor(lg.age_days)
-  const stale = days != null && days > staleAfterDays(project)
+  const stale = days != null && days > staleAfterDays(project, host)
   return { tone: stale ? 'amber' : 'green', label: days == null ? 'backed up' : days === 0 ? 'backed up today' : `last good ${days}d ago`, ageDays: days, key: lg.key }
 }
 // Captain note 52: freshness is a dot and plain text, never a pill.

@@ -5,7 +5,9 @@ import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeade
 import { openSchedule, scheduleFromJob } from '../data/schedule-dialog'
 import { VERBS as SCHEDULE_VERBS } from '../data/schedules'
 const SCHEDULABLE = new Set(SCHEDULE_VERBS.map((v) => v.value))
-import { ACTIVE_STATES, continueJob, createJob, detachJob, elapsed, interruptJob, jobAccount, jobLabel, jobTarget, jobs, loadJob, retryJob } from '../data/jobs'
+import { ACTIVE_STATES, continueJob, createJob, detachJob, elapsed, interruptJob, jobAccount, jobLabel, jobPath, jobRecord, jobTarget, jobs, loadJob, retryJob } from '../data/jobs'
+import { hostName } from '../data/hosts'
+import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { jobDialog, openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
@@ -19,10 +21,12 @@ import { feed, openLine } from '../data/follow'
 const route = useRoute()
 const router = useRouter()
 const id = String(route.params.id)
+// A job on a remote host: read and controlled through the hub's forward.
+const host = route.params.host || null
 const loading = ref(false)
 const view = ref('steps')
 const actionError = ref(null)
-const record = computed(() => jobs.records[id])
+const record = computed(() => jobRecord(id, host))
 // Captain decision 5: a core update's safety sets, with 'Roll back to before this'.
 const safetyKeys = computed(() => (record.value?.events || []).filter((e) => e.type === 'safety_backup_done' || e.type === 'backup_first_done').flatMap((e) => e.data?.sets || []))
 const safetySets = computed(() => safetyKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
@@ -57,8 +61,8 @@ async function repairDbAccess() {
   repairing.value = true
   try {
     const sites = (dbRefused.value?.detail?.sites || []).map((s) => s.site)
-    const next = await createJob({ verb: 'repair-db-access', target: { project: record.value.target.project, bench: record.value.target.bench }, args: { sites } })
-    router.push(`/jobs/${next.id}`)
+    const next = await createJob({ verb: 'repair-db-access', target: { project: record.value.target.project, bench: record.value.target.bench }, args: { sites } }, host)
+    router.push(jobPath(next))
   } catch (e) { actionError.value = e } finally { repairing.value = false }
 }
 const copied = ref(false)
@@ -66,8 +70,9 @@ async function copyTicket() { try { await navigator.clipboard.writeText(ticket.v
 watch(safetyKeys, (keys) => { if (keys.length && !backups.data) loadBackups() }, { immediate: true })
 
 const active = computed(() => ACTIVE_STATES.has(record.value?.state))
-// Steering 034: any schedulable verb's page offers the same job on a timetable.
-const schedulable = computed(() => !!record.value && SCHEDULABLE.has(record.value.verb))
+// Steering 034: any schedulable verb's page offers the same job on a timetable (this
+// machine's schedules; a remote host's are its own).
+const schedulable = computed(() => !host && !!record.value && SCHEDULABLE.has(record.value.verb))
 const preflight = computed(() => record.value?.events?.find((event) => event.type === 'update_preflight')?.data)
 // A dependency mismatch the preflight can fix: the same job again with fix_branches set.
 const fixable = computed(() => (preflight.value?.findings || []).filter((f) => f.code === 'app.frappe_dependency_unsatisfied'))
@@ -76,8 +81,8 @@ async function switchAndRetry() {
   switching.value = true
   try {
     const r = record.value
-    const next = await createJob({ verb: r.verb, target: r.target, args: { ...(r.args || {}), fix_branches: true }, consent: !!r.consent })
-    router.push(`/jobs/${next.id}`)
+    const next = await createJob({ verb: r.verb, target: r.target, args: { ...(r.args || {}), fix_branches: true }, consent: !!r.consent }, host)
+    router.push(jobPath(next))
   } catch (e) { actionError.value = e } finally { switching.value = false }
 }
 // db.login_refused has its own alert with the repair button above; do not list it twice.
@@ -152,7 +157,7 @@ const lastLine = (item) => item.line === item.block.rows - 1
 const TAIL = 400
 async function refresh(after = 0, limit = null) {
   loading.value = true
-  try { await loadJob(id, after, limit) } finally { loading.value = false }
+  try { await loadJob(id, after, limit, host) } finally { loading.value = false }
 }
 async function loadAll() {
   seen = 0
@@ -162,7 +167,7 @@ async function loadAll() {
 }
 
 onMounted(() => {
-  setFocus(record.value?.target?.project || null)
+  setFocus(host ? null : record.value?.target?.project || null)
   refresh(0, TAIL)
 })
 watch(() => record.value?.event_count, (count, previous) => {
@@ -171,13 +176,13 @@ watch(() => record.value?.event_count, (count, previous) => {
 
 async function interrupt() {
   actionError.value = null
-  try { await interruptJob(id) } catch (error) { actionError.value = error }
+  try { await interruptJob(id, host) } catch (error) { actionError.value = error }
 }
 
 async function detach() {
   actionError.value = null
   try {
-    await detachJob(id)
+    await detachJob(id, host)
     await router.push('/jobs')
   } catch (error) { actionError.value = error }
 }
@@ -191,11 +196,11 @@ async function retry() {
   actionError.value = null
   retrying.value = true
   try {
-    const next = await retryJob(id)
-    await router.push(`/jobs/${next.id}`)
+    const next = await retryJob(id, host)
+    await router.push(jobPath(next))
   } catch (error) {
     if (error.code === 'job.retry_secrets_missing' && job.verb === 'init') {
-      openJob('init', { ...job.target, args: job.args })
+      openJob('init', { ...job.target, args: job.args, host })
       jobDialog.step = 2
     } else actionError.value = error
   } finally { retrying.value = false }
@@ -215,10 +220,10 @@ async function continueChoice(value) {
   // An answered choice continues on the daemon, which supplies the passwords it
   // still holds for this job; the page never sees them.
   let spec = { verb: job.verb, target: job.target, args: job.args, consent: job.consent }
-  let start = (s) => continueJob(id, s)
+  let start = (s) => continueJob(id, s, host)
   if (job.verb === 'init') {
     if (param !== 'reuse_bench' && param !== 'auto_start') {
-      openJob('init', { ...job.target, args: job.args })
+      openJob('init', { ...job.target, args: job.args, host })
       return
     }
     spec.args = { ...job.args, [param]: true }
@@ -230,19 +235,19 @@ async function continueChoice(value) {
   else if (param === 'bench') spec.target = { ...job.target, bench: String(value) }
   else if (param === 'auto_start') {
     spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
-    start = createJob
+    start = (s) => createJob(s, host)
   }
   else {
-    openJob(job.verb, { ...job.target, args: job.args })
+    openJob(job.verb, { ...job.target, args: job.args, host })
     return
   }
   actionError.value = null
   try {
     const next = await start(spec)
-    await router.push(`/jobs/${next.id}`)
+    await router.push(jobPath(next))
   } catch (error) {
     if (error.code === 'job.retry_secrets_missing' && job.verb === 'init') {
-      openJob('init', { ...job.target, args: spec.args })
+      openJob('init', { ...job.target, args: spec.args, host })
       jobDialog.step = 2
     } else actionError.value = error
   }
@@ -251,8 +256,9 @@ async function continueChoice(value) {
 
 <template>
   <PageHeader class="sticky top-0">
-    <Breadcrumbs :items="[{ label: 'Jobs', route: '/jobs' }, { label: record ? jobLabel(record) : id, route: route.path }]" />
+    <Breadcrumbs :items="[{ label: 'Jobs', route: '/jobs' }, ...(host ? [{ label: hostName(host), route: '/jobs' }] : []), { label: record ? jobLabel(record) : id, route: route.path }]" />
     <div v-if="record" class="flex items-center gap-2">
+      <RemoteHostBadge :host="host" size="md" />
       <JobState :state="record.state" size="md" />
       <Button v-if="schedulable" icon-left="lucide-calendar-clock" label="Schedule this…" @click="openSchedule(scheduleFromJob(record))" />
       <Button v-if="active" icon-left="lucide-panel-right-close" label="Detach" @click="detach" />
@@ -270,6 +276,7 @@ async function continueChoice(value) {
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Elapsed</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ elapsed(record) }}</div></div>
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Events</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ record.event_count }}</div></div>
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Started by</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ jobAccount(record) }}</div></div>
+        <div v-if="host" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Machine</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ hostName(host) }}</div></div>
       </div>
 
       <div v-if="progress" class="rounded-6 border border-outline-gray-1 bg-surface-elevation-1 px-4 py-3">
@@ -279,22 +286,22 @@ async function continueChoice(value) {
       <Alert v-if="ticket" class="mb-3" :theme="active ? 'blue' : 'gray'" :title="active ? 'Serving over sendme; paste this ticket on the other machine' : 'This ticket is no longer served'" description="There: Backups › Receive…, or cwcli backups receive <ticket>. Interrupt this job when the transfer is done.">
         <template #actions><span class="flex flex-wrap items-center gap-2"><code class="max-w-full break-all rounded-4 bg-surface-gray-1 px-2 py-1 font-mono text-xs text-ink-gray-8">{{ ticket }}</code><Button size="sm" variant="subtle" :icon-left="copied ? 'lucide-check' : 'lucide-copy'" :label="copied ? 'Copied' : 'Copy'" @click="copyTicket" /></span></template>
       </Alert>
-      <Alert v-if="receivedKeys.length" class="mb-3" theme="blue" :title="`${receivedKeys.length} ${receivedKeys.length === 1 ? 'set was' : 'sets were'} filed into the store`" description="Restore each one into a site here.">
+      <Alert v-if="!host && receivedKeys.length" class="mb-3" theme="blue" :title="`${receivedKeys.length} ${receivedKeys.length === 1 ? 'set was' : 'sets were'} filed into the store`" description="Restore each one into a site here.">
         <template #actions><span class="flex flex-wrap gap-2"><Button v-for="s in receivedSets" :key="s.key" size="sm" variant="subtle" icon-left="lucide-rotate-ccw" :label="`Restore ${s.site}…`" @click="openRestoreWizard(s)" /><span v-if="!receivedSets.length" class="text-xs text-ink-gray-5">loading the sets…</span></span></template>
       </Alert>
       <Alert v-if="dbRefused" class="mb-3" theme="red" :title="`Database login refused for ${(dbRefused.detail?.sites || []).map((s) => s.site).join(', ') || 'a site'}`" :description="dbRefused.text">
         <template #actions><Button size="sm" variant="solid" theme="red" icon-left="lucide-wrench" label="Repair database access" :loading="repairing" @click="repairDbAccess" /></template>
       </Alert>
-      <Alert v-if="safetyKeys.length" class="mb-3" theme="blue" :title="`${safetyKeys.length} safety ${safetyKeys.length === 1 ? 'backup was' : 'backups were'} taken before this`" description="Each one restores its site to the state before this job ran.">
+      <Alert v-if="!host && safetyKeys.length" class="mb-3" theme="blue" :title="`${safetyKeys.length} safety ${safetyKeys.length === 1 ? 'backup was' : 'backups were'} taken before this`" description="Each one restores its site to the state before this job ran.">
         <template #actions><span class="flex flex-wrap gap-2"><Button v-for="s in safetySets" :key="s.key" size="sm" variant="subtle" icon-left="lucide-rotate-ccw" :label="`Roll back ${s.site} to before this`" @click="openRestoreWizard(s)" /><span v-if="!safetySets.length" class="text-xs text-ink-gray-5">loading the sets…</span></span></template>
       </Alert>
-      <Alert v-if="record.origin?.follows" theme="gray" :title="`Part ${record.origin.part} of ${record.origin.of}`" description="cwcli started this job when the one before it succeeded, because it was asked to." :primary-action="{ label: 'Open part 1', onClick: () => $router.push(`/jobs/${record.origin.follows}`) }" />
-      <Alert v-if="record.followed_by?.length" theme="gray" :title="record.followed_by.length === 1 ? 'Continued as part 2' : `Continued as ${record.followed_by.length} more jobs`" :description="record.followed_by.map((id) => jobLabel(jobs.records[id] || { verb: 'job' }) + ' ' + jobTarget(jobs.records[id] || {})).join(', ')">
-        <template #actions><span class="flex flex-wrap gap-2"><Button v-for="(id, i) in record.followed_by" :key="id" size="sm" variant="subtle" :label="`Open part ${i + 2}`" @click="$router.push(`/jobs/${id}`)" /></span></template>
+      <Alert v-if="record.origin?.follows" theme="gray" :title="`Part ${record.origin.part} of ${record.origin.of}`" description="cwcli started this job when the one before it succeeded, because it was asked to." :primary-action="{ label: 'Open part 1', onClick: () => $router.push(jobPath({ id: record.origin.follows, host })) }" />
+      <Alert v-if="record.followed_by?.length" theme="gray" :title="record.followed_by.length === 1 ? 'Continued as part 2' : `Continued as ${record.followed_by.length} more jobs`" :description="record.followed_by.map((id) => jobLabel(jobRecord(id, host) || { verb: 'job' }) + ' ' + jobTarget(jobRecord(id, host) || {})).join(', ')">
+        <template #actions><span class="flex flex-wrap gap-2"><Button v-for="(id, i) in record.followed_by" :key="id" size="sm" variant="subtle" :label="`Open part ${i + 2}`" @click="$router.push(jobPath({ id, host }))" /></span></template>
       </Alert>
       <Alert v-if="record.follow_up_errors?.length" theme="amber" title="A follow-up job did not start" :description="record.follow_up_errors.join(' ')" />
       <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="[record.error?.message, record.error?.hint].filter(Boolean).join(' ')" />
-      <Alert v-else-if="record.state === 'answered'" theme="gray" title="Decision taken" :description="`This job stopped for a decision; you answered it and the work continued as another job.`" :primary-action="record.answered_by ? { label: 'Open the follow-up job', onClick: () => $router.push(`/jobs/${record.answered_by}`) } : undefined" />
+      <Alert v-else-if="record.state === 'answered'" theme="gray" title="Decision taken" :description="`This job stopped for a decision; you answered it and the work continued as another job.`" :primary-action="record.answered_by ? { label: 'Open the follow-up job', onClick: () => $router.push(jobPath({ id: record.answered_by, host })) } : undefined" />
       <template v-else-if="record.state === 'needs_choice'">
         <Alert v-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
         <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />

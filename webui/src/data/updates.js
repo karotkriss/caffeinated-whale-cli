@@ -27,10 +27,14 @@ export function updatesLanded(frame) {
 export const updateItems = computed(() => (updates.data?.items || []).filter((it) => it.update_available))
 export const updateCount = computed(() => updates.data?.summary?.total || 0)
 export const updateAppNames = computed(() => new Set(updateItems.value.map((it) => it.app)))
-export function updatesFor(project, benchIndex = null) {
+// The updates check is THIS machine's: a remote host's instance of the same name
+// must not light up with local findings, so a `host` short-circuits to nothing.
+export function updatesFor(project, benchIndex = null, host = null) {
+  if (host) return []
   return updateItems.value.filter((it) => it.project === project && (benchIndex == null || String(it.bench_index) === String(benchIndex)))
 }
-export function updateItem(project, benchIndex, app) {
+export function updateItem(project, benchIndex, app, host = null) {
+  if (host) return null
   return (updates.data?.items || []).find((it) => it.project === project && String(it.bench_index) === String(benchIndex) && it.app === app) || null
 }
 // By NAME alone every catalog entry called frappe (forks, other benches) would light up;

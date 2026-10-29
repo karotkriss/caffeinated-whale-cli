@@ -56,10 +56,17 @@ STUBS = {
         "}"
     ),
     "./api": (
+        "export const apiBase = (host) => (host ? `/api/v1/hosts/${host}` : '/api/v1')\n"
         "export async function postJson(url, payload) {\n"
         "  globalThis.__t.calls.push({ post: payload })\n"
         "  return { outcome: {} }\n"
         "}"
+    ),
+    # Remote hosts (hosts.js): every instance here is this machine's, so nothing is refused.
+    "./hosts": (
+        "export const actionsAllowed = () => true\n"
+        "export const host = () => null\n"
+        "export const hostName = (id) => id || 'this machine'"
     ),
     # core.start's rule: without a bench, a multi-bench instance is a select_bench choice.
     # core.rm_bench's rule: a bench that a start brought up is refused as running.

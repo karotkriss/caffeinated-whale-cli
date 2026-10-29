@@ -1,36 +1,44 @@
 import { reactive } from 'vue'
-import { getJson } from './api'
+import { apiBase, getJson } from './api'
 
 // Rolling performance history from the daemon (core.metrics): fetched once per
 // instance, then appended from the `metrics` SSE frame every probe tick. Only
 // real measurements: a stopped instance has no points for the time it was down.
+// Instances are keyed `<host>/<project>` for a remote host (its daemon's frames
+// arrive tagged with the host), the bare project for this machine; `host` is this
+// machine's own series.
 export const metrics = reactive({ host: [], projects: {}, loaded: {}, running: {} })
 const MAX = 1440
+const mkey = (host, project) => (host ? `${host}/${project}` : project)
 
-export async function loadMetrics(project) {
-  const data = await getJson(`/api/v1/metrics${project ? `?project=${encodeURIComponent(project)}` : ''}`)
-  metrics.host = data.host || []
+export async function loadMetrics(project, host = null) {
+  const data = await getJson(`${apiBase(host)}/metrics${project ? `?project=${encodeURIComponent(project)}` : ''}`)
+  if (!host) metrics.host = data.host || []
   if (project) {
-    metrics.projects[project] = data.points || []
-    metrics.running[project] = !!data.running
-    metrics.loaded[project] = true
+    const key = mkey(host, project)
+    metrics.projects[key] = data.points || []
+    metrics.running[key] = !!data.running
+    metrics.loaded[key] = true
   } else {
     for (const [p, points] of Object.entries(data.projects || {})) {
-      metrics.projects[p] = points
-      metrics.loaded[p] = true
+      metrics.projects[mkey(host, p)] = points
+      metrics.loaded[mkey(host, p)] = true
     }
   }
   return data
 }
 
-export function applyMetricsFrame(frame) {
-  if (frame.host) push(metrics.host, frame.host)
+export function applyMetricsFrame(frame, host = null) {
+  if (frame.host && !host) push(metrics.host, frame.host)
   for (const [p, point] of Object.entries(frame.projects || {})) {
-    if (!metrics.projects[p]) metrics.projects[p] = []
-    push(metrics.projects[p], point)
-    metrics.running[p] = true
+    const key = mkey(host, p)
+    if (!metrics.projects[key]) metrics.projects[key] = []
+    push(metrics.projects[key], point)
+    metrics.running[key] = true
   }
 }
+
+export const metricsFor = (project, host = null) => metrics.projects[mkey(host, project)] || []
 
 function push(list, point) {
   list.push(point)

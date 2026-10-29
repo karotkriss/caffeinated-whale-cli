@@ -5,6 +5,7 @@ import { Button, Dialog, ErrorMessage } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { answerStart, startGate } from '../data/start-gate'
 import { instance } from '../data/fleet'
+import { hostName } from '../data/hosts'
 
 const errorText = computed(() => (startGate.error ? (startGate.error.hint ? `${startGate.error.message} ${startGate.error.hint}` : startGate.error.message) : null))
 function onOpen(open) {
@@ -13,14 +14,14 @@ function onOpen(open) {
 </script>
 
 <template>
-  <Dialog :open="startGate.open" :title="startGate.benchLabel && instance(startGate.project)?.container_running ? `${startGate.benchLabel} is not running` : `${startGate.project} is not running`" size="sm" @update:open="onOpen">
+  <Dialog :open="startGate.open" :title="(startGate.benchLabel && instance(startGate.project, startGate.host)?.container_running ? `${startGate.benchLabel} is not running` : `${startGate.project} is not running`) + (startGate.host ? ` on ${hostName(startGate.host)}` : '')" size="sm" @update:open="onOpen">
     <div class="space-y-3">
       <p class="text-p-base text-ink-gray-7">
         {{ startGate.verb ? `${startGate.verb} needs ${startGate.benchLabel ? `${startGate.project} and its bench ${startGate.benchLabel}` : startGate.project} running.` : `This needs ${startGate.project} running.` }}
         Start it now? The same question cwcli asks in a terminal; the verb runs once the instance is up.
       </p>
       <div v-if="startGate.bench != null" class="space-y-1.5">
-        <div class="text-sm text-ink-gray-5">Same as running</div>
+        <div class="text-sm text-ink-gray-5">Same as running{{ startGate.host ? ` on ${hostName(startGate.host)}` : '' }}</div>
         <CommandLine :command="`cwcli start ${startGate.project} --bench ${startGate.bench}`" />
       </div>
       <p v-else class="text-sm text-ink-gray-5">Only {{ startGate.project }}'s containers are started; no bench is started.</p>

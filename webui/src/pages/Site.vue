@@ -9,32 +9,39 @@ import AppIcon from '../components/AppIcon.vue'
 import SiteLogsPane from '../components/SiteLogsPane.vue'
 import SiteBackupsPane from '../components/SiteBackupsPane.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
-import { getJson } from '../data/api'
+import StatusBadge from '../components/StatusBadge.vue'
+import RemoteHostBadge from '../components/RemoteHostBadge.vue'
+import { apiBase, getJson } from '../data/api'
 import { jobList } from '../data/jobs'
 import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '../data/catalog'
 import { openApp } from '../data/app-panel'
-import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl } from '../data/fleet'
+import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl, instancePath, benchPath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
 import { can } from '../data/session'
+import { hostName } from '../data/hosts'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
-onMounted(() => setFocus(project))
-const inst = computed(() => findInstance(project))
-const detail = loadDetail(project)
+// A remote host's site: the same page, every read and action through the hub.
+const host = route.params.host || null
+const where = { project, host }
+onMounted(() => setFocus(host ? null : project))
+const inst = computed(() => findInstance(project, host))
+const detail = loadDetail(project, { host })
 const bench = computed(() => detail.data?.benches.find((b) => String(b.index) === String(index)))
 const site = computed(() => bench.value?.sites.find((s) => s.name === siteName))
 const apps = computed(() => (site.value?.installed_apps || []).map(parseApp))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
-const ctx = computed(() => ({ project, bench: String(index), benchName: bench.value ? benchName(bench.value) : index, site: siteName }))
+const ctx = computed(() => ({ project, host, bench: String(index), benchName: bench.value ? benchName(bench.value) : index, site: siteName }))
 const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(verb, ctx.value) })
+// Clone and move are this machine's dialogs over its own backup store; a remote site keeps the rest.
 const more = computed(() => [
   jobOption('Back up site', 'lucide-database-backup', 'backup'),
-  { label: 'Clone site…', icon: 'lucide-copy', onClick: () => openTransfer({ mode: 'clone', project, bench: String(index), sites: [siteName] }) },
-  ...(can('admin') ? [{ label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) }] : []),
+  ...(host ? [] : [{ label: 'Clone site…', icon: 'lucide-copy', onClick: () => openTransfer({ mode: 'clone', project, bench: String(index), sites: [siteName] }) }]),
+  ...(!host && can('admin') ? [{ label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) }] : []),
   jobOption('Migrate site', 'lucide-database-zap', 'migrate'),
   jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
@@ -51,7 +58,7 @@ async function checkUrl() {
   probe.value.loading = true
   try {
     const q = new URLSearchParams({ bench: String(index), site: siteName })
-    probe.value.data = await getJsonUrl(project, q)
+    probe.value.data = await getJsonUrl(project, q, host)
     probe.value.error = null
   } catch (e) {
     probe.value.error = e
@@ -66,21 +73,22 @@ const devLive = ref(null)
 const devMode = computed(() => devLive.value || detail.data?.dev_modes?.[`${bench.value?.path}/${siteName}`] || null)
 async function readDevMode() {
   if (!bench.value) return
-  try { devLive.value = await getJson(`/api/v1/instances/${encodeURIComponent(project)}/dev-mode?bench_path=${encodeURIComponent(bench.value.path)}&site=${encodeURIComponent(siteName)}`) } catch { devLive.value = null }
+  try { devLive.value = await getJson(`${apiBase(host)}/instances/${encodeURIComponent(project)}/dev-mode?bench_path=${encodeURIComponent(bench.value.path)}&site=${encodeURIComponent(siteName)}`) } catch { devLive.value = null }
 }
 watch(bench, (b) => b && readDevMode(), { immediate: true })
 const seenDevJobs = new Set()
 watch(jobList, (list) => {
   for (const j of list) {
-    if (j.verb === 'dev-mode' && j.target?.project === project && j.target?.site === siteName && j.state === 'succeeded' && !seenDevJobs.has(j.id)) {
-      seenDevJobs.add(j.id)
+    if (j.verb === 'dev-mode' && (j.host || null) === host && j.target?.project === project && j.target?.site === siteName && j.state === 'succeeded' && !seenDevJobs.has(j.key)) {
+      seenDevJobs.add(j.key)
       readDevMode()
-      loadDetail(project, { force: true })
+      loadDetail(project, { force: true, host })
     }
   }
 })
 const maintenance = computed(() => (health.value?.web_site === siteName ? health.value.maintenance_mode : null))
 const heroFacts = computed(() => [
+  ...(host ? [{ label: 'Machine', value: hostName(host) }] : []),
   { label: 'Instance', value: project },
   { label: 'Bench', value: bench.value ? `${benchName(bench.value)} (--bench ${bench.value.index})` : `#${index}` },
   { label: 'Installed apps', value: String(apps.value.length) },
@@ -91,16 +99,17 @@ const heroFacts = computed(() => [
 <template>
   <PageHero icon="lucide-globe" :title="siteName" :facts="heroFacts" :crumbs="[
       { label: 'Instances', route: '/instances' },
-      { label: project, route: `/instances/${project}` },
-      { label: bench ? benchName(bench) : `#${index}`, route: `/instances/${project}/benches/${index}` },
+      ...(host ? [{ label: hostName(host), route: '/instances' }] : []),
+      { label: project, route: instancePath(where) },
+      { label: bench ? benchName(bench) : `#${index}`, route: benchPath(where, index) },
       { label: siteName, route: route.path },
     ]">
-    <template #badge><StatusBadge v-if="running && health?.web_site === siteName" :token="health.overall" size="lg" /><Badge v-if="site?.name === bench?.default_site" size="lg" theme="gray" variant="outline" label="default site" /><DevModeBadge :state="devMode" size="lg" /></template>
+    <template #badge><StatusBadge v-if="running && health?.web_site === siteName" :token="health.overall" size="lg" /><Badge v-if="site?.name === bench?.default_site" size="lg" theme="gray" variant="outline" label="default site" /><DevModeBadge :state="devMode" size="lg" /><RemoteHostBadge :host="host" size="md" /></template>
     <template #actions>
       <Tooltip v-if="devMode && can('operator')" :text="devMode.source === 'common' ? 'Set bench-wide in common_site_config.json; the dialog can change it there' : 'Changes developer_mode for this site, then clears its cache'">
         <Button variant="subtle" :icon-left="devMode.effective ? 'lucide-code-xml' : 'lucide-code'" :label="devMode.effective ? 'Turn developer mode off' : 'Turn developer mode on'" @click="openAction(devMode.effective ? 'site.dev_mode_off' : 'site.dev_mode_on', ctx)" />
       </Tooltip>
-      <Tooltip :text="running ? 'Probe the host URL and open it' : 'Start the instance to open the site'">
+      <Tooltip :text="running ? (host ? `Probe the URL on ${hostName(host)} and open it; it must resolve from this browser` : 'Probe the host URL and open it') : 'Start the instance to open the site'">
         <Button variant="solid" icon-left="lucide-external-link" label="Open site" @click="openAction('site.open', ctx)" />
       </Tooltip>
       <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
@@ -127,7 +136,7 @@ const heroFacts = computed(() => [
         </div>
         <div class="mt-1 text-xs text-ink-gray-5">
           <template v-if="!running">the instance is stopped</template>
-          <template v-else-if="probe.data && probe.data.url">{{ probe.data.reachable ? `answers HTTP ${probe.data.http_code}` : 'resolved, but did not answer' }}</template>
+          <template v-else-if="probe.data && probe.data.url">{{ probe.data.reachable ? `answers HTTP ${probe.data.http_code}` : 'resolved, but did not answer' }}{{ host ? ` · an address on ${hostName(host)}` : '' }}</template>
           <template v-else-if="probe.data">no published port resolves for this bench</template>
           <template v-else-if="probe.error">{{ probe.error.message }}</template>
           <template v-else>resolved from Docker's published ports on request</template>
@@ -165,8 +174,8 @@ const heroFacts = computed(() => [
             <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span></ListCell>
             <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.version || 'unknown' }}</span></ListCell>
             <ListCell class="max-md:hidden"><span class="truncate font-mono text-sm text-ink-gray-6">{{ item.branch || 'unknown' }}</span></ListCell>
-                      <!-- Captain note 53: where the app comes from, with the source's icon. -->
-            <ListCell class="gap-1.5 overflow-hidden max-md:hidden"><img v-if="hostIcon(catalogAppFor(item.name, project, index).source?.host)" :src="hostIcon(catalogAppFor(item.name, project, index).source?.host)" class="size-3.5 rounded-sm" alt="" /><span v-else :class="sourceIcon(catalogAppFor(item.name, project, index))" class="size-3.5 text-ink-gray-5" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ sourceLabel(catalogAppFor(item.name, project, index)) }}</span></ListCell>
+                      <!-- Captain note 53: where the app comes from, with the source's icon. The catalog is this machine's, so a remote site's source is the plain name. -->
+            <ListCell class="gap-1.5 overflow-hidden max-md:hidden"><template v-if="!host"><img v-if="hostIcon(catalogAppFor(item.name, project, index).source?.host)" :src="hostIcon(catalogAppFor(item.name, project, index).source?.host)" class="size-3.5 rounded-sm" alt="" /><span v-else :class="sourceIcon(catalogAppFor(item.name, project, index))" class="size-3.5 text-ink-gray-5" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ sourceLabel(catalogAppFor(item.name, project, index)) }}</span></template><span v-else class="truncate text-sm text-ink-gray-5">on {{ hostName(host) }}</span></ListCell>
           </ListRow>
         </ListRows>
       </List>
@@ -175,9 +184,9 @@ const heroFacts = computed(() => [
     <section id="backups">
       <div class="flex items-baseline gap-2">
         <h2 class="text-lg-semibold text-ink-gray-9">Backups</h2>
-        <span class="text-xs text-ink-gray-5">this site's sets in the store outside the instance; they survive a removal</span>
+        <span class="text-xs text-ink-gray-5">{{ host ? `this site's sets in ${hostName(host)}'s store; restore and transfer run from that machine's own UI` : "this site's sets in the store outside the instance; they survive a removal" }}</span>
       </div>
-      <div class="mt-3"><SiteBackupsPane :project="project" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
+      <div class="mt-3"><SiteBackupsPane :project="project" :host="host" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
     </section>
 
     <section>
@@ -185,7 +194,7 @@ const heroFacts = computed(() => [
         <h2 class="text-lg-semibold text-ink-gray-9">Logs</h2>
         <span class="text-xs text-ink-gray-5">this site's own: its Frappe log files, its Error Log</span>
       </div>
-      <div class="mt-3"><SiteLogsPane :project="project" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
+      <div class="mt-3"><SiteLogsPane :project="project" :host="host" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
     </section>
   </div>
 </template>

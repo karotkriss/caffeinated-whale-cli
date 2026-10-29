@@ -29,6 +29,11 @@ async function request(url, init = {}) {
   return body.data
 }
 
+// Every per-instance route exists on this daemon and, through the hub, on each remote
+// host: `${apiBase(host)}/instances/<p>` is this machine's when host is null, else the
+// hub's forward to that host (the daemon relays the answer as data only).
+export const apiBase = (host) => (host ? `/api/v1/hosts/${encodeURIComponent(host)}` : '/api/v1')
+
 export const getJson = (url) => request(url)
 
 export const postJson = (url, payload) =>

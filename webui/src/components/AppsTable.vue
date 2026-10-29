@@ -14,6 +14,7 @@ import { openJob } from '../data/job-dialog'
 const props = defineProps({
   bench: { type: Object, required: true },
   project: { type: String, required: true },
+  host: { type: String, default: null }, // a remote host's bench: jobs run there through the hub
 })
 
 // available_apps on the bench, joined with what each site has installed.
@@ -29,7 +30,7 @@ const rows = computed(() =>
     return { name, installs, versions, branches }
   }),
 )
-const ctx = (name) => ({ project: props.project, bench: String(props.bench.index), benchName: props.bench.label, app: name })
+const ctx = (name) => ({ project: props.project, host: props.host, bench: String(props.bench.index), benchName: props.bench.label, app: name })
 // Per-app menu: the plain checkout, then the reset form behind its own typed confirm.
 const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...ctx(name), args: { apps: name, sites: '' } }) }] }, menuOption('app.checkout', ctx(name)), dangerGroup(['app.checkout_reset'], ctx(name))]
 </script>
@@ -45,7 +46,7 @@ const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, 
     </ListHeader>
     <ListRows :items="rows" row-key="name" v-slot="{ item }">
       <ListRow @click="openApp(catalogApp(item.name))">
-        <ListCell class="gap-2 overflow-hidden"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="truncate text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="truncate font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="updateItem(project, bench.index, item.name)" compact /></ListCell>
+        <ListCell class="gap-2 overflow-hidden"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="truncate text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="truncate font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="updateItem(project, bench.index, item.name, host)" compact /></ListCell>
         <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.versions.join(', ') || 'unknown' }}</span></ListCell>
         <ListCell class="gap-1 overflow-hidden max-md:hidden">
           <span v-if="!item.branches.length" class="text-sm text-ink-gray-5">not installed on a site</span>

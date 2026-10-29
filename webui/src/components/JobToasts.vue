@@ -3,16 +3,17 @@
 // action's job must not take over the screen). Each card: a spinner, the action
 // and target, the current step, elapsed time, View job and Dismiss. A finished
 // success dismisses itself after a few seconds; a failure or a needed decision
-// stays until dismissed. Steps come from the same job record the job page reads.
+// stays until dismissed. Steps come from the same job record the job page reads;
+// a job on a remote host is read through the hub.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Button } from 'frappe-ui'
 import { trackJob, tracked, untrackJob } from '../data/job-toasts'
-import { ACTIVE_STATES, elapsed, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
+import { ACTIVE_STATES, elapsed, jobLabel, jobPath, jobWhere, jobs, loadJob } from '../data/jobs'
 
 const router = useRouter()
 const SUCCESS_LINGER_MS = 8000
-const cards = computed(() => tracked.ids.map((id) => jobs.records[id] || { id, state: 'queued', verb: '', target: {} }))
+const cards = computed(() => tracked.keys.map((key) => jobs.records[key] || { key, id: tracked.meta[key]?.id, host: tracked.meta[key]?.host || null, state: 'queued', verb: '', target: {} }))
 const now = ref(Date.now())
 
 function currentStep(job) {
@@ -33,25 +34,28 @@ const tone = (job) => (job.state === 'succeeded' ? 'ok' : job.state === 'failed'
 let timer = null
 async function tick() {
   now.value = Date.now()
-  for (const id of [...tracked.ids]) {
-    const job = jobs.records[id]
+  for (const key of [...tracked.keys]) {
+    const meta = tracked.meta[key]
+    if (!meta) continue
+    const job = jobs.records[key]
     if (!job || !done(job) || !job.events) {
-      try { await loadJob(id, job?.events?.at(-1)?.seq || 0) } catch { /* the next tick retries */ }
+      try { await loadJob(meta.id, job?.events?.at(-1)?.seq || 0, null, meta.host) } catch { /* the next tick retries */ }
     }
-    const fresh = jobs.records[id]
-    // A job that continues as another (New site, then Publish site) hands its card on.
-    for (const next of fresh?.followed_by || []) trackJob(next)
+    const fresh = jobs.records[key]
+    // A job that continues as another (New site, then Publish site) hands its card on;
+    // the follow-up runs on the same machine as the job it follows.
+    for (const next of fresh?.followed_by || []) trackJob(next, meta.host)
     if (fresh?.state === 'succeeded') {
-      const finished = Date.parse(fresh.finished_at || '') || tracked.startedAt[id] || 0
-      if (Date.now() - finished > SUCCESS_LINGER_MS) untrackJob(id)
+      const finished = Date.parse(fresh.finished_at || '') || tracked.startedAt[key] || 0
+      if (Date.now() - finished > SUCCESS_LINGER_MS) untrackJob(key)
     }
   }
 }
 onMounted(() => (timer = setInterval(tick, 1500)))
 onBeforeUnmount(() => clearInterval(timer))
 function view(job) {
-  untrackJob(job.id)
-  router.push(`/jobs/${job.id}`)
+  untrackJob(job.key)
+  router.push(jobPath(job))
 }
 </script>
 
@@ -61,12 +65,12 @@ function view(job) {
        from the right edge and leave the same way; the stack closes up with a move
        transition when one goes (TransitionGroup; the classes live in style.css). -->
   <TransitionGroup tag="div" name="jobcard" class="pointer-events-none fixed bottom-16 right-4 z-[9990] flex w-[24rem] max-w-[calc(100vw-2rem)] flex-col gap-2">
-    <div v-for="job in cards" :key="job.id" class="jobcard pointer-events-auto flex w-full items-start gap-3 rounded-7 border border-outline-gray-2 bg-surface-elevation-1 p-3 shadow-lg">
+    <div v-for="job in cards" :key="job.key" class="jobcard pointer-events-auto flex w-full items-start gap-3 rounded-7 border border-outline-gray-2 bg-surface-elevation-1 p-3 shadow-lg">
       <span class="mt-0.5 size-5 shrink-0" :class="{ 'lucide-loader-circle animate-spin text-ink-blue-6': tone(job) === 'run', 'lucide-circle-check text-ink-green-5': tone(job) === 'ok', 'lucide-circle-x text-ink-red-5': tone(job) === 'bad', 'lucide-circle-alert text-ink-amber-6': tone(job) === 'warn' }" aria-hidden="true" />
       <div class="min-w-0 flex-1">
         <div class="flex items-baseline gap-2">
           <span class="truncate text-base-medium text-ink-gray-9">{{ jobLabel(job) }}</span>
-          <span class="truncate text-sm text-ink-gray-6">{{ jobTarget(job) }}</span>
+          <span class="truncate text-sm text-ink-gray-6">{{ jobWhere(job) }}</span>
           <span v-if="job.origin?.part" class="shrink-0 text-xs text-ink-gray-5">part {{ job.origin.part }} of {{ job.origin.of }}</span>
           <span class="ml-auto shrink-0 text-xs tabular-nums text-ink-gray-5">{{ elapsed(job) }}</span>
         </div>
@@ -75,7 +79,7 @@ function view(job) {
         </div>
         <div class="mt-2 flex items-center gap-1">
           <Button size="sm" :variant="done(job) && tone(job) !== 'ok' ? 'solid' : 'subtle'" label="View job" @click="view(job)" />
-          <Button size="sm" variant="ghost" :label="done(job) ? 'Dismiss' : 'Hide'" @click="untrackJob(job.id)" />
+          <Button size="sm" variant="ghost" :label="done(job) ? 'Dismiss' : 'Hide'" @click="untrackJob(job.key)" />
         </div>
       </div>
     </div>

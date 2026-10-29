@@ -1,0 +1,91 @@
+"""``cwcli remote``: the renderers over ``core.remote_access`` (allow, revoke, hubs on
+a remote) and ``core.hosts`` (key, add, ls, remove on the hub), and the deliberate
+absence of an ``axi`` twin."""
+
+from __future__ import annotations
+
+import json
+import shutil
+
+import pytest
+from typer.testing import CliRunner
+
+from caffeinated_whale_cli.commands import axi as axi_mod
+from caffeinated_whale_cli.core import hosts
+from caffeinated_whale_cli.main import app
+
+runner = CliRunner()
+KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm hub"
+HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM root@box"
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+    monkeypatch.setenv("CWCLI_NO_UPDATE_CHECK", "1")
+
+
+def _json(result):
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)
+
+
+class TestRemoteSide:
+    def test_allow_hubs_and_revoke(self, tmp_path):
+        keys = tmp_path / "ak"
+        host_key = tmp_path / "hk.pub"
+        host_key.write_text(HOST_KEY + "\n")
+        grant = _json(runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--authorized-keys", str(keys), "--address", "10.0.0.2", "--json"]))
+        assert grant["cap"] == "operator" and grant["pairing"].startswith("cwcli-remote:v1:")
+        assert hosts.parse_pairing(grant["pairing"])["address"] == "10.0.0.2"
+        (line,) = keys.read_text().splitlines()
+        assert line.startswith("restrict,command=") and line.endswith("cwcli-hub:hub-x")
+        hubs = _json(runner.invoke(app, ["remote", "hubs", "--authorized-keys", str(keys), "--json"]))
+        assert [(h["hub"], h["cap"]) for h in hubs] == [("hub-x", "operator")]
+        human = runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--authorized-keys", str(keys), "--max-role", "viewer"])
+        assert human.exit_code == 0 and "Replaced hub" in human.stdout and "cwcli-remote:v1:" in human.stdout
+        revoked = _json(runner.invoke(app, ["remote", "revoke", "--hub", "hub-x", "--authorized-keys", str(keys), "--json"]))
+        assert revoked["removed"] == 1 and keys.read_text() == ""
+
+    def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):
+        keys = tmp_path / "ak"
+        result = runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", "not a key", "--authorized-keys", str(keys)])
+        assert result.exit_code == 1 and not keys.exists()
+
+
+class TestHubSide:
+    def test_add_ls_and_remove_without_a_network(self, tmp_path):
+        pairing = hosts.make_pairing({"v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "10.9.8.7", "port": 22, "name": "Build box", "host_key": HOST_KEY.rsplit(" ", 1)[0]})
+        added = _json(runner.invoke(app, ["remote", "add", pairing, "--no-check", "--json"]))
+        assert added["id"] == "build-box" and added["fingerprint"].startswith("SHA256:") and added["transport_on"] is False
+        rows = _json(runner.invoke(app, ["remote", "ls", "--json"]))
+        assert [r["id"] for r in rows] == ["build-box"] and rows[0]["link"] is None
+        removed = runner.invoke(app, ["remote", "remove", "build-box"])
+        assert removed.exit_code == 0 and hosts.list_hosts() == []
+        assert runner.invoke(app, ["remote", "remove", "build-box"]).exit_code == 1
+
+    def test_add_without_a_host_key_is_refused(self):
+        pairing = hosts.make_pairing({"v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "10.9.8.7", "port": 22, "name": "Build box", "host_key": None})
+        result = runner.invoke(app, ["remote", "add", pairing, "--no-check"])
+        assert result.exit_code == 1 and "host key is required" in result.output
+
+    def test_key_prints_the_public_half_and_the_allow_command(self):
+        if shutil.which("ssh-keygen") is None:
+            pytest.skip("no ssh-keygen")
+        data = _json(runner.invoke(app, ["remote", "key", "--json"]))
+        assert data["public_key"].startswith("ssh-ed25519 ") and data["allow_command"].startswith(f"cwcli remote allow --hub {data['hub']} --key ")
+        assert "PRIVATE" not in json.dumps(data)
+
+
+class TestNoAxiRemote:
+    """Granting another machine's key a foothold here, or pinning a machine this hub
+    will dial and act on, is a person's decision: no ``cwcli axi remote``."""
+
+    def test_axi_registry_has_no_remote_command(self):
+        names = {c.name for c in axi_mod.app.registered_commands}
+        names |= {g.name for g in axi_mod.app.registered_groups}
+        for group in axi_mod.app.registered_groups:
+            names |= {c.name for c in group.typer_instance.registered_commands}
+        assert not names & {"remote", "hosts", "allow", "revoke"}
+        assert "remote" in {g.name for g in app.registered_groups}

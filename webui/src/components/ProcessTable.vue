@@ -8,10 +8,11 @@ import { openAction } from '../data/dialog'
 const props = defineProps({
   bench: { type: Object, required: true }, // the live BenchStatus from the fleet
   project: { type: String, required: true },
+  host: { type: String, default: null }, // a remote host's bench: actions run there through the hub
 })
 const emit = defineEmits(['logs'])
 const mem = (kb) => (kb == null ? 'unknown' : `${Math.round(kb / 1024)} MB`)
-const ctx = (p) => ({ project: props.project, bench: String(props.bench.index), process: p.label })
+const ctx = (p) => ({ project: props.project, host: props.host, bench: String(props.bench.index), process: p.label })
 </script>
 
 <template>

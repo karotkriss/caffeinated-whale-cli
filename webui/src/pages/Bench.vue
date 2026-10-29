@@ -10,19 +10,24 @@ import SitesTable from '../components/SitesTable.vue'
 import AppsTable from '../components/AppsTable.vue'
 import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
-import { instance as findInstance, loadDetail, benchName, setFocus, ago } from '../data/fleet'
+import RemoteHostBadge from '../components/RemoteHostBadge.vue'
+import { instance as findInstance, loadDetail, benchName, setFocus, ago, instancePath, sitePath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { openNewSite } from '../data/new-site-dialog'
 import { openTransfer } from '../data/transfer'
 import { useTabQuery } from '../data/tabs'
 import { can } from '../data/session'
+import { hostName } from '../data/hosts'
 
 const route = useRoute()
 const { project, bench: index } = route.params
-onMounted(() => setFocus(project))
-const inst = computed(() => findInstance(project))
-const detail = loadDetail(project)
+// A remote host's bench: the same page, every read and action through the hub.
+const host = route.params.host || null
+const where = { project, host }
+onMounted(() => setFocus(host ? null : project))
+const inst = computed(() => findInstance(project, host))
+const detail = loadDetail(project, { host })
 const bench = computed(() => detail.data?.benches.find((b) => String(b.index) === String(index)))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
@@ -37,7 +42,7 @@ const logsProcess = ref(route.query.process || null)
 const down = computed(() => (health.value?.processes || []).filter((p) => !p.up))
 const name = computed(() => (bench.value ? benchName(bench.value) : `#${index}`))
 const benchUp = computed(() => ['running', 'degraded'].includes(health.value?.overall))
-const ctx = computed(() => ({ project, bench: String(index), benchName: name.value }))
+const ctx = computed(() => ({ project, host, bench: String(index), benchName: name.value }))
 const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(verb, ctx.value) })
 const more = computed(() => [
   menuOption('bench.restart', ctx.value, health.value),
@@ -56,6 +61,7 @@ function showLogs(process) {
   tab.value = 'logs'
 }
 const heroFacts = computed(() => bench.value ? [
+  ...(host ? [{ label: 'Machine', value: hostName(host) }] : []),
   { label: 'Identity', value: `--bench ${bench.value.index}`, mono: true },
   { label: 'Path', value: bench.value.path, mono: true },
   { label: 'Web port', value: health.value?.web_port != null ? `${health.value.web_port}${health.value.web_http_code && !stale.value ? ' · HTTP ' + health.value.web_http_code : stale.value ? ' · unknown' : ''}` : 'unknown', mono: true },
@@ -68,10 +74,11 @@ const heroFacts = computed(() => bench.value ? [
 <template>
   <PageHero icon="lucide-layers" :title="name" :facts="heroFacts" :crumbs="[
       { label: 'Instances', route: '/instances' },
-      { label: project, route: `/instances/${project}` },
+      ...(host ? [{ label: hostName(host), route: '/instances' }] : []),
+      { label: project, route: instancePath(where) },
       { label: name, route: route.path },
     ]">
-    <template #badge><StatusBadge :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="lg" /></template>
+    <template #badge><StatusBadge :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="lg" /><RemoteHostBadge :host="host" size="md" /></template>
     <template #actions>
       <template v-if="can('operator')">
         <Button v-if="benchUp" icon-left="lucide-square" label="Stop bench" @click="openAction('bench.stop', ctx)" />
@@ -113,7 +120,7 @@ const heroFacts = computed(() => bench.value ? [
         <TabTrigger value="performance" label="Performance" />
       </TabList>
       <TabPanel value="processes" class="pt-4">
-        <ProcessTable v-if="running && health" :bench="health" :project="project" @logs="showLogs" />
+        <ProcessTable v-if="running && health" :bench="health" :project="project" :host="host" @logs="showLogs" />
         <div v-else-if="running" class="px-3 py-8 text-center text-p-sm text-ink-gray-5">Probing this bench's processes...</div>
         <div v-else class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
           <p class="text-base text-ink-gray-7">No process health while {{ project }} is stopped.</p>
@@ -121,22 +128,23 @@ const heroFacts = computed(() => bench.value ? [
         </div>
       </TabPanel>
       <TabPanel value="sites" class="pt-4">
-        <div v-if="can('operator')" class="mb-3 flex justify-end gap-2"><Button variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index })" /></div>
-        <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :route="(s) => `/instances/${project}/benches/${bench.index}/sites/${s.name}`" />
+        <!-- Clone and move are this machine's dialogs over its own backup store; a remote bench offers New site only. -->
+        <div v-if="can('operator')" class="mb-3 flex justify-end gap-2"><Button v-if="!host" variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index, host })" /></div>
+        <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :route="(s) => sitePath(where, bench.index, s.name)" />
       </TabPanel>
       <TabPanel value="apps" class="pt-4">
-        <AppsTable :bench="bench" :project="project" />
+        <AppsTable :bench="bench" :project="project" :host="host" />
         <p class="mt-3 text-p-sm text-ink-gray-5">Versions and branches are what bench recorded at install time. git is the authority on what is checked out now.</p>
       </TabPanel>
       <TabPanel value="logs" class="pt-4">
-        <LogsPane v-if="running" :key="logsProcess || 'all'" :project="project" :bench="String(bench.index)" :process="logsProcess" />
+        <LogsPane v-if="running" :key="logsProcess || 'all'" :project="project" :host="host" :bench="String(bench.index)" :process="logsProcess" />
         <div v-else class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
           <p class="text-base text-ink-gray-7">Logs need {{ project }} running.</p>
           <div class="mx-auto mt-4 max-w-md"><CommandLine :command="`cwcli logs ${project} --bench ${bench.index} -f`" /></div>
         </div>
       </TabPanel>
       <TabPanel value="performance" class="pt-4">
-        <PerformancePanel :project="project" :bench="String(bench.index)" />
+        <PerformancePanel :project="project" :host="host" :bench="String(bench.index)" />
       </TabPanel>
     </Tabs>
   </div>
