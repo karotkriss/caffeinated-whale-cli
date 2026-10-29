@@ -8,7 +8,7 @@ The captures below are of pages that carry no instance, site or host names.
 
 A split page.
 The form sits centred on a calm panel: a short heading, one line of copy, the two fields, "Keep me signed in" and a pill-shaped Sign in button.
-The right half is the moving Arc-style gradient carrying a large uppercase wordmark, with a version badge, a headline and a tagline bottom-left over a surface-coloured scrim.
+The right half is the moving Arc-style gradient carrying a large mixed-case wordmark, with a version badge, a headline and a tagline bottom-left over a surface-coloured scrim.
 On a phone the gradient becomes a band on top and the form sits below it.
 
 | Width | Light | Dark |
@@ -16,7 +16,7 @@ On a phone the gradient becomes a band on top and the form sits below it.
 | 1280 | ![](webui-premium-look/signin-light-1280.png) | ![](webui-premium-look/signin-dark-1280.png) |
 | 390 | ![](webui-premium-look/signin-light-390.png) | ![](webui-premium-look/signin-dark-390.png) |
 
-The wordmark is Inter Display (the self-hosted Inter 4 variable font at optical size 32, weight 900), sized from the viewport so its longer line fills 88 percent of the panel inside its padding: 78 px at 1280, 45 px at 390.
+The wordmark is Inter Display (the self-hosted Inter 4 variable font at optical size 32, weight 900), sized from the viewport so its longer line fills 88 percent of the panel inside its padding: 96 px at 1280, 55 px at 390.
 It is set in `text-ink-gray-9`, which is above AA on every theme stop in both schemes (the light stops are pastel, the dark stops deep, by design of the theme table).
 
 ## Settings > General > Appearance
