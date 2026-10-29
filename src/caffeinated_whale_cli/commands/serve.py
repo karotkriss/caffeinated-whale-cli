@@ -154,14 +154,14 @@ on the LAN could stop or restart an instance with one ``curl``. That guard is a
 CSRF guard and is correct as one; it was never authentication, and it is kept
 here as defense in depth rather than relied on.
 
-Browsers authenticate once via ``POST /api/v1/session``, which exchanges the
-login code (or the bearer token) for a ``HttpOnly``/``SameSite=Strict`` session
+Browsers authenticate once via ``POST /api/v1/session``, which exchanges an
+account's username and password for a ``HttpOnly``/``SameSite=Strict`` session
 cookie. That exists because ``EventSource`` cannot send request headers, so a
 header-only scheme would leave the SSE stream unauthenticatable from a page. The
-cookie carries one random daemon-wide session id, never the token itself. It is
-replayable if captured until that daemon restarts. ``HttpOnly`` and ``SameSite``
-constrain browser behavior; they do not encrypt plain HTTP. A non-loopback
-listener belongs only on a trusted network.
+cookie carries a random session id whose hash the store keeps, never the token or
+the password. It is replayable if captured until the session ends. ``HttpOnly``
+and ``SameSite`` constrain browser behavior; they do not encrypt plain HTTP. A
+non-loopback listener belongs only on a trusted network.
 
 **No CORS, anywhere.** No response carries an ``Access-Control-*`` header, so no
 other origin's page can read any of it. Non-browser clients send the bearer
@@ -432,7 +432,7 @@ def auth_token() -> str | None:
     """The operator's ``CWCLI_SERVE_TOKEN``, or None when unset.
 
     None never means "no authentication": ``serve`` then makes a random token
-    for this launch, and browsers sign in with the one-time login code.
+    for this launch, and browsers sign in with an account's username and password.
 
     Read from the ENVIRONMENT only. There is deliberately no ``--token`` flag:
     an argv secret is readable by every other process on the machine, which is
