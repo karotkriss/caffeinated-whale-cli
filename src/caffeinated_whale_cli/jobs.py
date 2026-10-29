@@ -1168,7 +1168,7 @@ def _remove_bench(
     Starting the bench would make ``remove_bench`` refuse it as running. A removal
     that does not complete returns a project it started to stopped.
     """
-    containers = core_docker.get_project_containers(project) or []
+    containers = core_start.resolve_project_containers(project)
     started = _is_cold(containers)
     try:
         container_warnings = _start_containers_only(project, containers)
@@ -1382,7 +1382,7 @@ def _dispatch(
     site = _site(target)
     if verb == "start":
         if args.get("containers_only") is True:
-            containers = core_docker.get_project_containers(project) or []
+            containers = core_start.resolve_project_containers(project)
             started = _is_cold(containers)
             warnings = _start_containers_only(project, containers)
             return Result(status=Status.OK, data={"containers_started": started}, warnings=warnings)
