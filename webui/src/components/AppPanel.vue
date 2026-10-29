@@ -55,7 +55,7 @@ const editors = computed(() => (catalog.data?.editors || []).filter((e) => EDITO
 const editorPath = (e) => (catalog.data?.editor_paths?.[e] ? `${EDITOR_LABEL[e]} at ${catalog.data.editor_paths[e]}` : EDITOR_LABEL[e])
 const opening = ref(null)
 async function openIn(i, editor) {
-  if (!(await ensureRunning(i.project, `Open in ${EDITOR_LABEL[editor]}`))) return
+  if (!(await ensureRunning(i.project, `Open in ${EDITOR_LABEL[editor]}`, { bench: String(i.bench_index), benchLabel: benchName(i) }))) return
   opening.value = `${i.project}:${editor}`
   try {
     const data = await postJson('/api/v1/actions', { action: 'open_editor', project: i.project, bench: String(i.bench_index), app: app.value.name, editor })

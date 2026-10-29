@@ -53,10 +53,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
   frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
   (a reconnect always gets a fresh snapshot, which IS the resume)
-* ``POST /api/v1/session``                  - exchange the one-time login code
-  (JSON ``{"code": ...}``) or the bearer token for the browser session cookie
-* ``POST /api/v1/session/code``             - mint a fresh one-time login code
-  (bearer token ONLY; how ``cwcli ui`` signs a second browser in)
+* ``POST /api/v1/session``                  - exchange an account's username and
+  password for the browser session cookie (``core.accounts``)
 * ``POST /api/v1/jobs``                     - create one detached long-running
   job; passwords travel only to the child environment and never enter its spec
 * ``POST /api/v1/jobs/<id>/interrupt``      - request a cleanup-aware interrupt
@@ -133,13 +131,9 @@ an IP literal cannot be rebound.
 when set, otherwise a random token made fresh for each launch. It is read from
 the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
 (the ``core/init.py`` secret-transport rule), and it is never printed. Comparison
-is ``hmac.compare_digest``. A browser signs in through the one-time login code
-in ``http://<bound address>:<port>/#login=<code>``: the fragment is never sent
-to a server or in a ``Referer``, the page posts it once to ``/api/v1/session``
-and strips it from history, and a redeemed code is dead, so a link copied out of
-history or scrollback cannot be replayed. ``cwcli ui`` mints a fresh code for
-every browser it opens through ``POST /api/v1/session/code`` with the bearer
-token it holds in a 0600 file. ``GET /`` and ``GET /api/v1/meta`` stay open
+is ``hmac.compare_digest``. A browser signs in with an account's username and
+password (``POST /api/v1/session``); ``cwcli ui`` keeps the bearer token in a
+0600 file and never hands it to the browser. ``GET /`` and ``GET /api/v1/meta`` stay open
 because they carry no fleet data, and a browser that could not load the page
 could never sign in. ``OPTIONS`` returns no data and dispatches no action.
 

@@ -92,7 +92,7 @@ async function start() {
   }
   if (needsStart.value) {
     const label = theBench.value ? benchName(theBench.value) : null
-    const ok = await ensureRunning(project.value, 'Install apps', { bench: theBench.value ? theBench.value.index : null, benchLabel: label })
+    const ok = await ensureRunning(project.value, 'Install apps', { bench: theBench.value ? theBench.value.index : null, benchLabel: label, serving: true })
     confirming.value = false
     if (!ok) return
   }

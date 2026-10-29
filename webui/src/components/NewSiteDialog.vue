@@ -91,7 +91,7 @@ function toggleApp(name, on) {
   apps.value = on ? [...new Set([...apps.value, name])] : apps.value.filter((a) => a !== name)
 }
 async function start() {
-  if (!(await ensureRunning(project.value, 'New site'))) return
+  if (!(await ensureRunning(project.value, 'New site', { bench: bench.value, benchLabel: theBench.value ? benchName(theBench.value) : null }))) return
   running.value = true
   error.value = null
   try {
