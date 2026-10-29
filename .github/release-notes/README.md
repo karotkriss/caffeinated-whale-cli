@@ -42,7 +42,7 @@ This is Chris's cross-project release-notes template, not a shape specific to cw
 4. **Write plain, concrete bullets**, not a generated commit list and not marketing copy. State what changed and, where it matters, why a reader would care. One bullet per change is normal; keep each to a sentence or two.
 5. **The release object's title is set by the workflow**, not this file: `caffeinated-whale-cli: v<version>`, with the colon, never a bare version number. Do not repeat the name or version anywhere in this file's body.
 
-This repo additionally never mentions the unreleased Console/`serve` command, or any GUI, in a release note - it ships unreachable (see `AGENTS.md`'s "Console" entry), and advertising an unreachable command would be worse than saying nothing.
+This repo describes the web UI through `cwcli ui`, and never names `serve` as a command in a release note - `serve` is not a registered command (see `AGENTS.md`'s web UI entry), and advertising an unreachable command would be worse than saying nothing.
 
 The `CHANGELOG.md` entry for the same release is a different, separate artifact in Keep a Changelog format - the itemised in-repo record, not the release card. This template governs the release card only; do not restructure `CHANGELOG.md` to match it.
 
