@@ -16,6 +16,7 @@ The runner lives here and runs in the always-run `Design-system adherence` job i
   A raw palette class compiles under the preset and silently stops following the theme, which is exactly why a lint has to catch it.
   It is textual, so a class assembled in a `<script>` block is caught too; px is not checked for the web UI (frappe-ui's own sizing utilities carry the spacing scale).
   It succeeds the retired `check-console-css.mjs` that covered the single-file Console the web UI replaced.
+  The same check also fails on a menu option (`label:` plus `icon:` in one object literal) whose icon string is not `lucide-*`: frappe-ui 1.0 renders a bare name such as `refresh-cw` as an empty icon slot with only a dev-mode console warning, which is how "Check for updates" shipped without its icon.
 - **Proof it bites.** `npm test` (`bites.test.mjs`) runs the real ESLint pass over `fixtures/bad.jsx` (one violation per family) asserting each is flagged, over `good.jsx` asserting zero, and self-checks the web UI token detector - so a regression back to the oxlint no-op fails CI.
 
 Local commands (`cd tools/design-adherence`): `npm ci`, then `npm run lint`, `npm test`, `npm run check:webui`.

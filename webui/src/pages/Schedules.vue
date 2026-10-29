@@ -117,7 +117,7 @@ const windowText = (p) => { const w = ((schedules.data || {}).windows || {})[p];
         </div>
         <div class="flex items-center gap-1">
           <Button size="sm" variant="subtle" icon-left="lucide-play" label="Run now" :loading="busy === s.id" @click="run(s)" />
-          <Dropdown :options="[{ label: 'Edit', icon: 'pencil', onClick: () => openSchedule(s) }, { label: 'Delete', icon: 'trash-2', onClick: () => remove(s) }]"><Button size="sm" variant="ghost" icon="lucide-ellipsis" /></Dropdown>
+          <Dropdown :options="[{ label: 'Edit', icon: 'lucide-pencil', onClick: () => openSchedule(s) }, { label: 'Delete', icon: 'lucide-trash-2', onClick: () => remove(s) }]"><Button size="sm" variant="ghost" icon="lucide-ellipsis" /></Dropdown>
         </div>
       </div>
     </section>
