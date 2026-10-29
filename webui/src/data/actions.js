@@ -140,7 +140,6 @@ export const ACTIONS = {
   'bench.remove': {
     job: true,
     danger: true,
-    needsRunning: true,
     label: 'Remove bench',
     icon: 'lucide-trash-2',
     confirm: 'typed',

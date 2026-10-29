@@ -855,20 +855,21 @@ def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(mon
 
 
 def test_rm_bench_forwards_the_selector_consent_and_secret(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        jobs.core_rm_bench,
-        "remove_bench",
-        lambda project, **kwargs: calls.append((project, kwargs)) or Result(status=Status.OK),
-    )
+    calls = _wire_rm_bench(monkeypatch, [_Container("frappe", "running")])
 
     emit = lambda e: None  # noqa: E731 - identity matters below
     jobs._dispatch(
         "rm-bench", {"project": "p", "bench": "lab"}, {}, True, {"db_root_password": "x"}, emit
     )
 
-    assert calls == [
-        ("p", {"bench": "lab", "consent": True, "db_root_password": "x", "on_event": emit})
+    assert calls["remove"] == [
+        {
+            "bench": "lab",
+            "auto_start": True,
+            "consent": True,
+            "db_root_password": "x",
+            "on_event": emit,
+        }
     ]
 
 
@@ -1099,3 +1100,59 @@ def test_a_self_update_worker_with_the_daemon_context_schedules_the_ui_restart(
     jobs._schedule_ui_restart()
 
     assert fake_spawn[-1][0][-1] == "restart-ui"
+
+
+class _Container:
+    def __init__(self, name, status):
+        self.name, self.status, self.calls = name, status, []
+
+    def start(self):
+        self.calls.append("start")
+
+    def reload(self):
+        self.calls.append("reload")
+
+
+def _wire_rm_bench(monkeypatch, containers):
+    calls = {"preflight": [], "networks": [], "remove": []}
+    monkeypatch.setattr(jobs, "check_start_port_conflicts", calls["preflight"].append)
+    monkeypatch.setattr(jobs.core_docker, "get_project_containers", lambda project: containers)
+    monkeypatch.setattr(
+        jobs.core_start,
+        "recreate_missing_project_networks",
+        lambda project, stopped: calls["networks"].append([c.name for c in stopped]) or [],
+    )
+    monkeypatch.setattr(jobs.core_start, "start", lambda *a, **k: pytest.fail("started a bench"))
+    monkeypatch.setattr(
+        jobs.core_rm_bench,
+        "remove_bench",
+        lambda project, **kwargs: calls["remove"].append(kwargs) or Result(status=Status.OK),
+    )
+    return calls
+
+
+def test_rm_bench_on_a_stopped_instance_starts_only_its_containers(monkeypatch):
+    """Starting the bench would make remove_bench refuse it as running."""
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, lambda e: None)
+
+    assert calls["preflight"] == ["p"]
+    assert calls["networks"] == [["frappe", "db"]]
+    assert [c.calls for c in containers] == [["start", "reload"], ["start", "reload"]]
+    [kwargs] = calls["remove"]
+    assert kwargs["bench"] == "1"
+    assert kwargs["auto_start"] is True
+    assert kwargs["consent"] is True
+
+
+def test_rm_bench_on_a_running_instance_starts_nothing(monkeypatch):
+    containers = [_Container("frappe", "running"), _Container("db", "running")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, lambda e: None)
+
+    assert calls["networks"] == []
+    assert [c.calls for c in containers] == [[], []]
+    assert len(calls["remove"]) == 1

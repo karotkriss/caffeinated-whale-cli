@@ -52,6 +52,7 @@ STUBS = {
         "}"
     ),
     # core.start's rule: without a bench, a multi-bench instance is a select_bench choice.
+    # core.rm_bench's rule: a bench that a start brought up is refused as running.
     "./jobs": (
         "export const ACTIVE_STATES = new Set(['queued', 'running'])\n"
         "export const JOB_LABEL = new Proxy({}, { get: (_, verb) => String(verb) })\n"
@@ -63,8 +64,10 @@ STUBS = {
         "  t.states[id] = 'succeeded'\n"
         "  if (spec.verb === 'start') {\n"
         "    if (spec.target.bench == null && inst.benches.length > 1) t.states[id] = 'needs_choice'\n"
+        "    else t.started.push(String(spec.target.bench ?? 0))\n"
         "    inst.container_running = true\n"
         "  }\n"
+        "  if (spec.verb === 'rm-bench' && t.started.includes(String(spec.target.bench))) t.states[id] = 'failed'\n"
         "  return { id }\n"
         "}\n"
         "export async function loadJob(id) { return { id, state: globalThis.__t.states[id] } }"
@@ -107,7 +110,7 @@ def run(tmp_path):
 
     def _run(body, instances=STOPPED_TWO_BENCHES):
         script = (
-            f"globalThis.__t = {{ instances: {json.dumps(instances)}, calls: [], states: {{}}, toasts: [] }}\n"
+            f"globalThis.__t = {{ instances: {json.dumps(instances)}, calls: [], states: {{}}, started: [], toasts: [] }}\n"
             "globalThis.window = { open(url) { globalThis.__t.calls.push({ open: url }) } }\n"
             f"const dialog = await import({json.dumps((DATA / 'dialog.js').as_uri())})\n"
             f"const jobDialog = await import({json.dumps((DATA / 'job-dialog.js').as_uri())})\n"
@@ -120,7 +123,7 @@ def run(tmp_path):
             "  return { opened, done: done !== 'pending', error: gate.startGate.error }\n"
             "}\n"
             f"const out = await (async () => {{ {body} }})()\n"
-            "console.log(JSON.stringify({ ...out, calls: globalThis.__t.calls, toasts: globalThis.__t.toasts }))\n"
+            "console.log(JSON.stringify({ ...out, calls: globalThis.__t.calls, states: globalThis.__t.states, toasts: globalThis.__t.toasts }))\n"
             "process.exit(0)\n"
         )
         result = subprocess.run(
@@ -182,7 +185,6 @@ def test_a_tab_the_browser_would_block_after_the_start_is_offered_on_a_button(ru
         ("site.maintenance_off", SITE, {}),
         ("site.remove", SITE, {}),
         ("bench.restart", BENCH, {}),
-        ("bench.remove", BENCH, {}),
         ("bench.label", BENCH, {"label": "v15-main"}),
         ("process.restart", {**BENCH, "process": "web"}, {}),
         ("app.checkout", {**BENCH, "app": "crm"}, {"ref": "develop"}),
@@ -198,6 +200,23 @@ def test_every_bench_and_site_action_starts_its_own_bench(run, action, ctx, valu
     verb_call = out["calls"][-1]
     sent = verb_call.get("job") or verb_call["post"]
     assert str(sent.get("target", sent).get("bench")) == "1"
+
+
+def test_remove_bench_never_starts_the_bench_it_removes(run):
+    # The rm-bench job brings up only the containers; a started bench would be refused.
+    out = run(f"return startThen(dialog.runAction('bench.remove', {json.dumps(BENCH)}, {{}}))")
+    assert out["opened"] is False
+    assert _starts(out) == []
+    assert out["done"]
+    assert [c["job"] for c in out["calls"]] == [
+        {
+            "verb": "rm-bench",
+            "target": {"project": "acme", "bench": "1"},
+            "args": {},
+            "consent": True,
+        }
+    ]
+    assert list(out["states"].values()) == ["succeeded"]
 
 
 @pytest.mark.parametrize(
