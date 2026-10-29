@@ -6,6 +6,11 @@ body {
   height: 100%;
 }
 
+/* The canvas follows data-theme (set before the bundle by public/theme-boot.js and at
+   runtime by useColorScheme), so the frame before the app mounts is already dark. */
+html { background: var(--surface-base); }
+[data-theme='dark'] { color-scheme: dark; }
+
 /* Dialogs stack in portal order, so a dialog or menu opened from INSIDE the
    Settings modal (Update cwcli, Clear everything) would land behind it. The
    Settings modal marks itself with data-settings-dialog and sits one layer
