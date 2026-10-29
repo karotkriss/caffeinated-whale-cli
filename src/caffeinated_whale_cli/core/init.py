@@ -818,10 +818,7 @@ def init_instance(
     # `cwcli rm` / test cleanup cannot remove (it re-broke bare pytest by leaking
     # root-owned dirs into a shared temp home). Point it at the mount root, which
     # always exists, so no root-owned working_dir is ever created on the host.
-    customized = content.replace("working_dir: /workspace/development", "working_dir: /workspace")
-    if customized != content:
-        unapplied.append("working directory /workspace/development -> /workspace")
-    content = customized
+    content = content.replace("working_dir: /workspace/development", "working_dir: /workspace")
     emit(
         InitStepStart(
             phase="resolve_bench_tag",
@@ -830,12 +827,9 @@ def init_instance(
     )
     bench_tag = _get_latest_bench_tag(emit, pinned_tag=bench_image_tag)
     emit(InitTrace(text=f"Pinning bench image: docker.io/frappe/bench:{bench_tag}"))
-    customized = content.replace(
+    content = content.replace(
         "docker.io/frappe/bench:latest", f"docker.io/frappe/bench:{bench_tag}"
     )
-    if customized != content:
-        unapplied.append(f"bench image docker.io/frappe/bench:latest -> {bench_tag}")
-    content = customized
     data_dir = project_dir / "data"
     if new_instance:
         # cwcli owns the bench workspace mount: bind the per-project host data/
