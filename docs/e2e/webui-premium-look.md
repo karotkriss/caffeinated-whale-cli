@@ -28,6 +28,24 @@ The three share one store, so a change in the panel is reflected in the sidebar 
 | --- | --- |
 | ![](webui-premium-look/settings-appearance-light-1280.png) | ![](webui-premium-look/settings-appearance-dark-1280.png) |
 
+## The desk with effects on: Instances hero, gradient sidebar, detail header
+
+Illustrative captures with names replaced: these were taken against real instances, and every instance, bench, site, path, host and user name in the page was swapped for a neutral demo name in the browser before the capture (a text substitution over the rendered page, no code change), so the data shown is the layout, not any one machine.
+
+The Instances page carries a hero on the gradient with a time-of-day greeting for the signed-in user, the running count and the bench, site and job totals, above the stock instance cards and the performance charts (the host chart now shows memory used).
+With effects on, the sidebar's own surface is the gradient under a light tint and a matte grain; its fixed bottom block is set off from the nav by a soft fade-in hairline.
+
+| Width | Light | Dark |
+| --- | --- | --- |
+| 1280 | ![](webui-premium-look/instances-light-1280.png) | ![](webui-premium-look/instances-dark-1280.png) |
+| 390 | ![](webui-premium-look/instances-light-390.png) | ![](webui-premium-look/instances-dark-390.png) |
+
+The instance, bench and site pages share one header card, which carries the same gradient and scrim and spans the content column like the hero.
+
+| Light | Dark |
+| --- | --- |
+| ![](webui-premium-look/instance-detail-light-1280.png) | ![](webui-premium-look/instance-detail-dark-1280.png) |
+
 ## The gradient
 
 One fullscreen-quad WebGL fragment shader (domain-warped simplex noise, two octaves, four theme stops, static grain) draws every gradient surface: the sign-in's right half, the Instances hero, the detail header cards and the sidebar.
