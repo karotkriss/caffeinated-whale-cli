@@ -932,6 +932,28 @@ class TestInitInstance:
         assert s.compose_path.read_bytes() == original.encode()
         assert s.host_calls == []
 
+    def test_a_stopped_pre_migration_instance_is_not_refused_for_init_owned_rewrites(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """An instance created before init rewrote `working_dir` and pinned the
+        bench image still carries both; re-initializing it with its own port
+        changes no user option, so it starts as it is instead of refusing."""
+        stopped = [
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        s.compose_path.write_text(
+            COMPOSE_TEMPLATE.replace("8000-8005:8000-8005", "18000-18005:8000-8005").replace(
+                "9000-9005:9000-9005", "19000-19005:9000-9005"
+            )
+        )
+
+        result = core_init.init_instance(PROJECT, port=18000)
+
+        assert result.status is Status.OK
+        assert [c["cmd"][-3:] for c in s.host_calls] == [["up", "-d", "--no-recreate"]]
+
     def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
         """The skip is scoped to a RUNNING project. A stopped one holds no ports, so
         a bound port there genuinely belongs to somebody else and must still refuse."""
