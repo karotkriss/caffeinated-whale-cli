@@ -76,4 +76,4 @@ The sidebar's two faintest ink tokens (`ink-gray-5` and `ink-gray-6`, used for c
 ## Bundle
 
 `npm run build` on this change: the main chunk is 819 kB raw / 248 kB gzip (up about 12 kB / 5 kB for the shared layer and the shader), and the Instances chunk carries motion-v for the hero's reveal (149 kB raw / 50 kB gzip, loaded on that route only).
-The design-adherence lint stays green: every colour is a semantic token or a theme stop written as a CSS variable, and every menu icon is a `lucide-` name.
+The design-adherence lint stays green: every colour is a semantic token or a theme stop rendered from its RGB triple, and every menu icon is a `lucide-` name.
