@@ -7,7 +7,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Button } from 'frappe-ui'
-import { tracked, untrackJob } from '../data/job-toasts'
+import { trackJob, tracked, untrackJob } from '../data/job-toasts'
 import { ACTIVE_STATES, elapsed, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
 
 const router = useRouter()
@@ -39,6 +39,8 @@ async function tick() {
       try { await loadJob(id, job?.events?.at(-1)?.seq || 0) } catch { /* the next tick retries */ }
     }
     const fresh = jobs.records[id]
+    // A job that continues as another (New site, then Publish site) hands its card on.
+    for (const next of fresh?.followed_by || []) trackJob(next)
     if (fresh?.state === 'succeeded') {
       const finished = Date.parse(fresh.finished_at || '') || tracked.startedAt[id] || 0
       if (Date.now() - finished > SUCCESS_LINGER_MS) untrackJob(id)
@@ -65,6 +67,7 @@ function view(job) {
         <div class="flex items-baseline gap-2">
           <span class="truncate text-base-medium text-ink-gray-9">{{ jobLabel(job) }}</span>
           <span class="truncate text-sm text-ink-gray-6">{{ jobTarget(job) }}</span>
+          <span v-if="job.origin?.part" class="shrink-0 text-xs text-ink-gray-5">part {{ job.origin.part }} of {{ job.origin.of }}</span>
           <span class="ml-auto shrink-0 text-xs tabular-nums text-ink-gray-5">{{ elapsed(job) }}</span>
         </div>
         <div class="mt-0.5 truncate text-sm" :class="tone(job) === 'bad' ? 'text-ink-red-6' : tone(job) === 'warn' ? 'text-ink-amber-6' : 'text-ink-gray-6'">

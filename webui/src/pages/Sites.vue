@@ -3,8 +3,11 @@
 // (captain note 04:10Z): the site's own favicon beside its name, instance and
 // bench as a quiet second line, a calm status word, the default badge, aligned
 // app logos, and an Open action per row.
+// With a publishing integration on (or any site published), a Public address column
+// shows each published site's address and the state of its DNS record, proxy host
+// and certificate, with Publish, Retry, Check for drift and Unpublish in its menu.
 import { computed, onMounted, ref, watch } from 'vue'
-import { Badge, Button, Select, TabButtons, TextInput, Tooltip } from 'frappe-ui'
+import { Badge, Button, Dropdown, Select, TabButtons, TextInput, Tooltip } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -19,11 +22,13 @@ import { openAction } from '../data/dialog'
 import { loadSiteIcons, refreshSiteIcons, siteIcons } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
 import { can } from '../data/session'
+import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publicationAt, SHOWN_PARTS } from '../data/publish'
 
 onMounted(() => {
   setFocus(null)
   instances.value.forEach((i) => loadDetail(i.project))
   loadSiteIcons()
+  loadPublications()
 })
 const query = ref('')
 const project = ref('all')
@@ -51,6 +56,7 @@ const rows = computed(() => {
           word: QUIET[token] || token,
           isDefault: s.name === b.default_site,
           devMode: details[i.project]?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,
+          pub: publicationAt(s.name, i.project, b.path),
         })
       }
     }
@@ -77,6 +83,34 @@ const loading = computed(() => instances.value.some((i) => details[i.project]?.l
 const filtered = computed(() => query.value.trim() || project.value !== 'all' || state.value !== 'all')
 const withIcon = computed(() => rows.value.filter((r) => siteIcons.byKey[`${r.project}/${r.site.name}`]?.logo).length)
 const ctx = (r) => ({ project: r.project, bench: String(r.bench.index), benchName: benchName(r.bench), site: r.site.name })
+// The column shows once publishing is possible or anything is published.
+const publishing = computed(() => canPublish() || rows.value.some((r) => r.pub))
+const columns = computed(() =>
+  publishing.value
+    ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', '8.5rem', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
+    : { base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', '9rem', 'minmax(10rem,1.4fr)', '7rem', '2.5rem'] },
+)
+// One word for a publication: live, part-way, or failed.
+function pubWord(p) {
+  if (!p) return null
+  if (isLive(p)) return { text: 'published', short: 'published', theme: 'green', cls: 'text-ink-green-5' }
+  const failed = Object.entries(p.parts || {}).find(([, part]) => part.state === 'failed')
+  if (failed) return { text: `${PART_LABEL[failed[0]].toLowerCase()} failed`, short: 'publish failed', theme: 'red', cls: 'text-ink-red-5' }
+  return { text: 'publishing', short: 'publishing', theme: 'blue', cls: 'text-ink-blue-5' }
+}
+const partTip = (p, k) => `${PART_LABEL[k]}: ${PART_STATE[p.parts?.[k]?.state]?.label || 'waiting'}${p.parts?.[k]?.message ? ' · ' + p.parts[k].message : ''}`
+function pubMenu(r) {
+  const c = ctx(r)
+  const open = r.pub ? [{ label: 'Open public address', icon: 'lucide-external-link', onClick: () => window.open(r.pub.url, '_blank', 'noopener') }] : []
+  const manage = []
+  if (!r.pub && canPublish() && isPublicName(r.site.name)) manage.push({ label: 'Publish…', icon: 'lucide-globe', onClick: () => openAction('site.publish', c) })
+  if (r.pub && !isLive(r.pub)) manage.push({ label: 'Retry what is missing…', icon: 'lucide-rotate-cw', onClick: () => openAction('site.publish', c) })
+  if (r.pub) manage.push({ label: 'Check for drift', icon: 'lucide-scan-search', onClick: () => checkSite(r.site.name) })
+  const groups = [{ group: 'Public address', options: [...open, ...manage] }]
+  if (r.pub && can('admin')) groups.push({ group: 'Danger zone', options: [{ label: 'Unpublish…', icon: 'lucide-globe-lock', theme: 'red', onClick: () => openAction('site.unpublish', c) }] })
+  return groups
+}
+const hasMenu = (r) => !!r.pub || (canPublish() && isPublicName(r.site.name) && can('operator'))
 </script>
 
 <template>
@@ -105,11 +139,12 @@ const ctx = (r) => ({ project: r.project, bench: String(r.bench.index), benchNam
       :description="filtered ? 'Clear a filter to see every site.' : 'Sites appear once an instance has been inspected.'"
       :command="filtered ? '' : 'cwcli inspect <instance>'"
     />
-    <List v-else class="-mx-3 list-row-px-3" :columns="{ base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', '9rem', 'minmax(10rem,1.4fr)', '7rem', '2.5rem'] }" :row-height="56">
+    <List v-else class="-mx-3 list-row-px-3" :columns="columns" :row-height="56">
       <ListHeader>
         <ListHeaderCell>Site</ListHeaderCell>
         <ListHeaderCell class="max-lg:hidden">Status</ListHeaderCell>
         <ListHeaderCell class="max-lg:hidden">Apps</ListHeaderCell>
+        <ListHeaderCell v-if="publishing" class="max-lg:hidden">Public address</ListHeaderCell>
         <ListHeaderCell class="max-lg:hidden">Apps checked</ListHeaderCell>
         <ListHeaderCell><span class="sr-only">Open</span></ListHeaderCell>
       </ListHeader>
@@ -122,6 +157,7 @@ const ctx = (r) => ({ project: r.project, bench: String(r.bench.index), benchNam
                 <span class="truncate text-base-medium text-ink-gray-9">{{ item.site.name }}</span>
                 <Badge v-if="item.isDefault" size="sm" theme="gray" variant="subtle" label="default" />
                 <DevModeBadge :state="item.devMode" quiet-off />
+                <Tooltip v-if="item.pub" :text="`${item.pub.url} · ${pubWord(item.pub).text}`"><span class="lucide-globe size-3.5 shrink-0 lg:hidden" :class="pubWord(item.pub).cls" role="img" :aria-label="`Public address ${pubWord(item.pub).short}`" /></Tooltip>
               </span>
               <span class="flex items-center gap-1.5 text-xs text-ink-gray-5"><span class="truncate">{{ item.project }} · {{ benchName(item.bench) }}</span><span class="flex shrink-0 items-center gap-1 lg:hidden"><StatusDot :token="item.token" />{{ item.word }}</span></span>
             </span>
@@ -134,12 +170,27 @@ const ctx = (r) => ({ project: r.project, bench: String(r.bench.index), benchNam
             </Tooltip>
             <span v-if="item.apps.length > 6" class="text-xs tabular-nums text-ink-gray-5">+{{ item.apps.length - 6 }}</span>
           </ListCell>
+          <ListCell v-if="publishing" class="max-lg:hidden">
+            <span v-if="item.pub" class="min-w-0">
+              <span class="flex items-center gap-1.5"><span class="truncate text-sm text-ink-gray-8">{{ item.pub.url.replace(/^https?:\/\//, '') }}</span><Badge size="sm" variant="subtle" :theme="pubWord(item.pub).theme" :label="pubWord(item.pub).text" /></span>
+              <span class="mt-0.5 flex items-center gap-2.5">
+                <Tooltip v-for="k in SHOWN_PARTS" :key="k" :text="partTip(item.pub, k)">
+                  <span class="flex items-center gap-1 text-xs text-ink-gray-6"><span class="size-3.5" :class="PART_STATE[item.pub.parts?.[k]?.state]?.icon || PART_STATE.waiting.icon" aria-hidden="true" />{{ PART_LABEL[k] }}</span>
+                </Tooltip>
+              </span>
+            </span>
+            <span v-else-if="isPublicName(item.site.name)" class="text-sm text-ink-gray-5">not published</span>
+            <Tooltip v-else text="A .localhost site answers on this machine only; publishing needs its own domain"><span class="text-sm text-ink-gray-4">this machine only</span></Tooltip>
+          </ListCell>
           <ListCell class="max-lg:hidden">
             <Tooltip :text="item.site.installed_apps_verified ? 'Read live by a full inspect' : 'Remembered from the cache; a full inspect verifies them'">
               <span class="text-sm" :class="item.site.installed_apps_verified ? 'text-ink-green-6' : 'text-ink-gray-5'">{{ item.site.installed_apps_verified ? 'verified' : 'remembered' }}</span>
             </Tooltip>
           </ListCell>
-          <ListCell class="justify-end" @click.stop.prevent>
+          <ListCell class="justify-end gap-0.5" @click.stop.prevent>
+            <Dropdown v-if="publishing && hasMenu(item)" :options="pubMenu(item)" placement="right">
+              <Button size="sm" variant="ghost" icon="lucide-globe" :aria-label="`Public address of ${item.site.name}`" />
+            </Dropdown>
             <Tooltip :text="item.serving ? `Open ${item.site.name} in a new tab` : item.running ? `Bench ${benchName(item.bench)} is not serving; start it first` : `${item.project} is stopped; cwcli asks to start it first`">
               <Button size="sm" variant="ghost" icon="lucide-external-link" :aria-label="`Open ${item.site.name}`" @click.stop.prevent="openAction('site.open', ctx(item))" />
             </Tooltip>

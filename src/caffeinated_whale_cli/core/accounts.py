@@ -60,6 +60,7 @@ ADMIN_VERBS = frozenset(
         "rm-site",
         "rm-bench",
         "move-sites",
+        "unpublish-site",
         "restore-set",
         "delete-backup",
         "prune-backups",
@@ -97,9 +98,17 @@ class Account:
 
 def admin_only(verb: object, args: object = None) -> bool:
     """Whether a job of ``verb`` with ``args`` needs an Admin: an ``ADMIN_VERBS`` verb,
-    or an app checkout or update that discards local work (``reset`` / ``force``)."""
+    an app checkout or update that discards local work (``reset`` / ``force``), or a
+    publish that points a name somewhere other than the machine's own address (a
+    per-site address override) or repoints another bench's publication (``move``)."""
     if verb in ADMIN_VERBS:
         return True
+    if isinstance(args, dict) and verb in ("publish-site", "new-site"):
+        publish = args if verb == "publish-site" else args.get("publish")
+        if isinstance(publish, dict) and (
+            str(publish.get("address") or "").strip() or publish.get("move") is True
+        ):
+            return True
     flag = {"apps-checkout": "reset", "apps-update": "force"}.get(str(verb))
     return flag is not None and isinstance(args, dict) and args.get(flag) is True
 

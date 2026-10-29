@@ -608,6 +608,20 @@ def resolve_host_web_url(
     return f"http://{site or 'localhost'}:{host_port}"
 
 
+def resolve_host_ports(container, bench_path: str) -> tuple[int, int] | None:
+    """The HOST ports ``(web, socket.io)`` this bench is published on, or None.
+
+    The same two hops as :func:`resolve_host_web_url`, for both of the bench's ports:
+    a reverse proxy in front of the bench needs the socket.io port as well as the web
+    port. Either one unresolved is None, never a guess.
+    """
+    assigned = resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(bench_path)
+    if assigned is None:
+        return None
+    web, socketio = (_published_host_port(container, port) for port in assigned)
+    return (web, socketio) if web and socketio else None
+
+
 def _published_host_port(container, container_port: int) -> int | None:
     """The host port ``container_port/tcp`` is published on, from the live bindings."""
     bindings = getattr(container, "ports", None) or {}

@@ -50,8 +50,10 @@ const steps = computed(() => {
     current.events.push(event)
     if (type.endsWith('_step_end') || type === 'job_finished' || type.endsWith('_done')) {
       current.ended = event.at
-      current.ok = event.ok !== false && !(event.status && event.status !== 'ok' && event.status !== 'warning')
-      current.status = event.status || (event.ok === false ? 'failed' : 'ok')
+      // A lifecycle event (job_finished) carries its verdict inside data.
+      const verdict = event.ok ?? event.data?.ok
+      current.ok = verdict !== false && !(event.status && event.status !== 'ok' && event.status !== 'warning')
+      current.status = event.status || (verdict === false ? 'failed' : 'ok')
       if (event.message) current.title = event.message
       current = null
     }

@@ -99,8 +99,10 @@ def test_start_reports_an_exited_frappe_container_cleanly(surface):
         proc = harness.run_cwcli(*args, timeout=300)
         out = _output(proc)
         assert proc.returncode != 0, f"a start whose frappe container died exited 0:\n{out}"
+        # Match docker-py's own 409 text, never a bare "409": the project name embeds
+        # the CI run id (`cwe2e-gha409...`), which can contain those digits.
         assert (
-            "Traceback" not in out and "409" not in out
+            "Traceback" not in out and "409 Client Error" not in out and "Conflict" not in out
         ), f"start leaked a Docker traceback instead of a clean error:\n{out}"
         assert "exited" in out and f"docker logs {frappe.name}" in out, out
     finally:

@@ -16,6 +16,7 @@ import { siteIconsLanded } from './site-icons'
 import { updatesLanded } from './updates'
 import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
+import { loadPublications, publicationsLanded } from './publish'
 
 export const fleet = reactive({
   instances: {},
@@ -63,6 +64,7 @@ function openStream() {
     fleet.connection = 'live'
     fleet.lastEventAt = Date.now()
     body.instances.forEach((i) => loadDetail(i.project))
+    loadPublications() // the stream then carries each change (`publications`)
   })
   source.addEventListener('delta', (e) => {
     const body = JSON.parse(e.data)
@@ -77,6 +79,7 @@ function openStream() {
   source.addEventListener('updates', (e) => updatesLanded(JSON.parse(e.data)))
   source.addEventListener('advisories', (e) => advisoriesLanded(JSON.parse(e.data)))
   source.addEventListener('backups', (e) => backupsLanded(JSON.parse(e.data)))
+  source.addEventListener('publications', (e) => publicationsLanded(JSON.parse(e.data)))
   // EventSource reconnects by itself; the daemon answers a reconnect with a
   // fresh snapshot, which is the resume. A 401 closes it for good.
   source.onerror = () => {

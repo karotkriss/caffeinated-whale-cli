@@ -483,7 +483,7 @@ class TestRemove:
         data = json.loads(integrations.store_path().read_text())
         assert data["community"] == {} and data["integrations"] == {}
         assert not community.root().parent.exists()
-        assert [c["id"] for c in integrations.view()] == ["ldap", "s3"]
+        assert [c["id"] for c in integrations.view()] == list(integrations.official())
         assert not any("cwcli_hello" in m for m in sys.modules)
         assert "remove id=hello by=ana" in community.recent_audit()[-1]
 
