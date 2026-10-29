@@ -54,8 +54,11 @@ async function startThenContinue() {
   startGate.starting = true
   startGate.error = null
   try {
-    const target = startGate.bench != null ? { project: startGate.project, bench: String(startGate.bench) } : { project: startGate.project }
-    const record = await createJob({ verb: 'start', target, args: {} })
+    // Without a bench, only the containers start: a multi-bench instance would otherwise ask which bench.
+    const spec = startGate.bench != null
+      ? { verb: 'start', target: { project: startGate.project, bench: String(startGate.bench) }, args: {} }
+      : { verb: 'start', target: { project: startGate.project }, args: { containers_only: true } }
+    const record = await createJob(spec)
     trackJob(record.id)
     const final = await waitForJob(record.id)
     if (final?.state !== 'succeeded') {

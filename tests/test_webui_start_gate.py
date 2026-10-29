@@ -63,7 +63,8 @@ STUBS = {
         "  const id = `job${t.calls.length}`\n"
         "  t.states[id] = 'succeeded'\n"
         "  if (spec.verb === 'start') {\n"
-        "    if (spec.target.bench == null && inst.benches.length > 1) t.states[id] = 'needs_choice'\n"
+        "    if (spec.args.containers_only) {}\n"
+        "    else if (spec.target.bench == null && inst.benches.length > 1) t.states[id] = 'needs_choice'\n"
         "    else t.started.push(String(spec.target.bench ?? 0))\n"
         "    inst.container_running = true\n"
         "  }\n"
@@ -243,9 +244,28 @@ def test_every_job_from_a_bench_or_site_starts_its_own_bench(run, verb, ctx):
     assert out["calls"][-1]["job"]["target"]["bench"] == "1"
 
 
-def test_an_instance_action_never_invents_a_bench(run):
-    out = run("return startThen(dialog.runAction('instance.scale', { project: 'acme' }, {}))")
+@pytest.mark.parametrize("action", ["instance.scale", "instance.restart", "instance.remove"])
+def test_an_instance_action_starts_only_the_containers_never_a_bench(run, action):
+    out = run(
+        f"return startThen(dialog.runAction({json.dumps(action)}, {{ project: 'acme' }}, {{}}))"
+    )
+    assert out["opened"]
+    starts = [c["job"] for c in out["calls"] if c.get("job", {}).get("verb") == "start"]
+    assert starts == [
+        {"verb": "start", "target": {"project": "acme"}, "args": {"containers_only": True}}
+    ]
+    assert out["error"] is None
+    assert out["done"], "the instance verb must carry on once the containers are up"
+    assert out["calls"][-1]["job"]["verb"] != "start"
+    assert set(out["states"].values()) == {"succeeded"}
+
+
+def test_new_bench_starts_only_the_containers(run):
+    out = run("return startThen(gate.ensureRunning('acme', 'New bench'))")
     assert _starts(out) == [{"project": "acme"}]
+    assert out["calls"][0]["job"]["args"] == {"containers_only": True}
+    assert out["error"] is None
+    assert out["done"]
 
 
 def test_a_running_instance_asks_about_a_stopped_bench_only_when_the_verb_needs_it_serving(run):

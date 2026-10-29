@@ -1114,6 +1114,48 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
     return Result(status=result.status, data=outcome, warnings=warnings)
 
 
+def _start_containers_only(project: str) -> tuple[bool, list[Message]]:
+    """Start a project's stopped containers, never a bench, and wait for MariaDB.
+
+    Returns whether anything was stopped (and so started here) plus the start's
+    warnings. A cold start returns before MariaDB serves, so the wait runs then; a
+    database that never comes up raises ``PRECONDITION`` with
+    ``detail.containers_started`` so a caller can return the project to stopped.
+    """
+    check_start_port_conflicts(project)
+    containers = core_docker.get_project_containers(project) or []
+    cold = any(c.status != "running" for c in containers)
+    warnings = core_start.start_stopped_containers(project, containers)
+    frappe = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"), None
+    )
+    if cold and frappe is not None:
+        ready, reason = rm_cmd._wait_for_db_ready(frappe)
+        if not ready:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "start.db_not_ready",
+                f"MariaDB for '{project}' did not become ready: {reason}",
+                hint=f"Check the database with 'cwcli status {project}', then retry.",
+                detail={"containers_started": True},
+            )
+    return cold, warnings
+
+
+def _stop_again(project: str) -> list[Message]:
+    """Best-effort return to stopped, as ``cwcli rm``'s transient start does."""
+    try:
+        return list(core_stop.stop(project).warnings)
+    except Exception as e:
+        return [
+            Message(
+                "rm_bench.stop_failed",
+                f"Could not stop '{project}' again after the removal did not complete; "
+                f"it may still be running: {e}",
+            )
+        ]
+
+
 def _remove_bench(
     project: str,
     bench: str | None,
@@ -1123,36 +1165,34 @@ def _remove_bench(
 ) -> Result:
     """Bring a stopped instance's containers up, never the bench, then remove the bench.
 
-    Starting the bench would make ``remove_bench`` refuse it as running.
+    Starting the bench would make ``remove_bench`` refuse it as running. A removal
+    that does not complete returns a project it started to stopped.
     """
-    check_start_port_conflicts(project)
-    containers = core_docker.get_project_containers(project) or []
-    cold = any(c.status != "running" for c in containers)
-    container_warnings = core_start.start_stopped_containers(project, containers)
-    frappe = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"), None
-    )
-    if cold and frappe is not None:
-        ready, reason = rm_cmd._wait_for_db_ready(frappe)
-        if not ready:
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "rm_bench.db_not_ready",
-                f"MariaDB for '{project}' did not become ready, so nothing was removed: {reason}",
-                hint=f"Check the database with 'cwcli status {project}', then retry.",
-            )
-    result = core_rm_bench.remove_bench(
-        project,
-        bench=bench,
-        auto_start=True,
-        consent=consent,
-        db_root_password=_db_root_password(secret_values),
-        on_event=emit,
+    started = False
+    try:
+        started, container_warnings = _start_containers_only(project)
+        result = core_rm_bench.remove_bench(
+            project,
+            bench=bench,
+            auto_start=True,
+            consent=consent,
+            db_root_password=_db_root_password(secret_values),
+            on_event=emit,
+        )
+    except Exception as e:
+        if started or (isinstance(e, CwcliError) and (e.detail or {}).get("containers_started")):
+            for warning in _stop_again(project):
+                emit.lifecycle("warning", warning.text)
+        raise
+    stop_warnings = (
+        _stop_again(project)
+        if started and (result.status is Status.NEEDS_CHOICE or not _result_ok(result))
+        else []
     )
     return Result(
         status=result.status,
         data=result.data,
-        warnings=[*container_warnings, *result.warnings],
+        warnings=[*container_warnings, *result.warnings, *stop_warnings],
         choice=result.choice,
     )
 
@@ -1340,6 +1380,9 @@ def _dispatch(
     bench = _bench(target)
     site = _site(target)
     if verb == "start":
+        if args.get("containers_only") is True:
+            started, warnings = _start_containers_only(project)
+            return Result(status=Status.OK, data={"containers_started": started}, warnings=warnings)
         check_start_port_conflicts(project)
         return core_start.start(project, bench=bench, on_event=emit)
     if verb == "stop":
