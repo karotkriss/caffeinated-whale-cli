@@ -2291,8 +2291,10 @@ A failing preflight row keeps **Create site** disabled, and the `new-site` job r
 The site is created exactly as without publishing; as soon as it exists a second job, **Publish site** (the card follows it as "part 2 of 2"), writes the A record, makes the proxy host, requests the certificate, then checks that `https://<site>/api/method/ping` answers.
 Each step reads what exists before it writes, so **Retry** (or Publish again) repeats only what is missing, and the same job publishes a site that already exists.
 A record already pointing at this machine is used and never deleted; a record or proxy host cwcli did not create stops the publish with a message naming the fix.
+A name cwcli already published from another instance or bench is refused, naming that instance and bench, while that site still exists there: an Admin can Move the site, or Unpublish it first.
+When that site is gone (its instance, bench or site was removed), an Admin's publish takes the orphaned publication over at this machine's address, and an Operator's is refused.
 With Cloudflare alone the site answers at its bench port (`http://<site>:<port>`) and nothing is proxied; with Nginx Proxy Manager alone the name must already point at this machine, and a wildcard record such as `*.apps.example.com` covers every later site.
-New site also takes another address for one site, Cloudflare's proxy (only with the DNS challenge), and an Nginx Proxy Manager access list; the bench runs Frappe's development server, so restrict a site not meant for everyone.
+New site also takes another address for one site (Admin only), Cloudflare's proxy (only with the DNS challenge), and an Nginx Proxy Manager access list; the bench runs Frappe's development server, so restrict a site not meant for everyone.
 A failed publish never removes the site: the job fails, naming the part and its reason, the integration that failed shows Error until its next success, and the Sites list's **Public address** column shows each part (DNS, Proxy, Certificate) as done, failed or waiting.
 Each row's globe menu offers **Publish…**, **Retry what is missing…**, **Check for drift** (a read-only comparison that reports a record pointed elsewhere, a deleted proxy host, or a certificate whose renewal is failing, and repairs nothing) and, for an Admin, **Unpublish…**.
 Unpublish removes the proxy host, then its certificate when no other host uses it, then the DNS record, each only while it still matches what cwcli wrote; anything changed by hand is left and reported, and a part whose integration is off stays recorded so Retry finishes it.
@@ -2300,7 +2302,7 @@ Drop site offers "Also unpublish it", ticked for a published site, and starts **
 Moving a published site keeps its name's public address and points its proxy host at the new bench; a move that renames it offers to unpublish the old name (ticked) and to publish the new one.
 Turning an integration off never deletes anything it created.
 What cwcli created for each published name is recorded, without any secret, in `~/.cwcli/publications.json` (0600).
-Publishing is an Operator's job and unpublishing an Admin's; neither has a terminal command or a schedule yet.
+Publishing at this machine's address is an Operator's job; another address for one site, taking over an orphaned publication and unpublishing are an Admin's; none has a terminal command or a schedule yet.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
