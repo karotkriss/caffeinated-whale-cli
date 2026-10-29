@@ -12,7 +12,6 @@ import DoctorView from '../components/DoctorView.vue'
 import { config, cacheProjects } from '../data/fleet'
 import { settingsDialog, ADMIN_SECTIONS } from '../data/settings-dialog'
 import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session'
-import { agentLabel } from '../data/user-agent'
 import PasswordForm from './PasswordForm.vue'
 import IntegrationDialog from './IntegrationDialog.vue'
 import CommunityDialog from './CommunityDialog.vue'
@@ -201,7 +200,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
         <SettingsNavItem value="about"><template #prefix><span class="lucide-info size-4" aria-hidden="true" /></template>About cwcli</SettingsNavItem>
       </SettingsNavGroup>
     </SettingsSidebar>
-    <SettingsContent>
+    <SettingsContent class="min-w-0">
       <LoadingText v-if="isAdmin && !c && config.loading" class="p-6" />
       <ErrorMessage v-if="isAdmin && config.error" class="p-6" :message="config.error" />
       <template v-if="c && isAdmin">
@@ -402,7 +401,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               <Button label="Sign out everywhere else" :disabled="!otherSessions.length" :loading="signingOutOthers" @click="signOutOthers" />
             </SettingsRow>
             <ul v-if="otherSessions.length" class="space-y-1 px-1 pb-3 text-sm text-ink-gray-6">
-              <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate" :title="s.agent || undefined">{{ agentLabel(s.agent) }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
+              <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate" :title="s.agent || undefined">{{ s.agent || 'unknown browser' }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
             </ul>
             <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Sign out" description="Ends this browser's session.">
               <div class="flex items-center gap-1"><CommandCopy v-if="!directoryUser" command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>

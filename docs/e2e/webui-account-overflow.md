@@ -1,7 +1,7 @@
 # Your account panel stays inside the settings dialog
 
 Browser evidence for the Settings > General > Your account layout fix, taken with chrome-devtools-axi against a real web UI daemon built from this change.
-The daemon ran under an isolated `CWCLI_HOME` on its own port, and ten extra sessions were signed in through `POST /api/v1/session` with real desktop and phone user-agent strings so the "Other sessions" list held long rows.
+The daemon ran under an isolated `CWCLI_HOME` on its own port, and extra sessions were signed in through `POST /api/v1/session` with real desktop and phone user-agent strings so the "Other sessions" list held long rows (ten for the before captures, six for the after captures).
 
 ## The defect, reproduced on the unfixed build
 
@@ -15,8 +15,8 @@ The panel is a flex-row item of the dialog, so its minimum width became the widt
 
 ## The fix
 
-The panel takes `min-w-0`, so the column keeps the width the dialog gives it and a long row truncates inside it.
-Each row shows a short "browser on OS" label (`webui/src/data/user-agent.js`) with the raw user agent in the row's `title`, and below the `sm` breakpoint the account rows stack their control under the text instead of squeezing it.
+The panel and the `SettingsContent` row that holds it both take `min-w-0`, because each is a flex-row item, so the column keeps the width the dialog gives it and a long row truncates inside it.
+Each row still shows the stored user agent, now truncated with an ellipsis, and the row's `title` carries the full text so it stays reachable on hover; below the `sm` breakpoint the account rows stack their control under the text instead of squeezing it.
 
 | Width | After |
 | --- | --- |
