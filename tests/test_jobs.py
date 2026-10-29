@@ -1139,7 +1139,7 @@ def _wire_rm_bench(monkeypatch, containers, db_ready=(True, ""), removal=None):
         lambda container: calls["order"].append(("db_wait", container.name)) or db_ready,
     )
     monkeypatch.setattr(jobs, "check_start_port_conflicts", calls["preflight"].append)
-    monkeypatch.setattr(jobs.core_docker, "get_project_containers", lambda project: containers)
+    monkeypatch.setattr(jobs.core_start, "get_project_containers", lambda project: containers)
     monkeypatch.setattr(
         jobs.core_start,
         "recreate_missing_project_networks",
@@ -1292,3 +1292,20 @@ def test_a_containers_only_start_never_starts_a_bench(monkeypatch):
     assert calls["order"] == [("db_wait", "frappe")]
     assert result.status is Status.OK
     assert jobs._result_ok(result) is True
+
+
+@pytest.mark.parametrize(
+    ("containers", "code"), [(None, "docker.unreachable"), ([], "project.not_found")]
+)
+@pytest.mark.parametrize(("verb", "args"), [("start", {"containers_only": True}), ("rm-bench", {})])
+def test_a_containers_only_start_fails_without_docker_or_the_project(
+    monkeypatch, containers, code, verb, args
+):
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch(verb, {"project": "p", "bench": "1"}, args, True, {}, _Emit())
+
+    assert error.value.code == code
+    assert calls["preflight"] == []
+    assert calls["remove"] == []
