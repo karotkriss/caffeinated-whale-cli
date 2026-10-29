@@ -479,7 +479,11 @@ class TestAlreadyRunningNotice:
         self, monkeypatch, tmp_path, capsys
     ):
         services = [
-            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": "2026-10-01T00:00:00Z"}},
+            )
             for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
         ]
 
@@ -538,7 +542,11 @@ class TestRefusals:
         self, monkeypatch, tmp_path, capsys
     ):
         services = [
-            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": "2026-10-01T00:00:00Z"}},
+            )
             for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
         ]
         port = _free_base_port()

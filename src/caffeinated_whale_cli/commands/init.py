@@ -623,7 +623,11 @@ def init(
     (8000-8005), init refuses with exit 1 and names each change; remove the
     instance with `cwcli rm` (which backs it up) and run init again, or rerun
     init without the changed options. For an instance created on another
-    --port or widened by `cwcli scale`, init does not compare --port.
+    --port or widened by `cwcli scale`, init does not compare --port. An
+    instance whose frappe container has never started, such as one left by a
+    first init that failed at `docker compose up`, has no bench to protect, so
+    init neither refuses nor skips recreation there: it pulls images and
+    recreates the containers with the new options.
 
     If project_name is not provided, prompts interactively.
 

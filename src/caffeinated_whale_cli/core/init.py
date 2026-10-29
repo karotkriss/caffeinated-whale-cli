@@ -675,6 +675,22 @@ def _running_compose_services(project_name: str) -> set[str]:
     }
 
 
+def _frappe_never_started(project_name: str) -> bool:
+    """True when this project's frappe container exists but has never run.
+
+    A first init that failed at ``up`` leaves frappe ``created`` with no bench
+    to protect; Docker reports its ``State.StartedAt`` as the zero time.
+    """
+    frappe = [
+        c
+        for c in core_docker.get_project_containers(project_name) or []
+        if c.labels.get("com.docker.compose.service") == "frappe"
+    ]
+    return bool(frappe) and all(
+        c.attrs["State"]["StartedAt"].startswith("0001-01-01") for c in frappe
+    )
+
+
 def init_instance(
     project_name: str,
     *,
@@ -869,8 +885,10 @@ def init_instance(
     content = customized
 
     running_services = _running_compose_services(project_name)
-    reuse_stopped = "frappe" not in running_services and bool(
-        core_docker.get_project_containers(project_name)
+    reuse_stopped = (
+        "frappe" not in running_services
+        and bool(core_docker.get_project_containers(project_name))
+        and not _frappe_never_started(project_name)
     )
     if reuse_stopped and not new_instance and unapplied:
         raise CwcliError(
