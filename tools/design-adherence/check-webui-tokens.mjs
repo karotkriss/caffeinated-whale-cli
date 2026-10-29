@@ -12,7 +12,14 @@
 //
 // Scope: every .vue/.js under webui/src (templates, scripts and <style> blocks
 // alike - the scan is textual, so a class built in script is caught too).
-// Run `--selfcheck` to prove the detector still bites.
+//
+// It also checks menu icons: frappe-ui 1.0 renders a string icon on a menu
+// option ONLY when it starts with `lucide-` (MenuItemContent / isLucideIconString)
+// and renders an empty slot for a bare feather-style name such as `refresh-cw`,
+// with only a dev-mode console warning - which is how "Check for updates" shipped
+// with no icon. A menu option is an object literal carrying both `label:` and
+// `icon:`; its icon string must be `lucide-*`.
+// Run `--selfcheck` to prove the detectors still bite.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +40,10 @@ const RAW_PALETTE = new RegExp(
 );
 // A hex colour literal (3-8 digits) that is not an HTML entity or an anchor id.
 const RAW_HEX = /(?<![&\w])#[0-9a-fA-F]{3,8}\b(?![\w-])/g;
+// A menu option (`label:` and `icon:` inside one object literal, in either order,
+// spanning lines) whose icon is a bare lowercase-kebab name, not `lucide-*`. A
+// camelCase string (echarts' legend `icon: 'roundRect'`) is not an icon name.
+const BARE_MENU_ICON = /\blabel\s*:[^{}]*?\bicon\s*:\s*(['"])(?!lucide-)([a-z][a-z0-9-]*)\1|\bicon\s*:\s*(['"])(?!lucide-)([a-z][a-z0-9-]*)\3[^{}]*?\blabel\s*:/g;
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -56,6 +67,18 @@ export function findViolations(source) {
   return out;
 }
 
+/** Return [{line, text, match}] menu options whose icon string is not `lucide-*`. */
+export function findBareMenuIcons(source) {
+  const out = [];
+  for (const m of source.matchAll(BARE_MENU_ICON)) {
+    const name = m[2] ?? m[4];
+    const at = m.index + m[0].indexOf(name);
+    const line = source.slice(0, at).split("\n").length;
+    out.push({ line, text: source.split("\n")[line - 1].trim(), match: name });
+  }
+  return out;
+}
+
 function selfcheck() {
   const assertEq = (got, want, msg) => {
     if (got !== want) {
@@ -72,6 +95,14 @@ function selfcheck() {
   assertEq(findViolations("router.push('/instances#login')").length, 0, "a hash in a URL is not a colour");
   assertEq(findViolations("<span>&#9662;</span>").length, 0, "an HTML entity is not a colour");
   assertEq(findViolations('<div class="rounded-6 px-4 py-3 text-base-medium tabular-nums">').length, 0, "non-colour utilities must pass");
+  assertEq(findBareMenuIcons("[{ label: 'Check for updates', icon: 'refresh-cw', onClick: () => go() }]").length, 1, "a bare menu icon must be caught");
+  assertEq(findBareMenuIcons("{ icon: 'trash-2', label: 'Delete', theme: 'red' }").length, 1, "icon before label must be caught");
+  assertEq(findBareMenuIcons("{\n  job: true,\n  label: 'Start',\n  icon: 'play',\n  confirm: 'none',\n}").length, 1, "a multi-line menu option must be caught");
+  assertEq(findBareMenuIcons("{ label: 'Check for updates', icon: 'lucide-refresh-cw' }").length, 0, "a lucide- menu icon must pass");
+  assertEq(findBareMenuIcons("{ label: 'Start' } }, { icon: 'play' }").length, 0, "label and icon in different objects are not one option");
+  assertEq(findBareMenuIcons("legend: { icon: 'roundRect', textStyle: { label: 'x' } }").length, 0, "an echarts legend icon is not a menu icon");
+  assertEq(findBareMenuIcons("{ label: 'Open', icon: OpenIcon }").length, 0, "a component icon must pass");
+  assertEq(findBareMenuIcons("{ label: 'Start', icon: 'play' }")[0].line, 1, "the reported line is the icon's line");
   console.log("check-webui-tokens selfcheck: OK");
 }
 
@@ -81,18 +112,30 @@ function main() {
     return;
   }
   let total = 0;
+  let bare = 0;
   for (const file of walk(WEBUI_SRC)) {
-    const violations = findViolations(readFileSync(file, "utf8"));
-    if (violations.length === 0) continue;
-    total += violations.length;
-    console.error(`${file}: colour outside frappe-ui's semantic tokens:`);
-    for (const v of violations) console.error(`  line ${v.line}: ${v.match}    ${v.text}`);
+    const source = readFileSync(file, "utf8");
+    const violations = findViolations(source);
+    if (violations.length > 0) {
+      total += violations.length;
+      console.error(`${file}: colour outside frappe-ui's semantic tokens:`);
+      for (const v of violations) console.error(`  line ${v.line}: ${v.match}    ${v.text}`);
+    }
+    const icons = findBareMenuIcons(source);
+    if (icons.length > 0) {
+      bare += icons.length;
+      console.error(`${file}: menu icon that frappe-ui will not render (must be lucide-*):`);
+      for (const v of icons) console.error(`  line ${v.line}: '${v.match}' -> 'lucide-${v.match}'    ${v.text}`);
+    }
   }
   if (total > 0) {
     console.error(`\n${total} violation(s). Use bg-surface-*, text-ink-*, border-outline-* (see tools/design-adherence/README.md).`);
-    process.exit(1);
   }
-  console.log("check-webui-tokens: every colour in webui/src is a semantic token.");
+  if (bare > 0) {
+    console.error(`\n${bare} bare menu icon(s). frappe-ui renders a string menu icon only as lucide-<name>.`);
+  }
+  if (total > 0 || bare > 0) process.exit(1);
+  console.log("check-webui-tokens: every colour in webui/src is a semantic token and every menu icon is lucide-*.");
 }
 
 main();

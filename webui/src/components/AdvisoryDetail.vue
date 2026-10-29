@@ -46,10 +46,10 @@ const date = (v) => (v ? String(v).slice(0, 10) : '')
 const epss = computed(() => a.value.signals?.epss?.score != null ? `${(a.value.signals.epss.score * 100).toFixed(1)}%` : null)
 const STATE = { new: 'Open', read: 'Read', dismissed: 'Dismissed', not_applicable: 'Not applicable' }
 const stateOptions = computed(() => [
-  { label: 'Mark read', icon: 'check', onClick: () => mark('read'), condition: () => a.value.state === 'new' },
-  { label: 'Dismiss', icon: 'x', onClick: () => mark('dismissed'), condition: () => a.value.state !== 'dismissed' },
-  { label: 'Not applicable here…', icon: 'slash', onClick: () => (naOpen.value = true), condition: () => a.value.state !== 'not_applicable' },
-  { label: 'Reopen', icon: 'rotate-ccw', onClick: () => mark('new'), condition: () => a.value.state !== 'new' },
+  { label: 'Mark read', icon: 'lucide-check', onClick: () => mark('read'), condition: () => a.value.state === 'new' },
+  { label: 'Dismiss', icon: 'lucide-x', onClick: () => mark('dismissed'), condition: () => a.value.state !== 'dismissed' },
+  { label: 'Not applicable here…', icon: 'lucide-slash', onClick: () => (naOpen.value = true), condition: () => a.value.state !== 'not_applicable' },
+  { label: 'Reopen', icon: 'lucide-rotate-ccw', onClick: () => mark('new'), condition: () => a.value.state !== 'new' },
 ])
 // "Update pillow" closes every advisory in the same fix group, not only this one.
 function closes(m) {

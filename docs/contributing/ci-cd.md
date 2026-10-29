@@ -116,7 +116,7 @@ CWCLI_BIN=/path/to/runtime-only/cwcli uv run pytest tests/e2e -m e2e_pkg -o addo
 
 Runs on every push and PR.
 Its one `Design-system adherence` job runs on **every** change, because the web UI source it checks lives in `webui/src`, outside `tools/design-adherence/`.
-It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`) and checks the web UI for colour outside frappe-ui's semantic tokens (`npm run check:webui`), all under `tools/design-adherence/`.
+It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`) and checks the web UI for colour outside frappe-ui's semantic tokens and for menu icons frappe-ui will not render (`npm run check:webui`), all under `tools/design-adherence/`.
 The runner, its honest reachability limits, and the web UI check are owned by [`tools/design-adherence/README.md`](../../tools/design-adherence/README.md).
 
 Run the checks locally:
