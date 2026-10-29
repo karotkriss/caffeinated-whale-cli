@@ -349,6 +349,19 @@ def _recorded_forwarding(part: dict) -> tuple:
     )
 
 
+def _forwarding_changes(live: dict, part: dict) -> list[str]:
+    """How the live proxy host differs from what cwcli last wrote (empty: unchanged)."""
+    now, was = _forwarding(live), _recorded_forwarding(part)
+    changed = []
+    if now[:2] != was[:2]:
+        changed.append(f"it forwards to {now[0]}:{now[1]}, not {was[0]}:{was[1]}")
+    if now[2] != was[2]:
+        changed.append(f"its access list is {now[2] or 'none'}, not {was[2] or 'none'}")
+    if now[3] != was[3]:
+        changed.append("its /socket.io location was changed")
+    return changed
+
+
 def _forwarding(host: dict) -> tuple:
     locations = tuple(
         (loc.get("path"), loc.get("forward_host"), int(loc.get("forward_port") or 0))
@@ -485,15 +498,8 @@ def _proxy_step(run: _Run, part: dict) -> dict:
                 ) from None
             raise
     elif _forwarding(live) != _forwarding(spec):
-        now, was = _forwarding(live), _recorded_forwarding(part)
-        if part.get("id") == live["id"] and now != was:
-            changed = []
-            if now[:2] != was[:2]:
-                changed.append(f"it forwards to {now[0]}:{now[1]}, not {was[0]}:{was[1]}")
-            if now[2] != was[2]:
-                changed.append(f"its access list is {now[2] or 'none'}, not {was[2] or 'none'}")
-            if now[3] != was[3]:
-                changed.append("its /socket.io location was changed")
+        changed = _forwarding_changes(live, part)
+        if part.get("id") == live["id"] and changed:
             raise CwcliError(
                 ErrorKind.CONFLICT,
                 "publish.proxy_changed",
@@ -778,10 +784,7 @@ def unpublish_site(domain: str, *, on_event: OnEvent | None = None) -> Result[Un
         live = client.host(proxy_part["id"])
         if live is None:
             return None
-        expected = (proxy_part.get("forward_host"), int(proxy_part.get("forward_port") or 0))
-        if (live.get("forward_host"), int(live.get("forward_port") or 0)) != expected or (
-            live.get("domain_names") != [domain]
-        ):
+        if _forwarding_changes(live, proxy_part) or live.get("domain_names") != [domain]:
             host_gone = False
             return "changed in the proxy since cwcli made it, so it is left as it is"
         client.delete_host(proxy_part["id"])
@@ -882,15 +885,9 @@ def check_site(domain: str, *, now: float | None = None) -> dict[str, Any]:
         live = client.host(part["id"])
         if live is None:
             return "drift", "The proxy host was deleted."
-        if (live.get("forward_host"), int(live.get("forward_port") or 0)) != (
-            part.get("forward_host"),
-            int(part.get("forward_port") or 0),
-        ):
-            return "drift", (
-                f"The proxy host forwards to {live.get('forward_host')}:"
-                f"{live.get('forward_port')}, not {part.get('forward_host')}:"
-                f"{part.get('forward_port')}."
-            )
+        changed = _forwarding_changes(live, part)
+        if changed:
+            return "drift", f"The proxy host was changed: {'; '.join(changed)}."
         return "ok", "The proxy host matches."
 
     def certificate(client, part) -> tuple[str, str]:

@@ -1493,6 +1493,19 @@ def test_a_failed_new_site_starts_no_publish(fake_spawn, monkeypatch):
     assert [j["verb"] for j in jobs.list_jobs()] == ["new-site"]
 
 
+def test_publish_site_passes_an_explicit_empty_choice_as_a_choice(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(jobs.core_publish, "publish_site", lambda *a, **k: seen.update(k))
+    for args, address, access in [
+        ({"address": "", "access_list_id": 0}, "", 0),
+        ({}, None, None),
+    ]:
+        jobs._dispatch(
+            "publish-site", {"project": "p", "site": "erp.example.com"}, args, False, {}, None
+        )
+        assert (seen["address"], seen["access_list_id"]) == (address, access)
+
+
 def test_new_site_refuses_before_creating_a_site_it_cannot_publish(monkeypatch):
     from caffeinated_whale_cli.core import publish
 

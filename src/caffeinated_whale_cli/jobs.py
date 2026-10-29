@@ -1530,7 +1530,11 @@ def _dispatch(
                     project,
                     bench,
                     site,
-                    address=args["publish"].get("address") or None,
+                    address=(
+                        str(args["publish"]["address"]).strip()
+                        if args["publish"].get("address") is not None
+                        else None
+                    ),
                     proxied=(
                         args["publish"]["proxied"]
                         if isinstance(args["publish"].get("proxied"), bool)
@@ -1641,12 +1645,12 @@ def _dispatch(
     if verb == "publish-site":
         if not site:
             raise CwcliError(ErrorKind.USAGE, "site.required", "publish-site needs a target.site.")
-        access_list = str(args.get("access_list_id") or "")
+        access_list = str(args.get("access_list_id", ""))
         return core_publish.publish_site(
             project,
             site,
             bench=bench,
-            address=str(args.get("address") or "").strip() or None,
+            address=str(args["address"]).strip() if args.get("address") is not None else None,
             proxied=args.get("proxied") if isinstance(args.get("proxied"), bool) else None,
             access_list_id=int(access_list) if access_list.isdigit() else None,
             on_event=emit,
