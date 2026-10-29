@@ -2807,10 +2807,12 @@ def axi_init(
     bench keeps running throughout. Re-running against a stopped instance starts
     its existing containers as they are, without pulling images or recreating
     them, so its benches keep their Python environments. If the re-run would
-    change that instance's compose settings, such as a different `--port`, it
-    refuses with exit 1 (`instance.settings_changed`) and names each change;
-    remove the instance with `cwcli rm` (which backs it up) and run init again,
-    or rerun without the changed options.
+    change that instance's compose settings, such as a different `--port` on an
+    instance still on the default port range (8000-8005), it refuses with exit 1
+    (`instance.settings_changed`) and names each change; remove the instance
+    with `cwcli rm` (which backs it up) and run init again, or rerun without the
+    changed options. For an instance created on another `--port` or widened by
+    `cwcli scale`, it does not compare `--port`.
 
     After the bench+site is created, dev services start by default (reusing the
     same `core.start` behind `cwcli start`/`axi start`), so this leaves a running
