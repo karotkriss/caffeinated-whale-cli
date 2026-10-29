@@ -46,8 +46,8 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import IO, Any
 
@@ -63,6 +63,9 @@ from .rm import is_valid_project_name
 CATALOG_VERSION = 1
 LOGO_MAX_BYTES = 2 * 1024 * 1024
 _HTTP_TIMEOUT = 30
+# A scan runs on a fire-and-forget daemon thread, so its pool is ThreadPool (daemon
+# workers): concurrent.futures joins its workers at interpreter exit after they drain
+# every queued fetch, which held a stopping `cwcli ui` daemon open past --stop's wait.
 _SCAN_WORKERS = 6
 _UA = "cwcli-app-catalog"
 _LOGO_FILE_RE = re.compile(r"^[0-9a-f]{16}\.(svg|png|jpg|gif|webp|ico)$")
@@ -962,8 +965,8 @@ def scan_gitlab(
     namespace_of = {
         f"{host}/{p['path_with_namespace'].lower()}": (p.get("namespace") or {}) for p in projects
     }
-    with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as pool:
-        for entry in pool.map(work, projects):
+    with ThreadPool(_SCAN_WORKERS) as pool:
+        for entry in pool.imap(work, projects):
             done += 1
             if entry:
                 apps[entry["key"]] = entry
@@ -1061,8 +1064,8 @@ def scan_marketplace(previous: dict[str, Any]) -> tuple[SourceState, dict[str, d
             "registry_logo_url": entry.get("logo_url"),
         }
 
-    with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as pool:
-        for row in pool.map(work, entries):
+    with ThreadPool(_SCAN_WORKERS) as pool:
+        for row in pool.imap(work, entries):
             if row:
                 apps[row["key"]] = row
     source.repos = len(entries)
