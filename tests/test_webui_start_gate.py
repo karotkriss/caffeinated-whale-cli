@@ -41,11 +41,13 @@ STUBS = {
     ),
     "./job-toasts": "export const trackJob = () => {}",
     "./publish": (
-        "export const publicationOf = (site) => (globalThis.__t.published || []).includes(site) ? {} : null\n"
+        "export const publicationAt = (site, project, benchPath) =>\n"
+        "  (globalThis.__t.published || []).some((p) => p.join('|') === [site, project, benchPath].join('|')) ? {} : null\n"
         "export const publications = { dns: { name: 'Cloudflare DNS' }, proxy: null }"
     ),
     "../router": "export const router = { push() {} }",
     "./fleet": (
+        "export const details = { acme: { data: { benches: [{ index: 0, path: '/workspace/bench-a' }, { index: 1, path: '/workspace/bench-b' }] } } }\n"
         "export const instance = (p) => globalThis.__t.instances[p]\n"
         "export const loadDetail = () => {}\n"
         "export async function getJsonUrl(project, query) {\n"
@@ -328,11 +330,18 @@ def test_a_running_instance_asks_about_a_stopped_bench_only_when_the_verb_needs_
     assert out["calls"] == []
 
 
-@pytest.mark.parametrize(("published", "sent"), [(True, {"unpublish": True}), (False, {})])
-def test_dropping_a_published_site_offers_also_unpublish_ticked(run, published, sent):
+@pytest.mark.parametrize(
+    ("publication", "published"),
+    [
+        (["b.localhost", "acme", "/workspace/bench-b"], True),
+        (["b.localhost", "acme", "/workspace/bench-a"], False),
+        (None, False),
+    ],
+)
+def test_dropping_a_published_site_offers_also_unpublish_ticked(run, publication, published):
     running = {"acme": {**STOPPED_TWO_BENCHES["acme"], "container_running": True}}
     out = run(
-        f"globalThis.__t.published = {json.dumps(['b.localhost'] if published else [])}\n"
+        f"globalThis.__t.published = {json.dumps([publication] if publication else [])}\n"
         f"dialog.openAction('site.remove', {json.dumps(SITE)})\n"
         "const values = { ...dialog.dialogState.values }\n"
         "await dialog.runAction('site.remove', dialog.dialogState.ctx, values)\n"
@@ -341,4 +350,4 @@ def test_dropping_a_published_site_offers_also_unpublish_ticked(run, published, 
     )
     assert out["published"] is published
     assert out["values"] == ({"unpublish": True} if published else {})
-    assert out["calls"][-1]["job"]["args"] == sent
+    assert out["calls"][-1]["job"]["args"] == ({"unpublish": True} if published else {})

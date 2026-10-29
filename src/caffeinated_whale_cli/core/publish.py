@@ -30,6 +30,7 @@ elsewhere, a proxy host deleted, a certificate whose renewal is failing).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -220,6 +221,13 @@ def _addresses(prior: dict, dns: tuple | None, address: str | None) -> tuple[str
     """The site's address override (this call's, else the one it was published with)
     and the IPv4 and IPv6 addresses its records point at."""
     override = (address if address is not None else prior.get("address_override") or "").strip()
+    if override:
+        try:
+            override = str(ipaddress.IPv4Address(override))
+        except ValueError:
+            raise CwcliError(
+                ErrorKind.USAGE, "publish.address", f"{override!r} is not an IPv4 address."
+            ) from None
     settings = dns[1] if dns else {}
     ipv4 = override or str(settings.get("ipv4") or "").strip()
     ipv6 = "" if override else str(settings.get("ipv6") or "").strip()
