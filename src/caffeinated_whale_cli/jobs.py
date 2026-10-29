@@ -899,7 +899,11 @@ def _serving_bench_paths(project: str) -> list[str]:
     paths = [str(b["path"]) for b in core_resolvers.cached_benches(project) if b.get("path")] or [
         core_resolvers.DEFAULT_BENCH_PATH
     ]
-    return [p for p in paths if core_supervision.discover_stack(container, p).supervisor_up]
+    return [
+        p
+        for p in paths
+        if core_supervision.discover_stack(container, p, required=True).supervisor_up
+    ]
 
 
 def _restart_serving_benches(project: str, emit: _Recorder) -> Result:
