@@ -1,0 +1,69 @@
+/* The premium layer's CSS. Colour only ever comes from frappe-ui's token variables or the gradient theme stops the
+   effects store writes (--cw-g0..3 as "r g b"), so the design-adherence token lint stays green. */
+
+/* Theme swatches: the selected ring moves with a transition (feedback tier). */
+.cw-swatch-chip { transition: box-shadow 120ms var(--ease-out), transform 120ms var(--ease-out); }
+.cw-swatch-on { box-shadow: 0 0 0 2px var(--surface-base), 0 0 0 4px var(--ink-gray-9); }
+@media (hover: hover) and (pointer: fine) { .cw-swatch:hover .cw-swatch-chip { transform: scale(1.03); } }
+@media (prefers-reduced-motion: reduce) { .cw-swatch-chip, .cw-swatch:hover .cw-swatch-chip { transform: none; } }
+
+/* Glass: a translucent surface token over the gradient, blurred (the hero's icon tile). */
+:root { --cw-glass-rgb: 255 255 255; }
+[data-theme='dark'] { --cw-glass-rgb: 22 22 22; }
+.cw-glass { background: rgb(var(--cw-glass-rgb) / 0.78); -webkit-backdrop-filter: blur(28px) saturate(1.25); backdrop-filter: blur(28px) saturate(1.25); }
+
+/* Route content crossfade (opacity only; tens-of-times-a-day tier, so barely there). */
+.cw-fade-enter-active { transition: opacity 120ms var(--ease-out); }
+.cw-fade-leave-active { transition: opacity 80ms var(--ease-out); }
+.cw-fade-enter-from, .cw-fade-leave-to { opacity: 0; }
+
+/* Hero surfaces (the Instances hero and the detail header cards): the card IS the gradient; the scrim keeps ink text
+   readable over it, a surface-coloured wash heaviest on the text side. */
+.cw-c-scrim { background: linear-gradient(100deg, rgb(var(--cw-glass-rgb) / 0.62), rgb(var(--cw-glass-rgb) / 0.3) 60%, rgb(var(--cw-glass-rgb) / 0.12)); }
+
+/* Sign-in: the wordmark over the gradient (Inter Display, i.e. Inter 4 at optical size 32, weight 900, uppercase,
+   tight), sized from the viewport so the longer line fills 88 percent of the panel inside its padding: the panel is
+   100vw in the one-column phone layout (45 px at 390) and 50vw from md up (78 px at 1280). */
+.cw-c-wordmark { font-family: 'Inter Variable', sans-serif; font-weight: 900; font-variation-settings: 'opsz' 32, 'wght' 900; text-transform: uppercase; letter-spacing: -0.03em; font-size: 11.53vw; }
+@media (min-width: 768px) { .cw-c-wordmark { font-size: 6.08vw; } }
+/* A surface-coloured wash under the sign-in's bottom-left headline so ink text keeps AA over the gradient. */
+.cw-c-signin-foot { background: linear-gradient(to top, rgb(var(--cw-glass-rgb) / 0.6), rgb(var(--cw-glass-rgb) / 0.25) 70%, transparent); }
+
+/* The light/dark/system toggle at the right end of the Appearance row. State indication: the three icons sit stacked;
+   the active one is upright and visible, the others rotated 90deg, slightly small and invisible, so a change rotates
+   the old icon out and the new one in along the same path (transform + opacity only, 200 ms on --ease-out, a
+   transition so rapid clicks retarget instead of restarting). Reduced motion keeps a plain opacity crossfade. */
+.cw-scheme-toggle { position: relative; display: inline-flex; width: 1.5rem; height: 1.5rem; align-items: center; justify-content: center; border-radius: 9999px; color: var(--ink-gray-6); transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out); }
+@media (hover: hover) and (pointer: fine) { .cw-scheme-toggle:hover { background-color: var(--surface-gray-3); color: var(--ink-gray-8); } }
+.cw-scheme-toggle:active { transform: scale(0.94); }
+.cw-scheme-toggle > span { position: absolute; width: 0.875rem; height: 0.875rem; opacity: 0; transform: rotate(90deg) scale(0.85); transition: transform 200ms var(--ease-out), opacity 200ms var(--ease-out); }
+.cw-scheme-toggle > span[data-on] { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cw-scheme-toggle > span { transform: none; transition: opacity 150ms var(--ease-out); }
+  .cw-scheme-toggle:active { transform: none; }
+}
+
+/* The shell with effects on: the content column stays the stock opaque base; the sidebar's own surface is the moving
+   gradient (the same shader as the sign-in page), rendered inside the sidebar behind its content, under a light
+   tint for text contrast and a static grain so it reads matte. The sidebar is its own stacking context so the surface
+   stays behind the content. The tint is the least that keeps every label at AA over the worst theme stop (45 percent
+   of the stock sidebar surface in light; in dark frappe-ui's sidebar token is transparent, so 62 percent of the stock
+   dark body), and the sidebar's two faintest ink tokens step up to ink-gray-7 for the same reason. */
+[data-effects] .cw-a-root [data-slot='desktop-shell-content'] { background: var(--surface-base); }
+[data-effects] .cw-a-sidebar { position: relative; z-index: 0; background: transparent; }
+.cw-a-side-tint { background: color-mix(in oklch, var(--surface-sidebar) 45%, transparent); }
+[data-theme='dark'] .cw-a-side-tint { background: color-mix(in oklch, var(--surface-base) 62%, transparent); }
+.cw-a-side-grain { opacity: var(--cw-grain-a, 0.18); mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0.7 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-size: 160px 160px; }
+[data-theme='dark'] { --cw-grain-a: 0.12; }
+[data-effects] .cw-a-sidebar .text-ink-gray-5, [data-effects] .cw-a-sidebar .text-ink-gray-6 { color: var(--ink-gray-7); }
+
+/* Inside the sidebar, the fixed top block and the scrollable nav read as one; only the fixed bottom block (account,
+   Appearance, Settings) is set off from the nav, by a soft fade-in hairline (ink at 14 percent, transparent at both
+   ends) and extra spacing in place of the stock border-top line. */
+[data-effects] .cw-a-sidebar .cw-a-side-foot { border-top-color: transparent; padding-top: 0.75rem; }
+[data-effects] .cw-a-sidebar .cw-a-side-foot::before { content: ''; position: absolute; left: 0.75rem; right: 0.75rem; top: 0; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--ink-gray-9) 14%, transparent) 25% 75%, transparent); }
+
+/* GitHub's mark is black on transparent, so it vanished on the dark sidebar; in dark the mark is inverted (GitLab's
+   coloured favicon stays as it is). */
+[data-theme='dark'] img[data-host='github.com'] { filter: invert(1); }

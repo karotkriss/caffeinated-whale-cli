@@ -9,13 +9,17 @@ import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FleetPerformance from '../components/FleetPerformance.vue'
 import { loadUpdates, updatesFor } from '../data/updates'
-import { createJob } from '../data/jobs'
+import { createJob, activeJobs } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { fleet, instances, details, publishedRange, countSites, cacheProjects, setFocus } from '../data/fleet'
 import { applySetting, settings } from '../data/settings'
 import { menuOption } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
-import { can } from '../data/session'
+import { can, session } from '../data/session'
+// --- premium layer (see webui/src/premium/): the fleet hero ---
+import { Motion } from 'motion-v'
+import ShaderGradient from '../premium/ShaderGradient.vue'
+import { active, motion, stops, effects } from '../premium/effects'
 
 onMounted(() => {
   loadUpdates()
@@ -23,6 +27,17 @@ onMounted(() => {
   cacheProjects.load()
 })
 const query = ref('')
+const activeJobsLabel = computed(() => (activeJobs.value.length ? `${activeJobs.value.length} ${activeJobs.value.length === 1 ? 'job' : 'jobs'} running` : 'no jobs running'))
+const up = computed(() => instances.value.filter((i) => i.container_running).length)
+// The hero label: a time-of-day greeting by the browser's local clock with the signed-in name.
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  const part = h >= 5 && h < 12 ? 'Good morning' : h >= 12 && h < 18 ? 'Good afternoon' : 'Good evening'
+  const who = session.user?.name || session.user?.username
+  return who ? `${part}, ${who}` : part
+})
+const benchCount = computed(() => instances.value.reduce((n, i) => n + (details[i.project]?.data?.benches.length || 0), 0))
+const siteTotal = computed(() => instances.value.reduce((n, i) => n + countSites(details[i.project]?.data), 0))
 const live = computed(() => new Set(instances.value.map((i) => i.project)))
 const remembered = computed(() => (cacheProjects.data || []).filter((p) => !live.value.has(p.name)).sort((a, b) => String(b.last_updated).localeCompare(String(a.last_updated))))
 const showRemembered = ref(false)
@@ -65,6 +80,17 @@ const menu = (i) => [
     </template>
   </PageHead>
   <div class="space-y-6 px-3 pb-20 pt-5 sm:px-5">
+    <section v-if="active && instances.length" class="cw-c-hero relative overflow-hidden rounded-7 border border-outline-gray-1">
+      <div class="absolute inset-0" aria-hidden="true"><ShaderGradient :stops="stops" :animate="motion" :scale="0.8" /></div>
+      <div class="cw-c-scrim absolute inset-0" aria-hidden="true" />
+      <Motion as="div" class="relative flex flex-wrap items-end justify-between gap-4 px-5 py-6 sm:px-7 sm:py-8" :initial="{ opacity: 0, transform: effects.reducedMotion ? 'none' : 'translateY(8px)' }" :animate="{ opacity: 1, transform: 'translateY(0px)' }" :transition="{ duration: 0.28, ease: EASE }">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wide text-ink-gray-7">{{ greeting }}</p>
+          <h2 class="mt-1 text-3xl font-semibold leading-tight tracking-tight text-ink-gray-9 sm:text-4xl">{{ up }} of {{ instances.length }} {{ instances.length === 1 ? 'instance' : 'instances' }} running</h2>
+          <p class="mt-1.5 text-base text-ink-gray-7">{{ benchCount }} {{ benchCount === 1 ? 'bench' : 'benches' }} · {{ siteTotal }} {{ siteTotal === 1 ? 'site' : 'sites' }} · {{ activeJobsLabel }}</p>
+        </div>
+      </Motion>
+    </section>
     <div v-if="instances.length > 10" class="flex items-center gap-2">
       <TextInput v-model="query" class="w-64" type="search" placeholder="Search instances">
         <template #prefix><span class="lucide-search size-3.5 text-ink-gray-5" aria-hidden="true" /></template>

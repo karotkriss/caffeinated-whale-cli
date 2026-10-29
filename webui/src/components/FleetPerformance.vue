@@ -38,7 +38,7 @@ onMounted(() => loadMetrics())
     <div class="grid gap-3 sm:grid-cols-3">
       <TimeSeries title="CPU, all running instances" :series="cpu" :format="fmtPct" kind="percent" :stackable="false" settings-key="fleet:cpu" height="h-28"><template #empty>No running instance</template></TimeSeries>
       <TimeSeries title="Memory, all running instances" :series="mem" :format="fmtBytes" kind="bytes" :stackable="false" settings-key="fleet:memory" height="h-28"><template #empty>No running instance</template></TimeSeries>
-      <TimeSeries title="Host memory available" :series="host.memAvailable" :format="fmtBytes" kind="bytes" :max="host.memTotal" :stackable="false" settings-key="fleet:host-memory" height="h-28" />
+      <TimeSeries title="Host memory used" :series="host.memUsed" :format="fmtBytes" kind="bytes" :max="host.memTotal" :stackable="false" settings-key="fleet:host-memory" height="h-28" />
     </div>
   </section>
 </template>

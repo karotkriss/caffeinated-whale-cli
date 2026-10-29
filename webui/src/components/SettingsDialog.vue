@@ -5,6 +5,7 @@
 // you were. Every write still goes through applySetting -> POST /api/v1/settings,
 // and each row keeps its terminal twin as a compact copy affordance.
 import { computed, ref, watch } from 'vue'
+import AppearanceControls from '../premium/AppearanceControls.vue'
 import { Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
 import CommandCopy from '../components/CommandCopy.vue'
@@ -196,6 +197,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </template>
       <SettingsNavGroup label="General">
         <SettingsNavItem value="account"><template #prefix><span class="lucide-user-round size-4" aria-hidden="true" /></template>Your account</SettingsNavItem>
+        <SettingsNavItem value="appearance"><template #prefix><span class="lucide-palette size-4" aria-hidden="true" /></template>Appearance</SettingsNavItem>
         <SettingsNavItem value="health"><template #prefix><span class="lucide-stethoscope size-4" aria-hidden="true" /></template>Health check</SettingsNavItem>
         <SettingsNavItem value="about"><template #prefix><span class="lucide-info size-4" aria-hidden="true" /></template>About cwcli</SettingsNavItem>
       </SettingsNavGroup>
@@ -414,6 +416,10 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
             <DoctorView />
             <div class="mt-4 max-w-sm"><CommandLine command="cwcli doctor" /></div>
           </SettingsBody>
+        </SettingsPanel>
+        <SettingsPanel value="appearance">
+          <SettingsHeader title="Appearance" description="The gradient theme, light or dark, and whether the visual effects run at all. Kept in this browser." />
+          <SettingsBody><AppearanceControls /></SettingsBody>
         </SettingsPanel>
         <SettingsPanel value="about">
           <SettingsHeader title="About cwcli" :description="`Version ${session.meta?.version || 'unknown'} · web UI protocol ${session.meta?.protocol ?? 'unknown'}`" />
