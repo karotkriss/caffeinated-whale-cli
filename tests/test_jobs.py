@@ -1434,7 +1434,13 @@ def _published(monkeypatch, *domains, project="p"):
         publish,
         "entry",
         lambda d: (
-            {"project": project, "bench_path": "/workspace/b0", "access_list_id": 3}
+            {
+                "project": project,
+                "bench_path": "/workspace/b0",
+                "address_override": "",
+                "proxied": False,
+                "access_list_id": 3,
+            }
             if d in domains
             else None
         ),
@@ -1576,6 +1582,7 @@ def test_a_move_repoints_a_kept_name_and_unpublishes_a_renamed_one(fake_spawn, m
     assert children[0]["target"] == {"project": "q", "bench": "1", "site": "a.example.com"}
     assert children[0]["args"] == {}  # publish-site keeps the site's own choices
     assert children[1]["target"] == {"project": "p", "site": "b.example.com"}
+    assert children[2]["args"] == {"proxied": False, "access_list_id": 3}  # the source's choices
 
 
 def test_publish_jobs_are_keyed_by_the_name_and_unpublish_is_an_admins(fake_spawn):

@@ -210,7 +210,20 @@ class TestPublish:
         report = publish.publish_site("p", SITE).data
         assert report.parts["proxy"]["state"] == "failed"
         assert "changed outside cwcli" in report.parts["proxy"]["message"]
+        assert (
+            "forwards to 172.17.0.1:9999, not 172.17.0.1:8001" in report.parts["proxy"]["message"]
+        )
         assert host["forward_port"] == 9999
+
+    def test_a_hand_added_access_list_is_named_in_the_conflict(self, world):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        [host] = world.npm.hosts.values()
+        host["access_list_id"] = 3
+        world.ports["value"] = (8003, 9003)
+        message = publish.publish_site("p", SITE).data.parts["proxy"]["message"]
+        assert "its access list is 3, not none" in message and "forwards to" not in message
+        assert host["access_list_id"] == 3 and host["forward_port"] == 8001
 
     def test_a_record_written_before_a_failed_write_stays_cwclis(self, world, monkeypatch):
         turn_on(world)
