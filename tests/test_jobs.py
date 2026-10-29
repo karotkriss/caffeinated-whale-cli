@@ -1427,16 +1427,23 @@ def test_a_containers_only_start_reports_whether_the_frappe_container_was_stoppe
 # ------------------------------------------------- publishing (core.publish) jobs
 
 
-def _published(monkeypatch, *domains):
+def _published(monkeypatch, *domains, project="p"):
     from caffeinated_whale_cli.core import publish
 
     monkeypatch.setattr(
         publish,
         "entry",
         lambda d: (
-            {"address": "203.0.113.9", "proxied": False, "access_list_id": 3}
+            {"project": project, "bench_path": "/workspace/b0", "access_list_id": 3}
             if d in domains
             else None
+        ),
+    )
+    monkeypatch.setattr(
+        publish.resolvers,
+        "resolve_bench",
+        lambda p, b, _path: Result(
+            status=Status.OK, data="/workspace/b0" if b in (None, "0") else "/workspace/b1"
         ),
     )
 
@@ -1514,6 +1521,22 @@ def test_drop_site_with_also_unpublish_starts_unpublish_site(fake_spawn, monkeyp
     assert jobs.read_job(child_id)["verb"] == "unpublish-site"
 
 
+@pytest.mark.parametrize("project, bench", [("q", "0"), ("p", "1")])
+def test_drop_site_of_a_same_named_copy_elsewhere_starts_nothing(
+    fake_spawn, monkeypatch, project, bench
+):
+    _published(monkeypatch, "erp.example.com")
+    parent = jobs.create_job(
+        "rm-site",
+        {"project": project, "bench": bench, "site": "erp.example.com"},
+        {"unpublish": True},
+        consent=True,
+    )
+    _succeed(monkeypatch)
+    assert jobs.run_job(parent["id"]) == 0
+    assert "followed_by" not in jobs.read_job(parent["id"])
+
+
 def test_drop_site_of_an_unpublished_site_starts_nothing(fake_spawn, monkeypatch):
     _published(monkeypatch)
     parent = jobs.create_job(
@@ -1551,7 +1574,7 @@ def test_a_move_repoints_a_kept_name_and_unpublishes_a_renamed_one(fake_spawn, m
         ("publish-site", "c.example.com"),
     ]
     assert children[0]["target"] == {"project": "q", "bench": "1", "site": "a.example.com"}
-    assert children[0]["args"] == {"address": "203.0.113.9", "proxied": False, "access_list_id": 3}
+    assert children[0]["args"] == {}  # publish-site keeps the site's own choices
     assert children[1]["target"] == {"project": "p", "site": "b.example.com"}
 
 

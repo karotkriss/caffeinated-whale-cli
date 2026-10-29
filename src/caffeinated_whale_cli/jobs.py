@@ -1527,7 +1527,15 @@ def _dispatch(
             refused = [
                 row["text"]
                 for row in core_publish.preflight(
-                    project, bench, site, address=args["publish"].get("address") or None
+                    project,
+                    bench,
+                    site,
+                    address=args["publish"].get("address") or None,
+                    proxied=(
+                        args["publish"]["proxied"]
+                        if isinstance(args["publish"].get("proxied"), bool)
+                        else None
+                    ),
                 )
                 if row["state"] == "fail"
             ]
@@ -2102,7 +2110,12 @@ def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[st
     if verb == "new-site" and isinstance(args.get("publish"), dict):
         moved = {"project": project, "bench": target.get("bench"), "site": site}
         return [("publish-site", moved, dict(args["publish"]))]
-    if verb == "rm-site" and args.get("unpublish") is True and site and core_publish.entry(site):
+    if (
+        verb == "rm-site"
+        and args.get("unpublish") is True
+        and site
+        and core_publish.entry_at(site, project, _bench(target))
+    ):
         return [("unpublish-site", {"project": project, "site": site}, {})]
     if verb != "move-sites":
         return []
@@ -2110,7 +2123,7 @@ def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[st
     for pair in args.get("sites") or []:
         source = str(pair.get("site") or "")
         name = str(pair.get("target_site") or source)
-        published = core_publish.entry(source)
+        published = core_publish.entry_at(source, project, _bench(target))
         if not published:
             continue
         moved = {
@@ -2119,8 +2132,7 @@ def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[st
             "site": name,
         }
         if name == source:
-            kept = {k: published.get(k) for k in ("address", "proxied", "access_list_id")}
-            out.append(("publish-site", moved, kept))
+            out.append(("publish-site", moved, {}))
             continue
         if args.get("unpublish") is True:
             out.append(("unpublish-site", {"project": project, "site": source}, {}))

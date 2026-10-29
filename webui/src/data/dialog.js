@@ -1,13 +1,13 @@
 import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
 import { ACTIONS, availability } from './actions'
-import { instance, loadDetail, getJsonUrl } from './fleet'
+import { details, instance, loadDetail, getJsonUrl } from './fleet'
 import { postJson } from './api'
 import { createJob } from './jobs'
 import { router } from '../router'
 import { trackJob } from './job-toasts'
 import { ensureRunning } from './start-gate'
-import { publicationOf, publications } from './publish'
+import { publicationAt, publications } from './publish'
 
 // One action dialog for the whole app (components/ActionDialog.vue renders it).
 export const dialogState = reactive({
@@ -29,7 +29,7 @@ export function openAction(id, ctx = {}) {
   if (!a) throw new Error(`unknown action ${id}`)
   const full = {
     benchName: ctx.bench,
-    published: !!(ctx.site && publicationOf(ctx.site)),
+    published: !!(ctx.site && publicationAt(ctx.site, ctx.project, details[ctx.project]?.data?.benches?.find((b) => String(b.index) === String(ctx.bench))?.path)),
     publishVia: { dns: publications.dns?.name, proxy: publications.proxy?.name },
     ...ctx,
   }

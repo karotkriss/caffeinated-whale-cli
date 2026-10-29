@@ -81,7 +81,7 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   and ref), ``community_add`` (installs the reviewed ``commit``),
   ``community_check``, ``community_update`` (the reviewed newer ``commit``) and
   ``community_remove`` (Admin)
-* ``POST /api/v1/publish/preflight``        - ``{project, bench, site, address}``: the
+* ``POST /api/v1/publish/preflight``        - ``{project, bench, site, address, proxied}``: the
   read-only checks before a site is published, one row per part (Operator)
 * ``POST /api/v1/publish/check``            - ``{site}``: compare a published site's
   parts with what is live and report drift; reads only, repairs nothing (Operator)
@@ -1390,6 +1390,9 @@ class _Handler(BaseHTTPRequestHandler):
                     str(payload["bench"]) if payload.get("bench") is not None else None,
                     _required_str(payload, "site"),
                     address=str(payload.get("address") or "").strip() or None,
+                    proxied=(
+                        payload["proxied"] if isinstance(payload.get("proxied"), bool) else None
+                    ),
                 )
                 status, body = 200, {"data": {"rows": rows}}
             elif parsed.path == "/api/v1/publish/check":
