@@ -1422,3 +1422,169 @@ def test_a_containers_only_start_reports_whether_the_frappe_container_was_stoppe
     )
 
     assert result.data == {"containers_started": False}
+
+
+# ------------------------------------------------- publishing (core.publish) jobs
+
+
+def _published(monkeypatch, *domains):
+    from caffeinated_whale_cli.core import publish
+
+    monkeypatch.setattr(
+        publish,
+        "entry",
+        lambda d: (
+            {"address": "203.0.113.9", "proxied": False, "access_list_id": 3}
+            if d in domains
+            else None
+        ),
+    )
+
+
+def _succeed(monkeypatch):
+    monkeypatch.setattr(jobs, "_dispatch", lambda *_a: Result(status=Status.OK, data={"ok": True}))
+
+
+def test_new_site_with_publish_starts_publish_site_as_part_two(fake_spawn, monkeypatch):
+    parent = jobs.create_job(
+        "new-site",
+        {"project": "p", "bench": "0", "site": "erp.example.com"},
+        {"publish": {"proxied": False, "access_list_id": 3}},
+        origin={"account": "admin", "account_source": "local"},
+    )
+    _succeed(monkeypatch)
+    assert jobs.run_job(parent["id"]) == 0
+    done = jobs.read_job(parent["id"])
+    [child_id] = done["followed_by"]
+    child = jobs.read_job(child_id)
+    assert child["verb"] == "publish-site"
+    assert child["target"] == {"project": "p", "bench": "0", "site": "erp.example.com"}
+    assert child["args"] == {"proxied": False, "access_list_id": 3}
+    assert child["origin"]["follows"] == parent["id"]
+    assert (child["origin"]["part"], child["origin"]["of"]) == (2, 2)
+    assert child["origin"]["account"] == "admin"
+    assert child["project_key"] == "@publish:erp.example.com"
+    events = jobs.read_job(parent["id"], include_events=True)["events"]
+    types = [e["type"] for e in events]
+    assert types[-3:] == ["follow_up_step_start", "follow_up_step_end", "job_finished"]
+    assert events[-2]["message"] == "Started publish-site erp.example.com (part 2 of 2)"
+
+
+def test_a_failed_new_site_starts_no_publish(fake_spawn, monkeypatch):
+    parent = jobs.create_job(
+        "new-site", {"project": "p", "site": "erp.example.com"}, {"publish": {}}
+    )
+    monkeypatch.setattr(jobs, "_dispatch", lambda *_a: Result(status=Status.OK, data={"ok": False}))
+    assert jobs.run_job(parent["id"]) == 1
+    assert "followed_by" not in jobs.read_job(parent["id"])
+    assert [j["verb"] for j in jobs.list_jobs()] == ["new-site"]
+
+
+def test_new_site_refuses_before_creating_a_site_it_cannot_publish(monkeypatch):
+    from caffeinated_whale_cli.core import publish
+
+    monkeypatch.setattr(
+        publish,
+        "preflight",
+        lambda *a, **k: [{"part": "dns", "state": "fail", "text": "It is taken."}],
+    )
+    created = []
+    monkeypatch.setattr(jobs.core_new_site, "new_site", lambda *a, **k: created.append(1))
+    with pytest.raises(CwcliError) as e:
+        jobs._dispatch(
+            "new-site",
+            {"project": "p", "site": "erp.example.com"},
+            {"publish": {}},
+            False,
+            {"admin_password": "x"},
+            lambda _e: None,
+        )
+    assert e.value.code == "publish.preflight" and "It is taken." in e.value.message
+    assert created == []
+
+
+def test_drop_site_with_also_unpublish_starts_unpublish_site(fake_spawn, monkeypatch):
+    _published(monkeypatch, "erp.example.com")
+    parent = jobs.create_job(
+        "rm-site", {"project": "p", "site": "erp.example.com"}, {"unpublish": True}, consent=True
+    )
+    _succeed(monkeypatch)
+    assert jobs.run_job(parent["id"]) == 0
+    [child_id] = jobs.read_job(parent["id"])["followed_by"]
+    assert jobs.read_job(child_id)["verb"] == "unpublish-site"
+
+
+def test_drop_site_of_an_unpublished_site_starts_nothing(fake_spawn, monkeypatch):
+    _published(monkeypatch)
+    parent = jobs.create_job(
+        "rm-site", {"project": "p", "site": "shop.localhost"}, {"unpublish": True}, consent=True
+    )
+    _succeed(monkeypatch)
+    assert jobs.run_job(parent["id"]) == 0
+    assert "followed_by" not in jobs.read_job(parent["id"])
+
+
+def test_a_move_repoints_a_kept_name_and_unpublishes_a_renamed_one(fake_spawn, monkeypatch):
+    _published(monkeypatch, "a.example.com", "b.example.com")
+    parent = jobs.create_job(
+        "move-sites",
+        {"project": "p", "bench": "0"},
+        {
+            "sites": [
+                {"site": "a.example.com", "target_site": "a.example.com"},
+                {"site": "b.example.com", "target_site": "c.example.com"},
+                {"site": "shop.localhost", "target_site": "shop.localhost"},
+            ],
+            "target_project": "q",
+            "target_bench": "1",
+            "unpublish": True,
+            "publish": True,
+        },
+        consent=True,
+    )
+    _succeed(monkeypatch)
+    assert jobs.run_job(parent["id"]) == 0
+    children = [jobs.read_job(i) for i in jobs.read_job(parent["id"])["followed_by"]]
+    assert [(c["verb"], c["target"]["site"]) for c in children] == [
+        ("publish-site", "a.example.com"),
+        ("unpublish-site", "b.example.com"),
+        ("publish-site", "c.example.com"),
+    ]
+    assert children[0]["target"] == {"project": "q", "bench": "1", "site": "a.example.com"}
+    assert children[0]["args"] == {"address": "203.0.113.9", "proxied": False, "access_list_id": 3}
+    assert children[1]["target"] == {"project": "p", "site": "b.example.com"}
+
+
+def test_publish_jobs_are_keyed_by_the_name_and_unpublish_is_an_admins(fake_spawn):
+    from caffeinated_whale_cli.core import accounts, schedules
+
+    first = jobs.create_job("publish-site", {"project": "p", "site": "erp.example.com"}, {})
+    with pytest.raises(CwcliError) as e:
+        jobs.create_job("unpublish-site", {"project": "q", "site": "erp.example.com"}, {})
+    assert e.value.code == "job.project_busy"
+    assert jobs.create_job("start", {"project": "p"}, {})["state"] in jobs.ACTIVE_STATES
+    assert first["project_key"] == "@publish:erp.example.com"
+    assert accounts.admin_only("unpublish-site") and not accounts.admin_only("publish-site")
+    assert "unpublish-site" in schedules.NEVER
+
+
+def test_publish_site_dispatches_to_the_core(monkeypatch):
+    from caffeinated_whale_cli.core import publish
+
+    seen = {}
+
+    def publish_site(project, site, **kwargs):
+        seen.update(project=project, site=site, **kwargs)
+        return Result(status=Status.OK, data={"ok": True})
+
+    monkeypatch.setattr(publish, "publish_site", publish_site)
+    jobs._dispatch(
+        "publish-site",
+        {"project": "p", "bench": "1", "site": "erp.example.com"},
+        {"address": " 203.0.113.5 ", "proxied": True, "access_list_id": 4},
+        False,
+        {},
+        lambda _e: None,
+    )
+    assert seen["bench"] == "1" and seen["address"] == "203.0.113.5"
+    assert seen["proxied"] is True and seen["access_list_id"] == 4

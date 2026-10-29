@@ -49,6 +49,7 @@ from .core import integrations as core_integrations
 from .core import label as core_label
 from .core import new_bench as core_new_bench
 from .core import new_site as core_new_site
+from .core import publish as core_publish
 from .core import resolvers as core_resolvers
 from .core import restart as core_restart
 from .core import rm as core_rm
@@ -122,8 +123,16 @@ ALLOWED_VERBS = frozenset(
         "rm",
         "rm-site",
         "rm-bench",
+        # Publishing a site at its public name (core.publish): DNS record, proxy host and
+        # certificate. New site, Drop site and Move start them after they succeed when
+        # asked to (``_follow_ups``).
+        "publish-site",
+        "unpublish-site",
     }
 )
+# One public name is published in one place, so these are keyed by the name, not the
+# instance: publishing never waits on (or blocks) the instance's other jobs.
+_PUBLISH_VERBS = frozenset({"publish-site", "unpublish-site"})
 
 FINISHED_RETENTION = 100
 INTERRUPT_DELIVERY_S = 300.0
@@ -401,6 +410,8 @@ def _prune(records: list[dict[str, Any]]) -> None:
 
 
 def _project_key(target: dict[str, Any], verb: str) -> str:
+    if verb in _PUBLISH_VERBS and target.get("site"):
+        return f"@publish:{target['site']}"
     project = target.get("project")
     return str(project).strip() if isinstance(project, str) and project.strip() else f"@{verb}"
 
@@ -1510,6 +1521,23 @@ def _dispatch(
                 "new_site.admin_password_required",
                 "New site requires an Administrator password from the dialog.",
             )
+        if isinstance(args.get("publish"), dict):
+            # Publishing was asked for: its read-only preflight refuses before the site
+            # exists, so a name that cannot be published never leaves a site behind.
+            refused = [
+                row["text"]
+                for row in core_publish.preflight(
+                    project, bench, site, address=args["publish"].get("address") or None
+                )
+                if row["state"] == "fail"
+            ]
+            if refused:
+                raise CwcliError(
+                    ErrorKind.PRECONDITION,
+                    "publish.preflight",
+                    "The site was not created, because it could not be published: "
+                    + " ".join(refused),
+                )
         fetch = [str(u) for u in (args.get("fetch") or []) if u]
         if fetch:
             # Captain note 49: a remote pick is fetched onto the bench FIRST (no site
@@ -1602,6 +1630,25 @@ def _dispatch(
         )
     if verb == "rm-bench":
         return _remove_bench(project, bench, consent, secret_values, emit)
+    if verb == "publish-site":
+        if not site:
+            raise CwcliError(ErrorKind.USAGE, "site.required", "publish-site needs a target.site.")
+        access_list = str(args.get("access_list_id") or "")
+        return core_publish.publish_site(
+            project,
+            site,
+            bench=bench,
+            address=str(args.get("address") or "").strip() or None,
+            proxied=args.get("proxied") if isinstance(args.get("proxied"), bool) else None,
+            access_list_id=int(access_list) if access_list.isdigit() else None,
+            on_event=emit,
+        )
+    if verb == "unpublish-site":
+        if not site:
+            raise CwcliError(
+                ErrorKind.USAGE, "site.required", "unpublish-site needs a target.site."
+            )
+        return core_publish.unpublish_site(site, on_event=emit)
     if verb == "init":
         return _run_init(target, args, secret_values, emit)
     if verb == "apps-install":
@@ -1989,6 +2036,8 @@ def run_job(job_id: str) -> int:
             )
             return 2
         ok = _result_ok(result)
+        if ok:  # before job_finished, so the step sits inside this job's own steps
+            _start_follow_ups(job_id, spec, emit)
         state = "succeeded" if ok else "failed"
         emit.lifecycle("job_finished", f"{spec['verb']} {state}", phase="job", ok=ok)
         _merge_state(
@@ -2041,6 +2090,87 @@ def run_job(job_id: str) -> int:
     finally:
         stop_watching.set()
         signal.signal(signal.SIGINT, previous_sigint)
+
+
+def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    """The publish jobs a succeeded job asked for: New site with Publish ticked, Drop
+    site with Also unpublish ticked, and a Move of a published site (a kept name
+    points its proxy host at the new bench; a new name is unpublished and published
+    as its boxes say)."""
+    verb, target, args = spec["verb"], spec.get("target") or {}, spec.get("args") or {}
+    project, site = target.get("project"), target.get("site")
+    if verb == "new-site" and isinstance(args.get("publish"), dict):
+        moved = {"project": project, "bench": target.get("bench"), "site": site}
+        return [("publish-site", moved, dict(args["publish"]))]
+    if verb == "rm-site" and args.get("unpublish") is True and site and core_publish.entry(site):
+        return [("unpublish-site", {"project": project, "site": site}, {})]
+    if verb != "move-sites":
+        return []
+    out: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for pair in args.get("sites") or []:
+        source = str(pair.get("site") or "")
+        name = str(pair.get("target_site") or source)
+        published = core_publish.entry(source)
+        if not published:
+            continue
+        moved = {
+            "project": args.get("target_project") or project,
+            "bench": args.get("target_bench"),
+            "site": name,
+        }
+        if name == source:
+            kept = {k: published.get(k) for k in ("address", "proxied", "access_list_id")}
+            out.append(("publish-site", moved, kept))
+            continue
+        if args.get("unpublish") is True:
+            out.append(("unpublish-site", {"project": project, "site": source}, {}))
+        if args.get("publish") is True:
+            out.append(("publish-site", moved, {}))
+    return out
+
+
+def _start_follow_ups(job_id: str, spec: dict[str, Any], emit: _Recorder) -> None:
+    """Start ``_follow_ups`` as jobs of their own (Retry works on each), shown as one step
+    of this job and named on its record as ``followed_by`` so its card can follow them.
+    A follow-up that cannot start is reported; it never fails the job that succeeded."""
+    try:
+        planned, errors = _follow_ups(spec), []
+    except CwcliError as exc:
+        planned, errors = [], [exc.message]
+    if not planned and not errors:
+        return
+    emit.lifecycle("follow_up_step_start", "Starting the next part", phase="follow_up")
+    origin = spec.get("origin") or {}
+    started: list[str] = []
+    named: list[str] = []
+    for part, (verb, target, args) in enumerate(planned, start=2):
+        try:
+            record = create_job(
+                verb,
+                {k: v for k, v in target.items() if v is not None},
+                args,
+                origin={
+                    "via": "follow-up",
+                    "follows": job_id,
+                    "part": part,
+                    "of": len(planned) + 1,
+                    "account": origin.get("account"),
+                    "account_source": origin.get("account_source"),
+                },
+            )
+        except CwcliError as exc:
+            errors.append(f"{verb} {target.get('site')} did not start: {exc.message}")
+            continue
+        started.append(record["id"])
+        named.append(f"Started {verb} {target.get('site')} (part {part} of {len(planned) + 1})")
+    emit.lifecycle(
+        "follow_up_step_end",
+        "; ".join([*named, *errors]),
+        phase="follow_up",
+        status="warning" if errors else "ok",
+        jobs=started,
+    )
+    _merge_state(job_id, followed_by=started, follow_up_errors=errors)
 
 
 def _schedule_ui_restart() -> None:

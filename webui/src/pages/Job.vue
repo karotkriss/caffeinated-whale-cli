@@ -85,11 +85,16 @@ const warnings = computed(() => (record.value?.warnings || []).filter((w) => w.c
 // A failed job leads with its plain cause (MariaDB rejected the password, git could
 // not authenticate, ...) when cwcli recognized one in the failing step's own output;
 // otherwise it says so and points at that output rather than guessing.
+const PUBLISH_PART = { dns: 'DNS record', proxy: 'proxy host', certificate: 'certificate', verify: 'check that the site answers' }
 const failure = computed(() => {
   const job = record.value
   if (job?.state !== 'failed') return null
   if (job.result?.preflight_blocked) return { title: 'The preflight refused this update', description: 'Nothing ran. The findings below name what to fix; a switch-and-retry button appears when cwcli can do it for you.' }
   if (job.result?.data_loss_refused) return { title: 'Refused: local work would be discarded', description: `Nothing ran. ${(job.result.data_loss_apps || []).join(', ')} holds uncommitted or unpushed work the reset would discard; tick Force to accept that loss.` }
+  // A publish fails by its report, part by part: name the part and its own reason.
+  const failedPart = job.verb === 'publish-site' && Object.entries(job.result?.parts || {}).find(([, p]) => p.state === 'failed')
+  if (failedPart) return { title: `Publishing stopped at the ${PUBLISH_PART[failedPart[0]]}`, description: `${failedPart[1].message} The site itself was not touched; Retry repeats only what is missing.` }
+  if (job.verb === 'unpublish-site' && job.result?.failed?.length) return { title: 'Part of the public address was not removed', description: `${job.result.failed.join(' ')} It stays recorded, so Retry finishes it.` }
   const cause = job.cause
   const error = job.error
   const message = error ? `${error.message}${error.hint ? ` ${error.hint}` : ''}` : ''
@@ -283,6 +288,11 @@ async function continueChoice(value) {
       <Alert v-if="safetyKeys.length" class="mb-3" theme="blue" :title="`${safetyKeys.length} safety ${safetyKeys.length === 1 ? 'backup was' : 'backups were'} taken before this`" description="Each one restores its site to the state before this job ran.">
         <template #actions><span class="flex flex-wrap gap-2"><Button v-for="s in safetySets" :key="s.key" size="sm" variant="subtle" icon-left="lucide-rotate-ccw" :label="`Roll back ${s.site} to before this`" @click="openRestoreWizard(s)" /><span v-if="!safetySets.length" class="text-xs text-ink-gray-5">loading the sets…</span></span></template>
       </Alert>
+      <Alert v-if="record.origin?.follows" theme="gray" :title="`Part ${record.origin.part} of ${record.origin.of}`" description="cwcli started this job when the one before it succeeded, because it was asked to." :primary-action="{ label: 'Open part 1', onClick: () => $router.push(`/jobs/${record.origin.follows}`) }" />
+      <Alert v-if="record.followed_by?.length" theme="gray" :title="record.followed_by.length === 1 ? 'Continued as part 2' : `Continued as ${record.followed_by.length} more jobs`" :description="record.followed_by.map((id) => jobLabel(jobs.records[id] || { verb: 'job' }) + ' ' + jobTarget(jobs.records[id] || {})).join(', ')">
+        <template #actions><span class="flex flex-wrap gap-2"><Button v-for="(id, i) in record.followed_by" :key="id" size="sm" variant="subtle" :label="`Open part ${i + 2}`" @click="$router.push(`/jobs/${id}`)" /></span></template>
+      </Alert>
+      <Alert v-if="record.follow_up_errors?.length" theme="amber" title="A follow-up job did not start" :description="record.follow_up_errors.join(' ')" />
       <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="[record.error?.message, record.error?.hint].filter(Boolean).join(' ')" />
       <Alert v-else-if="record.state === 'answered'" theme="gray" title="Decision taken" :description="`This job stopped for a decision; you answered it and the work continued as another job.`" :primary-action="record.answered_by ? { label: 'Open the follow-up job', onClick: () => $router.push(`/jobs/${record.answered_by}`) } : undefined" />
       <template v-else-if="record.state === 'needs_choice'">

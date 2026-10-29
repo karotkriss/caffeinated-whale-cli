@@ -7,6 +7,7 @@ import { createJob } from './jobs'
 import { router } from '../router'
 import { trackJob } from './job-toasts'
 import { ensureRunning } from './start-gate'
+import { publicationOf, publications } from './publish'
 
 // One action dialog for the whole app (components/ActionDialog.vue renders it).
 export const dialogState = reactive({
@@ -26,7 +27,12 @@ function hint(e) {
 export function openAction(id, ctx = {}) {
   const a = ACTIONS[id]
   if (!a) throw new Error(`unknown action ${id}`)
-  const full = { benchName: ctx.bench, ...ctx }
+  const full = {
+    benchName: ctx.bench,
+    published: !!(ctx.site && publicationOf(ctx.site)),
+    publishVia: { dns: publications.dns?.name, proxy: publications.proxy?.name },
+    ...ctx,
+  }
   const allowed = availability(id, null, null, {})
   if (allowed.role) {
     toast.error(allowed.reason, { description: allowed.detail })
@@ -35,7 +41,7 @@ export function openAction(id, ctx = {}) {
   if (a.confirm === 'none' && !a.fields) return runAction(id, full, {})
   dialogState.id = id
   dialogState.ctx = full
-  dialogState.values = {}
+  dialogState.values = Object.fromEntries((a.fields || []).filter((f) => 'default' in f && (!f.show || f.show(full))).map((f) => [f.name, f.default]))
   dialogState.error = null
   dialogState.open = true
   return null

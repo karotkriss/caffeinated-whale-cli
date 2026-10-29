@@ -13,7 +13,7 @@ its code::
     name = "Hello webhook"
     publisher = "Example Org"
     description = "Posts a hello to a webhook."
-    provides = ["backup_target"]            # sign_in and/or backup_target
+    provides = ["backup_target"]            # sign_in, backup_target, dns_record, proxy_host
 
 The life cycle, each step an explicit Admin act:
 
@@ -73,7 +73,8 @@ from . import integrations as core_integrations
 from .errors import CwcliError, ErrorKind
 
 ENTRY_POINT_GROUP = "cwcli.integrations"
-HOOK_POINTS = ("sign_in", "backup_target")  # the hook points cwcli calls
+# The hook points cwcli calls.
+HOOK_POINTS = ("sign_in", "backup_target", "dns_record", "proxy_host")
 _ID = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 _RESERVED_IDS = ("local", "host", "api")  # session and schedule-owner sources
 # The test suite installs from local repositories; nothing a user runs sets this.

@@ -60,6 +60,7 @@ ADMIN_VERBS = frozenset(
         "rm-site",
         "rm-bench",
         "move-sites",
+        "unpublish-site",
         "restore-set",
         "delete-backup",
         "prune-backups",
