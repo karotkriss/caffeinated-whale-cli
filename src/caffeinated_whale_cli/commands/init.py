@@ -619,9 +619,11 @@ def init(
     stopped instance starts its existing containers as they are, without pulling
     images or recreating them, so its benches keep their Python environments.
     If the re-run would change that instance's compose settings, such as a
-    different --port, init refuses with exit 1 and names each change; remove
-    the instance with `cwcli rm` (which backs it up) and run init again, or
-    rerun init without the changed options.
+    different --port on an instance still on the default port range
+    (8000-8005), init refuses with exit 1 and names each change; remove the
+    instance with `cwcli rm` (which backs it up) and run init again, or rerun
+    init without the changed options. For an instance created on another
+    --port or widened by `cwcli scale`, init does not compare --port.
 
     If project_name is not provided, prompts interactively.
 
