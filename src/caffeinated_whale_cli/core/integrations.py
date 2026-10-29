@@ -19,16 +19,21 @@ in the same way:
   written in (``DnsRecords``).
 * ``proxy_host``: ``(settings, secrets)`` -> the reverse proxy that serves a site's
   public name and requests its certificate (``ProxyHosts``).
+* ``host_transport``: ``(settings, secrets)`` -> a ``core.hosts.Transport``, the byte
+  stream to another machine's cwcli API. The one MULTI-provider hook point
+  (``MULTI_HOOKS``): different remote hosts can use different transports at once, so
+  every transport integration that is on serves it (``providers(hook)``), and
+  turning a second one on is never ``hook_taken``.
 
-``core.publish`` owns what is read and written through the last two (what exists is
-read before anything is written, and only what cwcli wrote is ever changed or
-deleted), so a provider implements plain reads and writes.
+``core.publish`` owns what is read and written through ``dns_record`` and
+``proxy_host`` (what exists is read before anything is written, and only what cwcli
+wrote is ever changed or deleted), so a provider implements plain reads and writes.
 
-Only one integration serves a hook point at a time: turning on a second one that
-provides it is refused (``integration.hook_taken``) unless the Admin chooses to
-switch (``take_over``), which turns the first one off - never silently.
+Every other hook point is served by one integration at a time: turning on a second
+one that provides it is refused (``integration.hook_taken``) unless the Admin chooses
+to switch (``take_over``), which turns the first one off - never silently.
 
-Four official integrations use it now:
+Five official integrations use it now:
 
 * ``ldap`` (``core.directory``) provides ``sign_in``: LDAP / Active Directory users
   sign in to the web UI with a role mapped from their directory groups.
@@ -38,6 +43,10 @@ Four official integrations use it now:
   record.
 * ``npm`` (``core.npm``) provides ``proxy_host``: a published site's Nginx Proxy
   Manager proxy host and Let's Encrypt certificate.
+* ``remote_ssh`` (``core.hosts``) provides ``host_transport``: this machine, as a hub,
+  dials other machines' daemons over SSH. Community integrations may not provide a
+  transport (``core.community.HOOK_POINTS``): a transport sees every request to a
+  remote, job passwords included.
 
 Community integrations (``core.community``) are installable packages an Admin adds
 from a repository URL. Each registers one ``Integration`` under the
@@ -140,7 +149,10 @@ HOOK_LABEL = {
     "backup_target": "the backup target",
     "dns_record": "DNS records",
     "proxy_host": "the proxy",
+    "host_transport": "remote hosts",
 }
+# Hook points several integrations may serve at once (see the module docstring).
+MULTI_HOOKS = frozenset({"host_transport"})
 
 
 class BackupTarget(Protocol):
@@ -196,11 +208,17 @@ class ProxyHosts(Protocol):
 
 def official() -> dict[str, Integration]:
     """The integrations cwcli ships, in display order."""
-    from . import cloudflare, directory, npm
+    from . import cloudflare, directory, hosts, npm
 
     return {
         i.id: i
-        for i in (directory.INTEGRATION, S3_INTEGRATION, cloudflare.INTEGRATION, npm.INTEGRATION)
+        for i in (
+            directory.INTEGRATION,
+            S3_INTEGRATION,
+            cloudflare.INTEGRATION,
+            npm.INTEGRATION,
+            hosts.SSH_INTEGRATION,
+        )
     }
 
 
@@ -443,14 +461,37 @@ def _provides(integration_id: str, data: dict) -> tuple[str, ...]:
 
 
 def _holders(data: dict, integration_id: str, hooks: tuple[str, ...]) -> list[tuple[str, str]]:
-    """(id, hook) for each OTHER integration that is on and provides one of ``hooks``."""
+    """(id, hook) for each OTHER integration that is on and provides one of ``hooks``.
+    A multi-provider hook point is never held: any number may serve it."""
+    exclusive = tuple(h for h in hooks if h not in MULTI_HOOKS)
     return [
         (other, hook)
         for other, rec in data["integrations"].items()
         if other != integration_id and rec.get("enabled")
         for hook in _provides(other, data)
-        if hook in hooks
+        if hook in exclusive
     ]
+
+
+def providers(hook: str) -> list[tuple[Integration, dict[str, Any], dict[str, str]]]:
+    """Every integration that is on and provides ``hook``, each with its settings and
+    secrets, in store order. The call for a multi-provider hook point; ``provider``
+    stays the call for the one-at-a-time ones."""
+    with _locked():
+        data = _load()
+    out = []
+    for integration_id, rec in data["integrations"].items():
+        if rec.get("enabled") and hook in _provides(integration_id, data):
+            integ = get(integration_id)
+            out.append((integ, dict(rec.get("settings") or {}), _secrets(integ, rec)))
+    return out
+
+
+def settings_of(integration_id: str) -> dict[str, Any]:
+    """An integration's stored non-secret settings, on or off (empty when never saved)."""
+    with _locked():
+        rec = _load()["integrations"].get(integration_id) or {}
+    return dict(rec.get("settings") or {})
 
 
 def provider(hook: str) -> tuple[Integration, dict[str, Any], dict[str, str]] | None:

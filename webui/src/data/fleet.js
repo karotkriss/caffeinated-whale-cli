@@ -1,15 +1,23 @@
-// The live fleet model and the cache-backed detail per instance.
+// The live fleet model and the cache-backed detail per instance, for this machine
+// and for every remote host the hub is linked to.
 //
-//   GET /api/v1/stream?focus=<p>   SSE: one `snapshot`, then `delta` events
-//   GET /api/v1/instances/<p>      cache-backed core.inspect (benches, sites, apps)
+//   GET /api/v1/stream?focus=<p>     SSE: one `snapshot`, then `delta` events; the
+//                                    remote hosts' frames ride the same stream as
+//                                    host_snapshot / host_delta / host_job / host_link
+//   GET /api/v1/instances/<p>        cache-backed core.inspect (benches, sites, apps)
+//   GET /api/v1/hosts/<h>/instances/<p>   the same read on a remote host, forwarded
+//
+// Two machines can each have an instance called `test555`, so everything here is
+// keyed by `ikey(host, project)`: the bare project for this machine, `<host>/<project>`
+// for a remote one, and every instance object carries `host` (null for local).
 //
 // One stream per tab. HTTP/1.1 browsers allow 6 connections per host and an
 // open SSE stream holds one for as long as it lives, so a stream a hidden page
 // keeps open stalls every later request: close on pagehide, reopen on pageshow.
 import { reactive, computed, watch } from 'vue'
-import { getJson } from './api'
+import { apiBase, getJson } from './api'
 import { session, recheckMeta } from './session'
-import { applyJob, seedJobs } from './jobs'
+import { applyJob, seedJobs, dropHostJobs } from './jobs'
 import { catalogLanded } from './catalog'
 import { applyMetricsFrame } from './metrics'
 import { siteIconsLanded } from './site-icons'
@@ -17,6 +25,7 @@ import { updatesLanded } from './updates'
 import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
 import { loadPublications, publicationsLanded } from './publish'
+import { seedHost, applyHostLink, dropHost, hostName } from './hosts'
 
 export const fleet = reactive({
   instances: {},
@@ -24,6 +33,9 @@ export const fleet = reactive({
   lastEventAt: null,
   focus: null,
 })
+
+export const ikey = (host, project) => (host ? `${host}/${project}` : project)
+const tag = (inst, host) => ({ ...inst, host: host || null, key: ikey(host, inst.project) })
 
 let source = null
 
@@ -44,12 +56,18 @@ function closeStream() {
 }
 
 // Which instance the open page is looking at: the daemon turns that instance's
-// web probe on while a stream carries it (core.fleet.Fleet.set_focus).
+// web probe on while a stream carries it (core.fleet.Fleet.set_focus). Only this
+// machine's instances are probed this way; a remote host's daemon runs its own.
 export function setFocus(project) {
   const next = project || null
   if (next === fleet.focus && source) return
   fleet.focus = next
   if (source) openStream()
+}
+
+function replaceHost(host, instances) {
+  for (const key of Object.keys(fleet.instances)) if (fleet.instances[key].host === host) delete fleet.instances[key]
+  for (const i of instances || []) fleet.instances[ikey(host, i.project)] = tag(i, host)
 }
 
 function openStream() {
@@ -59,18 +77,54 @@ function openStream() {
   source.addEventListener('snapshot', (e) => {
     const body = JSON.parse(e.data)
     if (fleet.connection === 'reconnecting') recheckMeta()
-    fleet.instances = Object.fromEntries(body.instances.map((i) => [i.project, i]))
+    const next = Object.fromEntries(body.instances.map((i) => [i.project, tag(i, null)]))
+    for (const h of body.hosts || []) {
+      seedHost(h)
+      for (const i of h.instances || []) next[ikey(h.id, i.project)] = tag(i, h.id)
+      seedJobs(h.jobs || [], h.id)
+    }
+    fleet.instances = next
     seedJobs(body.jobs || [])
     fleet.connection = 'live'
     fleet.lastEventAt = Date.now()
-    body.instances.forEach((i) => loadDetail(i.project))
+    for (const i of Object.values(next)) loadDetail(i.project, { host: i.host })
     loadPublications() // the stream then carries each change (`publications`)
   })
   source.addEventListener('delta', (e) => {
     const body = JSON.parse(e.data)
     if (body.removed) delete fleet.instances[body.project]
-    else fleet.instances[body.project] = body.instance
+    else fleet.instances[body.project] = tag(body.instance, null)
     fleet.lastEventAt = Date.now()
+  })
+  // --- remote hosts: the same frames, tagged with the host that produced them ---
+  source.addEventListener('host_snapshot', (e) => {
+    const body = JSON.parse(e.data)
+    replaceHost(body.host, body.instances)
+    if (body.jobs) seedJobs(body.jobs, body.host)
+    for (const i of body.instances || []) loadDetail(i.project, { host: body.host })
+  })
+  source.addEventListener('host_delta', (e) => {
+    const body = JSON.parse(e.data)
+    const key = ikey(body.host, body.project)
+    if (body.removed) delete fleet.instances[key]
+    else fleet.instances[key] = tag(body.instance, body.host)
+  })
+  source.addEventListener('host_job', (e) => {
+    const { host, ...record } = JSON.parse(e.data)
+    applyJob(record, host)
+  })
+  source.addEventListener('host_link', (e) => applyHostLink(JSON.parse(e.data)))
+  source.addEventListener('host_removed', (e) => {
+    const { host } = JSON.parse(e.data)
+    replaceHost(host, [])
+    dropHostJobs(host)
+    dropHost(host)
+  })
+  source.addEventListener('host_event', (e) => {
+    const { host, event, data } = JSON.parse(e.data)
+    if (event === 'metrics') applyMetricsFrame(data, host)
+    else if (event === 'site_icons') siteIconsLanded(data, host)
+    else if (event === 'backups') backupsLanded(data, host)
   })
   source.addEventListener('job', (e) => applyJob(JSON.parse(e.data)))
   source.addEventListener('catalog', (e) => catalogLanded(JSON.parse(e.data)))
@@ -79,6 +133,7 @@ function openStream() {
   source.addEventListener('updates', (e) => updatesLanded(JSON.parse(e.data)))
   source.addEventListener('advisories', (e) => advisoriesLanded(JSON.parse(e.data)))
   source.addEventListener('backups', (e) => backupsLanded(JSON.parse(e.data)))
+  // This machine's publications only: a remote host's are its own daemon's store.
   source.addEventListener('publications', (e) => publicationsLanded(JSON.parse(e.data)))
   // EventSource reconnects by itself; the daemon answers a reconnect with a
   // fresh snapshot, which is the resume. A 401 closes it for good.
@@ -93,25 +148,43 @@ function openStream() {
 
 // --- instances ------------------------------------------------------------------
 
+// This machine's instances first, then each remote host's, each group by name.
 export const instances = computed(() =>
-  Object.values(fleet.instances).sort((a, b) => a.project.localeCompare(b.project)),
+  Object.values(fleet.instances).sort((a, b) => {
+    if (!!a.host !== !!b.host) return a.host ? 1 : -1
+    if (a.host !== b.host) return hostName(a.host).localeCompare(hostName(b.host))
+    return a.project.localeCompare(b.project)
+  }),
 )
+export const localInstances = computed(() => instances.value.filter((i) => !i.host))
 
-export function instance(project) {
-  return fleet.instances[project] || null
+export function instance(project, host = null) {
+  return fleet.instances[ikey(host, project)] || null
 }
+
+// --- routes -----------------------------------------------------------------------
+// A remote instance's pages live under /hosts/<host>/..., so a deep link names the
+// machine as well as the project.
+
+const enc = encodeURIComponent
+export const instancePath = ({ project, host = null }) => (host ? `/hosts/${enc(host)}/instances/${enc(project)}` : `/instances/${enc(project)}`)
+export const benchPath = (i, bench) => `${instancePath(i)}/benches/${enc(bench)}`
+export const sitePath = (i, bench, site) => `${benchPath(i, bench)}/sites/${enc(site)}`
 
 // --- lazy detail (core.inspect, cache-backed) ------------------------------------
 
 export const details = reactive({})
 
-export function loadDetail(project, { force = false } = {}) {
+export const detailOf = (project, host = null) => details[ikey(host, project)] || null
+
+export function loadDetail(project, { force = false, host = null } = {}) {
   if (!project) return null
-  if (!details[project]) details[project] = { loading: false, data: null, error: null }
-  const entry = details[project] // the reactive proxy, not the raw object just assigned
+  const key = ikey(host, project)
+  if (!details[key]) details[key] = { loading: false, data: null, error: null }
+  const entry = details[key] // the reactive proxy, not the raw object just assigned
   if ((entry.data || entry.loading) && !force) return entry
   entry.loading = true
-  getJson(`/api/v1/instances/${encodeURIComponent(project)}`)
+  getJson(`${apiBase(host)}/instances/${encodeURIComponent(project)}`)
     .then((d) => {
       entry.data = d
       entry.error = null
@@ -146,8 +219,8 @@ export const config = onceStore('/api/v1/config')
 export const cacheProjects = onceStore('/api/v1/cache')
 
 // The route answers the action envelope; callers want the probe itself ({url, reachable, http_code}).
-export async function getJsonUrl(project, query) {
-  return (await getJson(`/api/v1/instances/${encodeURIComponent(project)}/url?${query}`)).outcome
+export async function getJsonUrl(project, query, host = null) {
+  return (await getJson(`${apiBase(host)}/instances/${encodeURIComponent(project)}/url?${query}`)).outcome
 }
 
 export function search(term) {

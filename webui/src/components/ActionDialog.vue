@@ -5,6 +5,7 @@ import CommandLine from './CommandLine.vue'
 import { ACTIONS, availability } from '../data/actions'
 import { instance } from '../data/fleet'
 import { dialogState, runAction } from '../data/dialog'
+import { hostName } from '../data/hosts'
 
 const typed = ref('')
 
@@ -19,9 +20,10 @@ const target = computed(() => {
 const title = computed(() => {
   if (!action.value) return ''
   const on = ctx.value.process || ctx.value.app || ctx.value.site || ctx.value.benchName || ctx.value.project
-  return on ? `${action.value.label}: ${on}` : action.value.label
+  const where = ctx.value.host ? ` on ${hostName(ctx.value.host)}` : ''
+  return on ? `${action.value.label}: ${on}${where}` : `${action.value.label}${where}`
 })
-const inst = computed(() => instance(ctx.value.project))
+const inst = computed(() => instance(ctx.value.project, ctx.value.host))
 const avail = computed(() =>
   availability(
     dialogState.id,
@@ -78,7 +80,7 @@ function confirm() {
         :description="`Every database, site and file of ${ctx.project} is deleted the moment you confirm. Nothing is archived, so there is no restore. Untick Force to keep the verified backup, or tick Keep the named volumes to leave the data on Docker.`"
       />
       <div v-if="command" class="space-y-1.5">
-        <div class="text-sm text-ink-gray-5">Same as running</div>
+        <div class="text-sm text-ink-gray-5">Same as running{{ ctx.host ? ` on ${hostName(ctx.host)}` : '' }}</div>
         <CommandLine :command="command" />
       </div>
       <FormControl

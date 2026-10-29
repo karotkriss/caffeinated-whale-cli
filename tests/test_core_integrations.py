@@ -211,16 +211,19 @@ class TestRuntimeOutcome:
         assert integrations.view("fake")[0]["state"] == "off"
 
 
-def test_the_official_integrations_are_ldap_s3_cloudflare_then_npm(tmp_path, monkeypatch):
+def test_the_official_integrations_are_ldap_s3_cloudflare_npm_then_remote_ssh(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
     views = integrations.view()
-    assert [v["id"] for v in views] == ["ldap", "s3", "cloudflare", "npm"]
+    assert [v["id"] for v in views] == ["ldap", "s3", "cloudflare", "npm", "remote_ssh"]
     assert all(v["publisher"] == "official" and v["state"] == "off" for v in views)
     assert [v["provides"] for v in views] == [
         ["sign_in"],
         ["backup_target"],
         ["dns_record"],
         ["proxy_host"],
+        ["host_transport"],
     ]
     assert views[0]["actions"] == ["lookup_user"]
     assert views[2]["actions"] == ["check_edit_access", "detect_ip"]

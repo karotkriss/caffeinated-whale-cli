@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Remote hosts: other machines' instances in one web UI** - a hub's `cwcli ui` shows and drives the instances of other machines, each labelled by host, over SSH. `cwcli remote allow` on a remote grants the hub's key one `restrict,command=` line that runs only cwcli's bridge (no shell, no forwarding) and caps it at a role (Operator by default); the pairing string it prints carries the remote's SSH host key, which the hub pins (`cwcli remote add`, or Settings > Remote hosts > Add host); nothing is trusted on first contact. The remote lowers the hub user's role to its cap and records `via: hub` on jobs; the hub never holds a remote's token and forwards every answer as data only. A host that stops answering shows `unreachable` with its last-known instances as `unknown` and a last-seen time, and nothing runs automatically because a host went quiet; a changed host key is a hard stop an Admin clears by re-pinning; actions need both daemons on the same web UI protocol. `cwcli remote revoke` withdraws a hub and ends its running connections. The transport is pluggable (`host_transport`, the Integrations contract's first multi-provider hook point; official integrations only), with SSH dial-in as the one that ships.
+
 ## [3.5.0] - 2026-10-29
 
 ### Added

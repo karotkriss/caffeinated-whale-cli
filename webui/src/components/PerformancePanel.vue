@@ -5,12 +5,13 @@
 // Sampled by the daemon at the probe interval, kept for an hour, streamed live.
 import { computed, onMounted, watch } from 'vue'
 import TimeSeries from './TimeSeries.vue'
-import { containerSeries, fmtBytes, fmtCount, fmtPct, fmtRate, latest, loadMetrics, metrics, processSeries, queueSeries } from '../data/metrics'
+import { containerSeries, fmtBytes, fmtCount, fmtPct, fmtRate, latest, loadMetrics, metricsFor, processSeries, queueSeries } from '../data/metrics'
 import { instance } from '../data/fleet'
 
-const props = defineProps({ project: { type: String, required: true }, bench: { type: String, default: null } })
-const points = computed(() => metrics.projects[props.project] || [])
-const running = computed(() => !!instance(props.project)?.container_running)
+// `host` names a remote host's instance: its own daemon's samples, through the hub.
+const props = defineProps({ project: { type: String, required: true }, bench: { type: String, default: null }, host: { type: String, default: null } })
+const points = computed(() => metricsFor(props.project, props.host))
+const running = computed(() => !!instance(props.project, props.host)?.container_running)
 const last = computed(() => latest(points.value))
 const benches = computed(() => {
   if (props.bench != null) return [props.bench]
@@ -29,8 +30,8 @@ const frappeDisk = computed(() => {
   return [r && { ...r, name: 'read' }, w && { ...w, name: 'written' }].filter(Boolean)
 })
 const since = computed(() => (points.value.length ? Math.round((Date.now() / 1000 - points.value[0].ts) / 60) : 0))
-onMounted(() => loadMetrics(props.project))
-watch(() => props.project, (p) => loadMetrics(p))
+onMounted(() => loadMetrics(props.project, props.host))
+watch(() => props.project, (p) => loadMetrics(p, props.host))
 </script>
 
 <template>

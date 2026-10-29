@@ -1,13 +1,22 @@
 import { computed, reactive, ref } from 'vue'
-import { getJson, postJson } from './api'
+import { apiBase, getJson, postJson } from './api'
 import { isDirectorySource } from './integrations'
+import { hostName } from './hosts'
 
+// Jobs of this machine and of every linked remote host, keyed `jkey(host, id)`: a
+// job id is unique per daemon, not across machines. A remote job runs on its own
+// machine and is read and controlled through the hub's forward.
 export const jobs = reactive({
   records: {},
   loaded: false,
   loading: false,
   error: null,
 })
+
+export const jkey = (host, id) => (host ? `${host}/${id}` : id)
+const enc = encodeURIComponent
+export const jobPath = (job) => (job?.host ? `/hosts/${enc(job.host)}/jobs/${enc(job.id)}` : `/jobs/${enc(job?.id || '')}`)
+export const jobRecord = (id, host = null) => jobs.records[jkey(host, id)] || null
 
 export const jobList = computed(() =>
   Object.values(jobs.records).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))),
@@ -17,18 +26,26 @@ export const activeJobs = computed(() =>
   jobList.value.filter((job) => ['queued', 'running', 'interrupting'].includes(job.state)),
 )
 
-export function applyJob(record) {
+export function applyJob(record, host = null) {
   if (!record?.id) return
-  if (record.removed) delete jobs.records[record.id]
-  else jobs.records[record.id] = { ...(jobs.records[record.id] || {}), ...record }
+  const key = jkey(host, record.id)
+  if (record.removed) delete jobs.records[key]
+  else jobs.records[key] = { ...(jobs.records[key] || {}), ...record, host: host || null, key }
 }
 
-export function seedJobs(records = []) {
-  const current = jobs.records
-  jobs.records = Object.fromEntries(
-    records.map((job) => [job.id, { ...(current[job.id] || {}), ...job }]),
-  )
+// Replace one machine's jobs (this one's when host is null) and keep the others'.
+export function seedJobs(records = [], host = null) {
+  const kept = Object.fromEntries(Object.entries(jobs.records).filter(([, job]) => (job.host || null) !== (host || null)))
+  for (const job of records) {
+    const key = jkey(host, job.id)
+    kept[key] = { ...(jobs.records[key] || {}), ...job, host: host || null, key }
+  }
+  jobs.records = kept
   jobs.loaded = true
+}
+
+export function dropHostJobs(host) {
+  seedJobs([], host)
 }
 
 export async function loadJobs({ force = false } = {}) {
@@ -46,44 +63,44 @@ export async function loadJobs({ force = false } = {}) {
   }
 }
 
-export async function loadJob(id, after = 0, limit = null) {
-  const record = await getJson(`/api/v1/jobs/${encodeURIComponent(id)}?after=${after}${limit != null ? `&limit=${limit}` : ''}`)
-  const prior = jobs.records[id]
+export async function loadJob(id, after = 0, limit = null, host = null) {
+  const record = await getJson(`${apiBase(host)}/jobs/${enc(id)}?after=${after}${limit != null ? `&limit=${limit}` : ''}`)
+  const prior = jobRecord(id, host)
   // Refreshes can overlap with the same cursor, so append only events newer than the last one held.
   const held = after && prior?.events ? prior.events : []
   const lastSeq = held.at(-1)?.seq || 0
   const events = [...held, ...(record.events || []).filter((event) => event.seq > lastSeq)]
-  applyJob({ ...record, events })
-  return jobs.records[id]
+  applyJob({ ...record, events }, host)
+  return jobRecord(id, host)
 }
 
-export async function createJob(spec) {
-  const record = await postJson('/api/v1/jobs', spec)
-  applyJob(record)
+export async function createJob(spec, host = null) {
+  const record = await postJson(`${apiBase(host)}/jobs`, spec)
+  applyJob(record, host)
+  return { ...record, host: host || null }
+}
+
+export async function interruptJob(id, host = null) {
+  const record = await postJson(`${apiBase(host)}/jobs/${enc(id)}/interrupt`, {})
+  applyJob(record, host)
   return record
 }
 
-export async function interruptJob(id) {
-  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/interrupt`, {})
-  applyJob(record)
-  return record
+export async function retryJob(id, host = null) {
+  const record = await postJson(`${apiBase(host)}/jobs/${enc(id)}/retry`, {})
+  applyJob(record, host)
+  return { ...record, host: host || null }
 }
 
-export async function retryJob(id) {
-  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/retry`, {})
-  applyJob(record)
-  return record
+export async function continueJob(id, { target, args, consent }, host = null) {
+  const record = await postJson(`${apiBase(host)}/jobs/${enc(id)}/continue`, { target, args, consent })
+  applyJob(record, host)
+  return { ...record, host: host || null }
 }
 
-export async function continueJob(id, { target, args, consent }) {
-  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/continue`, { target, args, consent })
-  applyJob(record)
-  return record
-}
-
-export async function detachJob(id) {
-  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/detach`, {})
-  applyJob(record)
+export async function detachJob(id, host = null) {
+  const record = await postJson(`${apiBase(host)}/jobs/${enc(id)}/detach`, {})
+  applyJob(record, host)
   return record
 }
 
@@ -157,6 +174,11 @@ export function jobTarget(job) {
   return target.project || 'cwcli'
 }
 
+// "<target> on <host>" for a remote job; the bare target for this machine's.
+export function jobWhere(job) {
+  return job?.host ? `${jobTarget(job)} on ${hostName(job.host)}` : jobTarget(job)
+}
+
 // One shared clock so a running job's Elapsed ticks instead of waiting for its next event.
 const now = ref(Date.now())
 window.setInterval(() => (now.value = Date.now()), 1000)
@@ -172,10 +194,11 @@ export function elapsed(job) {
 }
 
 // Who started a job: the signed-in account, "schedule" for the daemon's own
-// scheduled runs, "api" for a bearer-token client, "cli" for the terminal.
+// scheduled runs, "api" for a bearer-token client, "cli" for the terminal, and
+// `<user>@<hub>` when a hub's user started it on this machine.
 export function jobAccount(job) {
   const o = job?.origin || {}
-  if (o.account) return isDirectorySource(o.account_source) ? `${o.account} (directory)` : o.account
+  if (o.account) return isDirectorySource(o.account_source) && o.account_source !== 'hub' ? `${o.account} (directory)` : o.account
   if (o.schedule) return 'schedule'
   if (o.via === 'web') return 'api'
   return o.via || 'cli'

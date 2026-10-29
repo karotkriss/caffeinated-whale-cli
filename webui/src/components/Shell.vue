@@ -41,7 +41,9 @@ const SCHEME_CYCLE = { light: 'dark', dark: 'system', system: 'light' }
 const SCHEME_ICON = { light: 'lucide-sun', dark: 'lucide-moon', system: 'lucide-monitor' }
 function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
-import { fleet, instances, doctor, details, countSites } from '../data/fleet'
+import AddHostDialog from './AddHostDialog.vue'
+import { fleet, instances, localInstances, doctor, details, countSites, instancePath } from '../data/fleet'
+import { hostList, linkLook, loadHosts } from '../data/hosts'
 import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
 import { openPalette } from '../data/palette'
 import { activeJobs, jobList } from '../data/jobs'
@@ -56,6 +58,7 @@ const collapsed = ref(narrow.value)
 watch(narrow, (m) => (collapsed.value = m))
 doctor.load()
 loadCatalog()
+loadHosts() // the remote hosts' names and link states, for the labels on their instances
 loadSchedules() // the digest notification reads the schedules' settings
 const live = computed(() => fleet.connection === 'live')
 // Captain note 43: no sidebar connection line. A short drop shows the amber reconnecting
@@ -82,7 +85,8 @@ useKeyboardShortcut({
   },
 })
 function reload() { window.location.reload() }
-const siteCount = computed(() => instances.value.reduce((n, i) => n + countSites(details[i.project]?.data), 0))
+const siteCount = computed(() => instances.value.reduce((n, i) => n + countSites(details[i.key]?.data), 0))
+const hostInstances = (id) => instances.value.filter((x) => x.host === id)
 
 // Notifications: what needs a person, unread only; opening one marks it read.
 const notifOpen = ref(false)
@@ -167,12 +171,22 @@ watch(() => route.name, (name) => {
                 <template #suffix><span v-if="affectsCount" class="mr-1 rounded-full px-1.5 text-[10px] font-medium" :class="affectsNew ? 'bg-surface-red-2 text-ink-red-6' : 'bg-surface-gray-2 text-ink-gray-6'" :title="`${affectsCount} advisories affect this machine${affectsNew ? ', ' + affectsNew + ' new' : ''}`">{{ affectsCount }}</span></template>
               </SidebarItem>
             </div>
-            <template v-if="instances.length">
-              <SidebarLabel class="mt-4">Instances</SidebarLabel>
+            <template v-if="localInstances.length">
+              <SidebarLabel class="mt-4">{{ hostList.length ? 'This machine' : 'Instances' }}</SidebarLabel>
               <div class="space-y-0.5">
-                <SidebarItem v-for="i in instances" :key="i.project" :label="i.project" :route="`/instances/${i.project}`" :active="route.params.project === i.project">
+                <SidebarItem v-for="i in localInstances" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && !route.params.host">
                   <template #prefix><StatusDot :token="i.overall" /></template>
                 </SidebarItem>
+              </div>
+            </template>
+            <!-- Each remote host is its own section, labelled by the host with its link dot. -->
+            <template v-for="h in hostList" :key="h.id">
+              <SidebarLabel class="mt-4"><span class="flex items-center gap-1.5"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span class="truncate">{{ h.name }}</span></span></SidebarLabel>
+              <div class="space-y-0.5">
+                <SidebarItem v-for="i in hostInstances(h.id)" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && route.params.host === h.id">
+                  <template #prefix><StatusDot :token="i.overall" /></template>
+                </SidebarItem>
+                <p v-if="!hostInstances(h.id).length" class="px-2 py-1 text-xs text-ink-gray-4">{{ h.state === 'connected' ? 'no instances' : linkLook(h.state).label }}</p>
               </div>
             </template>
           </ScrollArea>
@@ -222,6 +236,7 @@ watch(() => route.name, (name) => {
     <ScheduleDialog />
     <GradientPicker />
     <SettingsDialog />
+    <AddHostDialog />
     <StartGateDialog />
     <JobToasts />
     <Dialog v-model:open="notifOpen" title="Notifications" size="md">
