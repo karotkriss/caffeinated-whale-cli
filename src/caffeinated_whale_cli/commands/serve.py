@@ -47,6 +47,12 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   ``project_state`` verified/remembered token passed through unchanged
 * ``GET /api/v1/integrations``              - every integration (``core.integrations``):
   its state and non-secret settings, and only WHETHER each secret is set (Admin)
+* ``GET /api/v1/publications``              - every published site's parts (DNS record,
+  proxy host, certificate, check) from ``core.publish``'s store, and which DNS and
+  proxy integrations are on; no call leaves the machine
+* ``GET /api/v1/publish/options``           - New site's Publish section: the zones
+  the DNS token can see, the address records point at, the proxy's certificate
+  challenge and access lists (Operator)
 * ``GET /api/v1/jobs[/<id>]``               - durable detached job summaries
   and one job's resumable event log
 * ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
@@ -75,6 +81,10 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   and ref), ``community_add`` (installs the reviewed ``commit``),
   ``community_check``, ``community_update`` (the reviewed newer ``commit``) and
   ``community_remove`` (Admin)
+* ``POST /api/v1/publish/preflight``        - ``{project, bench, site, address, proxied}``: the
+  read-only checks before a site is published, one row per part (Operator)
+* ``POST /api/v1/publish/check``            - ``{site}``: compare a published site's
+  parts with what is live and report drift; reads only, repairs nothing (Operator)
 * ``POST /api/v1/settings``                 - one settings write (``{"setting":
   <name>, ...}``) over the SAME core functions ``cwcli config`` and ``cwcli axi
   setup`` call: cache clear/enable/disable, search paths add/remove/prune,
@@ -231,6 +241,7 @@ from ..core import list as core_list
 from ..core import logs as core_logs
 from ..core import metrics as core_metrics
 from ..core import open as core_open
+from ..core import publish as core_publish
 from ..core import resolvers as core_resolvers
 from ..core import restart as core_restart
 from ..core import scale as core_scale
@@ -266,7 +277,8 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
 # 7: roles, directory sign-in, and /api/v1/integrations (the S3 target moved there).
 # 8: community integrations (the community_* integration ops, a card's community block).
-PROTOCOL_VERSION = 8
+# 9: publishing sites (/api/v1/publications, /api/v1/publish/*, the publish job verbs).
+PROTOCOL_VERSION = 9
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -331,7 +343,11 @@ SETTINGS = frozenset(
 )
 # Job verbs only an Admin may start: removals, and replacing cwcli itself.
 # The least role a GET needs; anything not named here is a read every role may make.
-_GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "operator"}
+_GET_ROLES = {
+    "/api/v1/integrations": "admin",
+    "/api/v1/backups/download": "operator",
+    "/api/v1/publish/options": "operator",
+}
 
 # The lock stripe every settings write shares: the config is one TOML file read,
 # modified and written whole, so two concurrent writes would lose one.
@@ -983,6 +999,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/jobs":
             admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
             return "admin" if admin else "operator"
+        if path == "/api/v1/publish/preflight":
+            admin = core_accounts.admin_only("publish-site", {"address": payload.get("address")})
+            return "admin" if admin else "operator"
         if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
             job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
             try:
@@ -1246,6 +1265,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_logo(unquote(path[len("/api/v1/apps/logo/") :]))
         elif path == "/api/v1/integrations":
             self._send_json({"data": {"integrations": core_integrations.view()}})
+        elif path == "/api/v1/publications":
+            self._send_json({"data": core_publish.view()})
+        elif path == "/api/v1/publish/options":
+            self._send_json({"data": core_publish.options()})
         elif path == "/api/v1/doctor":
             self._send_doctor()
         elif path == "/api/v1/config":
@@ -1364,6 +1387,26 @@ class _Handler(BaseHTTPRequestHandler):
                 status, body = self._schedules_post(payload)
             elif parsed.path == "/api/v1/integrations":
                 status, body = self._integrations_post(payload)
+            elif parsed.path == "/api/v1/publish/preflight":
+                rows = core_publish.preflight(
+                    _required_str(payload, "project"),
+                    str(payload["bench"]) if payload.get("bench") is not None else None,
+                    _required_str(payload, "site"),
+                    address=(
+                        str(payload["address"]).strip()
+                        if payload.get("address") is not None
+                        else None
+                    ),
+                    proxied=(
+                        payload["proxied"] if isinstance(payload.get("proxied"), bool) else None
+                    ),
+                    admin=self._role() == "admin",
+                )
+                status, body = 200, {"data": {"rows": rows}}
+            elif parsed.path == "/api/v1/publish/check":
+                status, body = 200, {
+                    "data": core_publish.check_site(_required_str(payload, "site"))
+                }
             elif parsed.path == "/api/v1/advisories/check":
                 status, body = self._check_advisories(
                     rematch_only=bool(payload.get("rematch_only"))
@@ -1395,6 +1438,7 @@ class _Handler(BaseHTTPRequestHandler):
             "via": "web",
             "account": self._account_name(),
             "account_source": acct.source if acct is not None else "api",
+            "role": self._role(),
             "ui_port": ui_port,
             "page": page,
             "agent": (self.headers.get("User-Agent") or "")[:80],
@@ -1588,7 +1632,10 @@ class _Handler(BaseHTTPRequestHandler):
             raise CwcliError(ErrorKind.NOT_FOUND, "route.not_found", "not found")
         job_id = unquote(job_id)
         if operation == "retry":
-            return 202, {"data": core_jobs.retry_job(job_id, ui_context=self._ui_context())}
+            record = core_jobs.retry_job(
+                job_id, ui_context=self._ui_context(), origin=self._job_origin()
+            )
+            return 202, {"data": record}
         if operation == "continue":
             target = payload.get("target") or {}
             args = payload.get("args") or {}
@@ -1604,6 +1651,7 @@ class _Handler(BaseHTTPRequestHandler):
                 args,
                 consent=payload.get("consent") is True,
                 ui_context=self._ui_context(),
+                origin=self._job_origin(),
             )
             return 202, {"data": record}
         record = (
@@ -2557,6 +2605,8 @@ _POST_PATHS = {
     "/api/v1/backups/upload",
     "/api/v1/advisories/check",
     "/api/v1/advisories/state",
+    "/api/v1/publish/preflight",
+    "/api/v1/publish/check",
 }
 
 
@@ -2999,6 +3049,12 @@ def run_daemon(
             # The job wrote the snapshot in its own process; serve it and tell every tab.
             updates_store.reload()
             hub.publish_event("updates", updates_store.snapshot())
+        if record.get("verb") in ("publish-site", "unpublish-site"):
+            # Each step writes the store, so the Sites list follows a publish part by part.
+            try:
+                hub.publish_event("publications", core_publish.view())
+            except Exception as e:  # pragma: no cover - a refresh must never break job delivery
+                _warn(e)
         if record.get("state") == "succeeded" and record.get("verb") in recheck_verbs:
             try:
                 advisories_store.refresh(

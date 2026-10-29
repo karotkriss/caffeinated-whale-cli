@@ -44,6 +44,8 @@ export function openCommunity(mode, id = null) {
 export const HOOK_POINT = {
   sign_in: 'Sign-in provider',
   backup_target: 'Backup target',
+  dns_record: 'DNS records',
+  proxy_host: 'Proxy',
 }
 // A session signed in through a sign-in integration (LDAP or a community one).
 export const isDirectorySource = (source) => !!source && source !== 'local' && source !== 'api'

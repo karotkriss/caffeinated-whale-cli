@@ -3,6 +3,9 @@
 // instance and bench, a name per copy, the config rule, and for a move or a copy that
 // replaces an existing site a typed confirm.
 // One job runs them in order with x of N progress; a failure stops before the next source.
+// A move of a published site keeps its public address when the name is kept (its proxy
+// host is pointed at the new bench); a renamed one offers Also unpublish (ticked) for
+// the old name and Publish for the new one, each a job of its own after the move.
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { transferDialog } from '../data/transfer'
@@ -11,6 +14,7 @@ import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
 import { can } from '../data/session'
+import { canPublish, loadPublications, publicationAt } from '../data/publish'
 
 const d = transferDialog
 const mode = ref('clone')
@@ -21,6 +25,8 @@ const targetBench = ref(null)
 const keepConfig = ref(false)
 const withFiles = ref(true)
 const typed = ref('')
+const unpublish = ref(true)
+const publishNew = ref(false)
 const running = ref(false)
 const error = ref(null)
 
@@ -35,6 +41,9 @@ watch(() => d.open, (open) => {
   typed.value = ''
   error.value = null
   names.value = {}
+  unpublish.value = true
+  publishNew.value = false
+  loadPublications()
   if (d.project) loadDetail(d.project)
 })
 watch(targetProject, (p) => { if (p) loadDetail(p) })
@@ -65,6 +74,10 @@ const confirmWord = computed(() => {
 })
 const confirmWhat = computed(() => (overwrites.value.length ? (mode.value === 'move' ? 'the move and the replacement' : 'the replacement') : 'the move'))
 const confirmed = computed(() => !needsConsent.value || typed.value.trim() === confirmWord.value)
+// Published sources of a move: those keeping their name, and those renamed.
+const published = computed(() => (mode.value === 'move' ? pairs.value.filter((p) => publicationAt(p.site, d.project, sourceBench.value?.path)) : []))
+const kept = computed(() => published.value.filter((p) => p.site === p.target_site))
+const renamed = computed(() => published.value.filter((p) => p.site !== p.target_site))
 function toggle(site) {
   chosen.value = chosen.value.includes(site) ? chosen.value.filter((s) => s !== site) : [...chosen.value, site]
 }
@@ -77,7 +90,14 @@ async function start() {
     const record = await createJob({
       verb: mode.value === 'move' ? 'move-sites' : 'clone-sites',
       target: { project: d.project, bench: d.bench },
-      args: { sites: pairs.value, target_project: targetProject.value, target_bench: targetBench.value, config_mode: keepConfig.value ? 'keep' : 'carry', with_files: withFiles.value },
+      args: {
+        sites: pairs.value,
+        target_project: targetProject.value,
+        target_bench: targetBench.value,
+        config_mode: keepConfig.value ? 'keep' : 'carry',
+        with_files: withFiles.value,
+        ...(renamed.value.length ? { unpublish: unpublish.value, publish: publishNew.value && canPublish() } : {}),
+      },
       consent: needsConsent.value,
     })
     trackJob(record.id)
@@ -122,6 +142,14 @@ async function start() {
       <div class="space-y-2">
         <Checkbox v-model="withFiles" label="Include public and private files" />
         <Checkbox v-model="keepConfig" label="Keep the target's site config as is (default: carry the source's app settings, keep the target's db_* keys)" />
+      </div>
+      <div v-if="published.length" class="space-y-2 rounded-6 border border-outline-gray-1 p-3">
+        <div class="text-sm font-medium text-ink-gray-8">Public addresses</div>
+        <p v-if="kept.length" class="text-p-sm text-ink-gray-6">{{ kept.map((p) => p.site).join(', ') }} {{ kept.length === 1 ? 'keeps its' : 'keep their' }} public address: after the move, Publish site points the proxy host at the new bench. The DNS record does not change.</p>
+        <template v-if="renamed.length">
+          <Checkbox v-model="unpublish" :label="`Also unpublish ${renamed.map((p) => p.site).join(', ')}: remove the DNS record, proxy host and certificate cwcli made for the old ${renamed.length === 1 ? 'name' : 'names'}`" />
+          <Checkbox v-if="canPublish()" v-model="publishNew" :label="`Publish ${renamed.map((p) => p.target_site).join(', ')} at ${renamed.length === 1 ? 'its' : 'their'} new ${renamed.length === 1 ? 'name' : 'names'}`" />
+        </template>
       </div>
       <p class="text-xs text-ink-gray-5">Each site is backed up into the store first (a verified set; a failed one stops before anything is created), the copy is created if it does not exist, restored, migrated and checked.<template v-if="mode === 'move'"> Then the source is dropped through the ordinary site-removal gate, so its own archive lands in the store too.</template> {{ pairs.length > 1 ? 'Sites run in order with x of N progress; a failure stops before the next source is touched.' : '' }}</p>
       <div v-if="needsConsent" class="flex items-end gap-2">

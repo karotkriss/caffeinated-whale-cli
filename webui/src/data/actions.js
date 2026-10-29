@@ -5,7 +5,8 @@
 //          'confirm' a dialog with the consequence and the equivalent cwcli line
 //          'typed'   the dialog's confirm stays disabled until the exact name of the
 //                    target is typed back (confirmTarget, else site > bench > instance)
-// fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox' }
+// fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox',
+//          show?: (ctx) => bool (only then is it shown and sent), default?: its value when shown }
 // danger:  a destructive verb - the confirm button and the menu entry render red
 // Every entry shows its cwcli command (the design system's "show the command" rule).
 //
@@ -23,6 +24,8 @@ const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
 // secrets, never its spec.
 const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'Database root password', placeholder: 'blank uses the instance\'s saved password' }
 const secrets = (v) => (v?.db_root_password ? { secrets: { db_root_password: v.db_root_password } } : {})
+// What a publish creates, in order, from the integrations that are on (ctx.publishVia).
+const publishParts = (c) => [c.publishVia?.dns && `an A record in ${c.publishVia.dns}`, c.publishVia?.proxy && `a proxy host and a Let's Encrypt certificate in ${c.publishVia.proxy}`].filter(Boolean).join(', then ')
 
 export const ACTIONS = {
   // instance
@@ -218,8 +221,33 @@ export const ACTIONS = {
     cli: (c) => `cwcli rm-site ${q(c.project)} ${q(c.site)}${benchFlag(c)}`,
     says: (c) =>
       `Backs up ${c.site} (database and files) into cwcli's backup store, then drops it: its database and files are deleted. If the backup fails, nothing is dropped. The instance and its other sites keep running.`,
-    request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: {}, consent: true, ...secrets(v) }),
+    fields: [DB_ROOT_FIELD, { name: 'unpublish', type: 'checkbox', default: true, show: (c) => !!c.published, label: 'Also unpublish it: remove the DNS record, proxy host and certificate cwcli made for it, once the site is dropped' }],
+    request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: c.published && v?.unpublish ? { unpublish: true } : {}, consent: true, ...secrets(v) }),
     done: (c) => `${c.site} dropped`,
+  },
+  'site.publish': {
+    job: true,
+    needsRunning: true,
+    label: 'Publish',
+    icon: 'lucide-globe',
+    confirm: 'confirm',
+    cli: () => null, // no terminal command: the web UI's publish-site job
+    says: (c) =>
+      `Publishes ${c.site} at its own name: ${publishParts(c) || 'through the publishing integrations'}, then checks it answers. Each step reads what already exists first, so running it again repeats only what is missing, and cwcli changes only what it created.`,
+    request: (c) => ({ verb: 'publish-site', target: { project: c.project, bench: c.bench, site: c.site }, args: {} }),
+    done: (c) => `${c.site} published`,
+  },
+  'site.unpublish': {
+    job: true,
+    danger: true,
+    label: 'Unpublish',
+    icon: 'lucide-globe-lock',
+    confirm: 'typed',
+    cli: () => null,
+    says: (c) =>
+      `Removes what cwcli made for ${c.site}: the proxy host, then its certificate when no other host uses it, then the DNS record. Each is deleted only while it still matches what cwcli wrote; anything changed by hand is left and reported. The site itself stays.`,
+    request: (c) => ({ verb: 'unpublish-site', target: { project: c.project, site: c.site }, args: {} }),
+    done: (c) => `${c.site} unpublished`,
   },
   delete_backup: {
     job: true,
@@ -295,7 +323,7 @@ export const ACTIONS = {
 // depends on them (removing an instance needs a live backup unless the volumes stay).
 export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
-  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' ? 'admin' : 'operator'
+  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' || id === 'site.unpublish' ? 'admin' : 'operator'
   if (!a?.read && !can(role)) return { ok: false, role, reason: `Needs the ${ROLE_LABEL[role]} role`, detail: `You are signed in as ${ROLE_LABEL[session.user?.role] === 'Admin' ? 'an' : 'a'} ${ROLE_LABEL[session.user?.role] || 'Viewer'}; ask an Admin if you need this.` }
   const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }

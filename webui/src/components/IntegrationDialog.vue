@@ -4,7 +4,7 @@
 // own. Turning one on always tests it first and enables it only when the test
 // passes; a secret is never shown again once saved, only replaced.
 import { computed, ref, watch } from 'vue'
-import { Alert, Badge, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, Select } from 'frappe-ui'
+import { Alert, Badge, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, Select, TextInput } from 'frappe-ui'
 import { configureIntegration, HOOK_POINT, integrationAction, integrationDialog, integrations, loadIntegrations, PUBLISHER, STATE, testIntegration } from '../data/integrations'
 
 const d = integrationDialog
@@ -13,12 +13,17 @@ const form = ref({})
 const secrets = ref({})
 const check = ref(null)
 const error = ref(null)
-const busy = ref(null) // 'test' | 'save' | 'lookup'
+const busy = ref(null) // 'test' | 'save' | 'lookup' | 'detect' | 'edit'
 // Another integration serves this one's hook point: the server's detail, until the Admin chooses to switch.
 const switching = ref(null)
 const lookupName = ref('')
 const lookup = ref(null)
 const advanced = ref(false)
+// Cloudflare: the address Detect read, and the last Check edit access answer.
+const detectedIp = ref(null)
+const editAccess = ref(null)
+// Nginx Proxy Manager: the container Detect found on this machine, if any.
+const detected = ref(null)
 
 const ROLES = [{ label: 'Admin', value: 'admin' }, { label: 'Operator', value: 'operator' }, { label: 'Viewer', value: 'viewer' }]
 // The directory's own defaults, shown as placeholders until a value is typed
@@ -29,7 +34,10 @@ const LDAP_DEFAULTS = {
 }
 const ADVANCED = new Set(['user_filter', 'username_attribute', 'email_attribute', 'display_name_attribute'])
 // Long values (URLs, DNs, filters) take the whole row.
-const WIDE = new Set(['server_url', 'bind_dn', 'user_filter', 'endpoint'])
+const WIDE = new Set(['server_url', 'bind_dn', 'user_filter', 'endpoint', 'api_token', 'ipv6', 'challenge', 'dns_token'])
+// Short switches that sit two to a row.
+const HALF_BOOL = new Set(['ssl_forced', 'http2', 'block_exploits', 'hsts'])
+const DNS_CHALLENGE = 'DNS through Cloudflare'
 
 watch(() => d.open, (open) => {
   if (!open || !integ.value) return
@@ -50,6 +58,10 @@ watch(() => d.open, (open) => {
   lookup.value = null
   lookupName.value = ''
   advanced.value = false
+  detectedIp.value = null
+  editAccess.value = null
+  detected.value = null
+  if (integ.value.id === 'npm') runDetect()
 })
 
 // A test answer describes the form it was run on; editing the form retires it.
@@ -57,6 +69,7 @@ watch([form, secrets], () => { check.value = null }, { deep: true })
 
 const visible = computed(() => (integ.value?.fields || []).filter((f) => {
   if (f.key === 'starttls') return String(form.value.server_url || '').trim().toLowerCase().startsWith('ldap://')
+  if (f.key === 'dns_token') return form.value.challenge === DNS_CHALLENGE
   return !ADVANCED.has(f.key) || advanced.value
 }))
 const hasAdvanced = computed(() => (integ.value?.fields || []).some((f) => ADVANCED.has(f.key)))
@@ -96,6 +109,32 @@ async function runLookup() {
   try { lookup.value = (await integrationAction(d.id, 'lookup_user', { username: lookupName.value.trim() }, ...payload())).result } catch (e) { error.value = e; lookup.value = null } finally { busy.value = null }
 }
 const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
+
+async function detectIp() {
+  busy.value = 'detect'
+  error.value = null
+  try {
+    detectedIp.value = (await integrationAction(d.id, 'detect_ip', {}, ...payload())).result.ipv4
+    form.value.ipv4 = detectedIp.value
+  } catch (e) { error.value = e } finally { busy.value = null }
+}
+async function runEditCheck() {
+  busy.value = 'edit'
+  error.value = null
+  try { editAccess.value = (await integrationAction(d.id, 'check_edit_access', {}, ...payload())).result } catch (e) { error.value = e; editAccess.value = null } finally { busy.value = null }
+}
+// A local Nginx Proxy Manager container fills the admin URL and forward address the
+// Admin has not set yet; nothing is saved until Test and turn on.
+async function runDetect() {
+  try {
+    const found = (await integrationAction('npm', 'detect', {}, ...payload())).result
+    detected.value = found
+    if (!found.found) return
+    if (!integ.value?.settings?.url && found.url) form.value.url = found.url
+    if (!form.value.forward_host && found.forward_host) form.value.forward_host = found.forward_host
+  } catch { detected.value = null }
+}
+const checkedAt = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 </script>
 
 <template>
@@ -106,6 +145,7 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
         <Badge size="sm" variant="subtle" :theme="STATE[integ.state]?.theme" :label="STATE[integ.state]?.label" />
         <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">{{ integ.description }}</p>
       </div>
+      <Alert v-if="detected?.found" theme="blue" :title="`Found Nginx Proxy Manager${detected.version ? ' ' + detected.version : ''} on this machine`" :description="`Container ${detected.container}, admin port ${detected.admin_port ?? 'not published'}. The admin URL and forward address are filled from it; cwcli talks to it over 127.0.0.1, so its admin port can stay closed to the network.`" />
       <form class="grid gap-3 sm:grid-cols-2" autocomplete="off" @submit.prevent="save(false)">
         <template v-for="f in visible" :key="f.key">
           <div v-if="f.kind === 'group_roles'" class="space-y-2 sm:col-span-2">
@@ -120,10 +160,21 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
               <p class="text-p-sm text-ink-gray-5">{{ f.help }}</p>
             </div>
           </div>
-          <Checkbox v-else-if="f.kind === 'bool'" v-model="form[f.key]" class="sm:col-span-2" :label="f.label" />
-          <FormControl v-else-if="f.kind === 'select'" v-model="form[f.key]" type="select" :label="f.label" :options="f.options" />
+          <div v-else-if="f.key === 'ipv4'" class="space-y-1.5 sm:col-span-2">
+            <FormLabel :label="f.label" />
+            <div class="flex items-center gap-2">
+              <TextInput v-model="form.ipv4" class="min-w-0 flex-1" :placeholder="f.placeholder" :aria-label="f.label" spellcheck="false" />
+              <Button icon-left="lucide-radar" label="Detect" :loading="busy === 'detect'" @click="detectIp" />
+            </div>
+            <p class="text-p-sm" :class="detectedIp && detectedIp === form.ipv4 ? 'text-ink-amber-6' : 'text-ink-gray-5'">{{ detectedIp && detectedIp === form.ipv4 ? `Cloudflare sees this machine as ${detectedIp}. Behind NAT, a VPN or two uplinks that may not be the address visitors reach; saving confirms it.` : f.help }}</p>
+          </div>
+          <div v-else-if="f.kind === 'bool'" :class="HALF_BOOL.has(f.key) ? '' : 'sm:col-span-2'">
+            <Checkbox v-model="form[f.key]" :label="f.label" />
+            <p v-if="f.help" class="mt-1 pl-6 text-p-sm text-ink-gray-5">{{ f.help }}</p>
+          </div>
+          <FormControl v-else-if="f.kind === 'select'" v-model="form[f.key]" :class="WIDE.has(f.key) && 'sm:col-span-2'" type="select" :label="f.label" :options="f.options" :description="f.help" />
           <FormControl v-else-if="f.kind === 'pem'" v-model="form[f.key]" class="sm:col-span-2" type="textarea" :rows="3" :label="f.label" :description="f.help" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false" />
-          <FormControl v-else-if="f.kind === 'secret'" v-model="secrets[f.key]" type="password" :label="f.label" :placeholder="secretPlaceholder(f)" autocomplete="new-password" />
+          <FormControl v-else-if="f.kind === 'secret'" v-model="secrets[f.key]" :class="WIDE.has(f.key) && 'sm:col-span-2'" type="password" :label="f.label" :placeholder="secretPlaceholder(f)" :description="f.help" autocomplete="new-password" />
           <FormControl v-else v-model="form[f.key]" :class="WIDE.has(f.key) && 'sm:col-span-2'" :label="f.label" :placeholder="placeholder(f)" :description="f.help" spellcheck="false" />
         </template>
         <button v-if="hasAdvanced" type="button" class="flex items-center gap-1 text-sm text-ink-gray-6 hover:text-ink-gray-8 sm:col-span-2" :aria-expanded="advanced" @click="advanced = !advanced">
@@ -153,6 +204,23 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
             <p class="text-ink-gray-6">Groups: {{ lookup.groups.length ? lookup.groups.map((g) => g.cn).join(', ') : 'none' }}<span v-if="lookup.matched_groups.length"> · allowed through {{ lookup.matched_groups.join(', ') }}</span></p>
           </template>
         </div>
+      </div>
+
+      <div v-if="integ.actions.includes('check_edit_access')" class="rounded-6 border border-outline-gray-1 p-3">
+        <div class="flex items-start gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-base font-medium text-ink-gray-8">Check edit access</div>
+            <p class="mt-0.5 text-p-sm text-ink-gray-5">Cloudflare has no read-only way to prove a token may edit a zone, so this creates and deletes a TXT record named <span class="font-mono">_cwcli-check</span> in each zone the token can see.</p>
+          </div>
+          <Button label="Check" icon-left="lucide-shield-check" :loading="busy === 'edit'" @click="runEditCheck" />
+        </div>
+        <ul v-if="editAccess" class="mt-2 space-y-1 text-p-sm">
+          <li v-for="z in editAccess.zones" :key="z.zone" class="flex items-start gap-1.5" :class="z.ok ? 'text-ink-green-6' : 'text-ink-red-6'">
+            <span class="mt-0.5 size-4 shrink-0" :class="z.ok ? 'lucide-circle-check' : 'lucide-circle-x'" aria-hidden="true" /><span><span class="font-medium">{{ z.zone }}</span>: {{ z.ok ? 'cwcli can create and delete records' : z.message }}</span>
+          </li>
+          <li v-if="!editAccess.zones.length" class="text-ink-amber-6">The token can see no zone.</li>
+          <li class="text-xs text-ink-gray-5">Checked at {{ checkedAt(editAccess.checked_at) }}</li>
+        </ul>
       </div>
 
       <p v-if="check" class="flex items-start gap-1.5 text-p-sm" :class="check.ok ? 'text-ink-green-6' : 'text-ink-red-6'">

@@ -15,17 +15,29 @@ in the same way:
   lets a schedule confirm its owner is still an Admin.
 * ``backup_target``: ``(settings, secrets)`` -> the store off-site copies go to
   (``BackupTarget``).
+* ``dns_record``: ``(settings, secrets)`` -> the DNS zones a site's public name is
+  written in (``DnsRecords``).
+* ``proxy_host``: ``(settings, secrets)`` -> the reverse proxy that serves a site's
+  public name and requests its certificate (``ProxyHosts``).
+
+``core.publish`` owns what is read and written through the last two (what exists is
+read before anything is written, and only what cwcli wrote is ever changed or
+deleted), so a provider implements plain reads and writes.
 
 Only one integration serves a hook point at a time: turning on a second one that
 provides it is refused (``integration.hook_taken``) unless the Admin chooses to
 switch (``take_over``), which turns the first one off - never silently.
 
-Two official integrations use it now:
+Four official integrations use it now:
 
 * ``ldap`` (``core.directory``) provides ``sign_in``: LDAP / Active Directory users
   sign in to the web UI with a role mapped from their directory groups.
 * ``s3`` provides ``backup_target``: the bucket that receives the backup store's
   encrypted off-site copies (``core.backup_store``).
+* ``cloudflare`` (``core.cloudflare``) provides ``dns_record``: a published site's A
+  record.
+* ``npm`` (``core.npm``) provides ``proxy_host``: a published site's Nginx Proxy
+  Manager proxy host and Let's Encrypt certificate.
 
 Community integrations (``core.community``) are installable packages an Admin adds
 from a repository URL. Each registers one ``Integration`` under the
@@ -123,7 +135,12 @@ class Integration:
         return tuple(f.key for f in self.fields if f.kind == "secret")
 
 
-HOOK_LABEL = {"sign_in": "sign-in", "backup_target": "the backup target"}
+HOOK_LABEL = {
+    "sign_in": "sign-in",
+    "backup_target": "the backup target",
+    "dns_record": "DNS records",
+    "proxy_host": "the proxy",
+}
 
 
 class BackupTarget(Protocol):
@@ -141,11 +158,50 @@ class BackupTarget(Protocol):
     def list(self, prefix: str = "") -> list[dict[str, Any]]: ...
 
 
+class DnsRecords(Protocol):
+    """The ``dns_record`` hook point. A zone is ``{"id", "name"}``; a record is
+    ``{"id", "type", "name", "content", "proxied", "comment"}``. A refusal raises
+    ``CwcliError`` with a message that names its fix."""
+
+    name: str  # shown to people, e.g. "Cloudflare"
+
+    def zones(self) -> list[dict[str, Any]]: ...
+    def records(self, zone_id: str, name: str) -> list[dict[str, Any]]: ...
+    def record(self, zone_id: str, record_id: str) -> dict[str, Any] | None: ...
+    def create(self, zone_id: str, record: dict[str, Any]) -> dict[str, Any]: ...
+    def update(self, zone_id: str, record_id: str, record: dict[str, Any]) -> dict[str, Any]: ...
+    def delete(self, zone_id: str, record_id: str) -> None: ...
+
+
+class ProxyHosts(Protocol):
+    """The ``proxy_host`` hook point. A host is Nginx Proxy Manager's proxy-host
+    object (``id``, ``domain_names``, ``forward_host``, ``forward_port``,
+    ``locations``, ``certificate_id``, ``owner_user_id``); a certificate is its
+    certificate object (``id``, ``domain_names``, ``expires_on``)."""
+
+    name: str
+    challenge: str  # "http" | "dns": how certificates are validated
+
+    def me(self) -> dict[str, Any]: ...
+    def hosts(self) -> list[dict[str, Any]]: ...
+    def host(self, host_id: int) -> dict[str, Any] | None: ...
+    def create_host(self, spec: dict[str, Any]) -> dict[str, Any]: ...
+    def update_host(self, host_id: int, spec: dict[str, Any]) -> dict[str, Any]: ...
+    def delete_host(self, host_id: int) -> None: ...
+    def certificates(self) -> list[dict[str, Any]]: ...
+    def certificate(self, cert_id: int) -> dict[str, Any] | None: ...
+    def request_certificate(self, domain: str) -> dict[str, Any]: ...
+    def delete_certificate(self, cert_id: int) -> None: ...
+
+
 def official() -> dict[str, Integration]:
     """The integrations cwcli ships, in display order."""
-    from . import directory
+    from . import cloudflare, directory, npm
 
-    return {i.id: i for i in (directory.INTEGRATION, S3_INTEGRATION)}
+    return {
+        i.id: i
+        for i in (directory.INTEGRATION, S3_INTEGRATION, cloudflare.INTEGRATION, npm.INTEGRATION)
+    }
 
 
 def registry() -> dict[str, Integration]:
@@ -406,6 +462,17 @@ def provider(hook: str) -> tuple[Integration, dict[str, Any], dict[str, str]] | 
         if rec.get("enabled") and hook in _provides(integration_id, data):
             integ = get(integration_id)
             return integ, dict(rec.get("settings") or {}), _secrets(integ, rec)
+    return None
+
+
+def serving(hook: str) -> tuple[str, str] | None:
+    """(id, name) of the integration that is on and provides ``hook``, without
+    loading community code or unsealing a secret: what a page shows."""
+    with _locked():
+        data = _load()
+    for integration_id, rec in data["integrations"].items():
+        if rec.get("enabled") and hook in _provides(integration_id, data):
+            return integration_id, _name(integration_id, data)
     return None
 
 

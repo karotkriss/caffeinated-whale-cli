@@ -130,6 +130,8 @@ export const JOB_LABEL = {
   'send-backup': 'Send backup',
   'receive-backup': 'Receive backup',
   'prune-backups': 'Prune backups',
+  'publish-site': 'Publish site',
+  'unpublish-site': 'Unpublish site',
   'backup-sites': 'Scheduled backup',
   's3-copy': 'Copy backup off-site',
   's3-fetch': 'Fetch backup from S3',
