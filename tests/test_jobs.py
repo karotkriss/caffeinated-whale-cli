@@ -517,7 +517,7 @@ def test_run_job_records_typed_events_and_terminal_result(fake_spawn, monkeypatc
         phase: str
         message: str
 
-    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit, **_kw):
         emit(Event(phase="backup", message="Database dump created"))
         return Result(status=Status.OK, data={"ok": True, "archive": "site.sql.gz"})
 
@@ -654,7 +654,7 @@ def test_an_interrupt_request_file_unwinds_the_worker_through_its_cleanup(fake_s
     record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
     cleaned = []
 
-    def dispatch(*_args):
+    def dispatch(*_args, **_kw):
         jobs._json_path(record["id"], jobs._INTERRUPT_REQUEST).touch()
         try:
             for _ in range(500):
@@ -1005,7 +1005,7 @@ def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
     record = jobs.create_job("rm-site", {"project": "p", "site": "s.localhost"}, {})
     denied = "(1045, \"Access denied for user 'root'@'x'\")"
 
-    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit, **_kw):
         raise CwcliError(
             jobs.ErrorKind.PRECONDITION,
             "rm_site.failed",
@@ -1042,7 +1042,7 @@ def test_a_credential_helper_failure_states_its_cause_once(fake_spawn, monkeypat
     def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
         return SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
 
-    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit, **_kw):
         core_init._run_host_command(
             ["docker", "compose", "pull"],
             cwd=".",
@@ -1076,7 +1076,7 @@ _BENIGN_EARLIER_OUTPUT = (
 def test_an_earlier_steps_benign_output_never_becomes_a_failed_jobs_cause(fake_spawn, monkeypatch):
     record = jobs.create_job("init", {"project": "p"}, {})
 
-    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit, **_kw):
         emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
         raise CwcliError(
             jobs.ErrorKind.PRECONDITION,
@@ -1093,7 +1093,7 @@ def test_an_earlier_steps_benign_output_never_becomes_a_failed_jobs_cause(fake_s
 
 def test_a_failed_report_records_no_cause_from_earlier_output(fake_spawn, monkeypatch):
     def dispatch_with(ok):
-        def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        def dispatch(_verb, _target, _args, _consent, _secrets, emit, **_kw):
             emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
             return Result(status=Status.WARNING, data={"ok": ok})
 
@@ -1455,7 +1455,9 @@ def _published(monkeypatch, *domains, project="p"):
 
 
 def _succeed(monkeypatch):
-    monkeypatch.setattr(jobs, "_dispatch", lambda *_a: Result(status=Status.OK, data={"ok": True}))
+    monkeypatch.setattr(
+        jobs, "_dispatch", lambda *_a, **_k: Result(status=Status.OK, data={"ok": True})
+    )
 
 
 def test_new_site_with_publish_starts_publish_site_as_part_two(fake_spawn, monkeypatch):
@@ -1463,7 +1465,7 @@ def test_new_site_with_publish_starts_publish_site_as_part_two(fake_spawn, monke
         "new-site",
         {"project": "p", "bench": "0", "site": "erp.example.com"},
         {"publish": {"proxied": False, "access_list_id": 3}},
-        origin={"account": "admin", "account_source": "local"},
+        origin={"account": "admin", "account_source": "local", "role": "admin"},
     )
     _succeed(monkeypatch)
     assert jobs.run_job(parent["id"]) == 0
@@ -1475,7 +1477,7 @@ def test_new_site_with_publish_starts_publish_site_as_part_two(fake_spawn, monke
     assert child["args"] == {"proxied": False, "access_list_id": 3}
     assert child["origin"]["follows"] == parent["id"]
     assert (child["origin"]["part"], child["origin"]["of"]) == (2, 2)
-    assert child["origin"]["account"] == "admin"
+    assert child["origin"]["account"] == "admin" and child["origin"]["role"] == "admin"
     assert child["project_key"] == "@publish:erp.example.com"
     events = jobs.read_job(parent["id"], include_events=True)["events"]
     types = [e["type"] for e in events]
@@ -1487,7 +1489,9 @@ def test_a_failed_new_site_starts_no_publish(fake_spawn, monkeypatch):
     parent = jobs.create_job(
         "new-site", {"project": "p", "site": "erp.example.com"}, {"publish": {}}
     )
-    monkeypatch.setattr(jobs, "_dispatch", lambda *_a: Result(status=Status.OK, data={"ok": False}))
+    monkeypatch.setattr(
+        jobs, "_dispatch", lambda *_a, **_k: Result(status=Status.OK, data={"ok": False})
+    )
     assert jobs.run_job(parent["id"]) == 1
     assert "followed_by" not in jobs.read_job(parent["id"])
     assert [j["verb"] for j in jobs.list_jobs()] == ["new-site"]
@@ -1631,4 +1635,37 @@ def test_publish_site_dispatches_to_the_core(monkeypatch):
     )
     assert seen["bench"] == "1" and seen["address"] == "203.0.113.5"
     assert seen["proxied"] is True and seen["access_list_id"] == 4
-    assert seen["move"] is False
+    assert seen["move"] is False and seen["admin"] is False
+    jobs._dispatch(
+        "publish-site",
+        {"project": "p", "site": "erp.example.com"},
+        {},
+        False,
+        {},
+        lambda _e: None,
+        admin=True,
+    )
+    assert seen["admin"] is True
+
+
+@pytest.mark.parametrize("role, admin", [("admin", True), ("operator", False), (None, False)])
+def test_a_job_runs_as_admin_only_when_the_server_stamped_its_origin_so(
+    fake_spawn, monkeypatch, role, admin
+):
+    from caffeinated_whale_cli.core import publish
+
+    seen = {}
+
+    def publish_site(project, site, **kwargs):
+        seen.update(kwargs)
+        return Result(status=Status.OK, data={"ok": True})
+
+    monkeypatch.setattr(publish, "publish_site", publish_site)
+    record = jobs.create_job(
+        "publish-site",
+        {"project": "p", "site": "erp.example.com"},
+        {"admin": True, "role": "admin"},
+        origin={"account": "x", "role": role},
+    )
+    jobs.run_job(record["id"])
+    assert seen["admin"] is admin

@@ -1400,6 +1400,7 @@ class _Handler(BaseHTTPRequestHandler):
                     proxied=(
                         payload["proxied"] if isinstance(payload.get("proxied"), bool) else None
                     ),
+                    admin=self._role() == "admin",
                 )
                 status, body = 200, {"data": {"rows": rows}}
             elif parsed.path == "/api/v1/publish/check":
@@ -1437,6 +1438,7 @@ class _Handler(BaseHTTPRequestHandler):
             "via": "web",
             "account": self._account_name(),
             "account_source": acct.source if acct is not None else "api",
+            "role": self._role(),
             "ui_port": ui_port,
             "page": page,
             "agent": (self.headers.get("User-Agent") or "")[:80],
@@ -1630,7 +1632,10 @@ class _Handler(BaseHTTPRequestHandler):
             raise CwcliError(ErrorKind.NOT_FOUND, "route.not_found", "not found")
         job_id = unquote(job_id)
         if operation == "retry":
-            return 202, {"data": core_jobs.retry_job(job_id, ui_context=self._ui_context())}
+            record = core_jobs.retry_job(
+                job_id, ui_context=self._ui_context(), origin=self._job_origin()
+            )
+            return 202, {"data": record}
         if operation == "continue":
             target = payload.get("target") or {}
             args = payload.get("args") or {}
@@ -1646,6 +1651,7 @@ class _Handler(BaseHTTPRequestHandler):
                 args,
                 consent=payload.get("consent") is True,
                 ui_context=self._ui_context(),
+                origin=self._job_origin(),
             )
             return 202, {"data": record}
         record = (

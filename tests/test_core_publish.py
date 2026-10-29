@@ -82,6 +82,23 @@ def set_ipv6(address: str) -> None:
     )
 
 
+def owner_is(monkeypatch, state: str) -> None:
+    """How the instance a publication was recorded for answers: its site live, gone,
+    or the instance stopped, removed, or behind an unreachable Docker daemon."""
+
+    def container(project):
+        if state == "instance_gone":
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "gone")
+        if state == "docker_down":
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "down")
+        if state == "stopped":
+            return SimpleNamespace(status="exited")
+        code = 1 if state == "site_gone" else 0
+        return SimpleNamespace(status="running", exec_run=lambda cmd: (code, b""))
+
+    monkeypatch.setattr(publish.core_docker, "get_frappe_container", container)
+
+
 def states(report) -> dict[str, str]:
     return {k: v["state"] for k, v in report.parts.items()}
 
@@ -287,8 +304,9 @@ class TestPublish:
         assert host["forward_port"] == 8003 and host["locations"][0]["forward_port"] == 9003
         assert len(world.cf.records) == 1
 
-    def test_another_benchs_publication_is_refused_and_only_a_move_repoints_it(
-        self, world, monkeypatch
+    @pytest.mark.parametrize("state", ["live", "stopped", "docker_down"])
+    def test_another_benchs_live_publication_is_refused_and_only_a_move_repoints_it(
+        self, world, monkeypatch, state
     ):
         turn_on(world)
         publish.publish_site("p", SITE)
@@ -299,17 +317,60 @@ class TestPublish:
             "resolve_container_and_bench",
             lambda p, b, path: (object(), other, []),
         )
-        for project in ("p", "q"):
+        owner_is(monkeypatch, state)
+        for project, admin in (("p", False), ("q", False), ("q", True)):
             with pytest.raises(CwcliError) as e:
-                publish.publish_site(project, SITE, bench="1")
+                publish.publish_site(project, SITE, bench="1", admin=admin)
             assert (e.value.kind, e.value.code) == (ErrorKind.CONFLICT, "publish.owned_elsewhere")
             assert "already published from p (bench frappe-bench)" in e.value.message
-            assert "Move" in e.value.hint
+            assert "Move" in e.value.hint and "Unpublish" in e.value.hint
         assert (len(world.cf.writes()), len(world.npm.writes())) == writes
         assert publish.entry(SITE)["bench_path"] == BENCH
         world.ports["value"] = (8003, 9003)
         assert publish.publish_site("q", SITE, bench="1", move=True).data.ok
         assert (publish.entry(SITE)["project"], publish.entry(SITE)["bench_path"]) == ("q", other)
+        [host] = world.npm.hosts.values()
+        assert host["forward_port"] == 8003
+
+    @pytest.mark.parametrize("state", ["site_gone", "instance_gone"])
+    def test_an_orphaned_publication_is_refused_to_an_operator(self, world, monkeypatch, state):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        writes = (len(world.cf.writes()), len(world.npm.writes()))
+        monkeypatch.setattr(
+            publish.resolvers,
+            "resolve_container_and_bench",
+            lambda p, b, path: (object(), "/workspace/other-bench", []),
+        )
+        owner_is(monkeypatch, state)
+        with pytest.raises(CwcliError) as e:
+            publish.publish_site("q", SITE, bench="1")
+        assert (e.value.kind, e.value.code) == (ErrorKind.CONFLICT, "publish.orphaned")
+        assert "orphaned publication from p (bench frappe-bench)" in e.value.message
+        assert "Admin" in e.value.hint and "Unpublish" in e.value.hint
+        assert (len(world.cf.writes()), len(world.npm.writes())) == writes
+        assert publish.entry(SITE)["project"] == "p"
+
+    def test_an_admin_takes_over_an_orphaned_publication_at_this_machines_address(
+        self, world, monkeypatch
+    ):
+        turn_on(world)
+        publish.publish_site("p", SITE, address="203.0.113.50")
+        other = "/workspace/other-bench"
+        monkeypatch.setattr(
+            publish.resolvers,
+            "resolve_container_and_bench",
+            lambda p, b, path: (object(), other, []),
+        )
+        owner_is(monkeypatch, "site_gone")
+        world.ports["value"] = (8003, 9003)
+        result = publish.publish_site("q", SITE, bench="1", admin=True)
+        assert result.data.ok
+        assert [w.code for w in result.warnings] == ["publish.adopted"]
+        rec = publish.entry(SITE)
+        assert (rec["project"], rec["bench_path"], rec["address_override"]) == ("q", other, "")
+        [record] = world.cf.records.values()
+        assert record["content"] == "203.0.113.7"
         [host] = world.npm.hosts.values()
         assert host["forward_port"] == 8003
 
@@ -550,6 +611,35 @@ class TestPreflight:
             assert [(r["part"], r["state"]) for r in rows] == [("name", "fail")]
             assert "already published from p" in rows[0]["text"]
         assert {r["part"] for r in publish.preflight("p", "0", SITE)} == {"port", "dns", "proxy"}
+
+    def test_an_orphaned_publication_fails_for_an_operator_and_warns_an_admin(
+        self, world, monkeypatch
+    ):
+        turn_on(world)
+        publish.publish_site("p", SITE, address="203.0.113.50")
+        monkeypatch.setattr(
+            publish.resolvers,
+            "resolve_bench",
+            lambda p, b, path: SimpleNamespace(status=publish.Status.OK, data=BENCH),
+        )
+
+        def container(project):
+            if project == "p":
+                raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "gone")
+            return SimpleNamespace(status="exited")
+
+        monkeypatch.setattr(publish.core_docker, "get_frappe_container", container)
+        [refused] = publish.preflight("q", "0", SITE)
+        assert (refused["part"], refused["state"]) == ("name", "fail")
+        assert "orphaned publication from p" in refused["text"]
+        rows = publish.preflight("q", "0", SITE, admin=True)
+        assert [(r["part"], r["state"]) for r in rows] == [
+            ("name", "warn"),
+            ("port", "warn"),
+            ("dns", "ok"),
+            ("proxy", "ok"),
+        ]
+        assert "takes it over" in rows[0]["text"]
 
     def test_a_name_outside_every_zone_fails(self, world, monkeypatch):
         turn_on(world, proxy=False)
