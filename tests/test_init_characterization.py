@@ -534,6 +534,31 @@ class TestRefusals:
         assert "--reuse-bench" in err
         assert "--no-reuse-bench" in err
 
+    def test_changed_port_on_a_stopped_instance_refuses_naming_the_remedy(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        services = [
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
+        ]
+        port = _free_base_port()
+        compose = COMPOSE_TEMPLATE.replace("bench:latest", "bench:v5.25.0")
+
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                base_port=port,
+                compose_content=compose,
+                project_containers=services,
+            )
+
+        assert exc.value.exit_code == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert f"port 8000 -> {port}" in err
+        assert "cwcli rm proj" in err
+        assert "rerun init without the changed options" in err
+
 
 class TestEnospcMessage:
     """A failed drained exec whose output shows ENOSPC gets the actionable message."""
