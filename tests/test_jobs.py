@@ -1105,16 +1105,23 @@ def test_a_self_update_worker_with_the_daemon_context_schedules_the_ui_restart(
 class _Container:
     def __init__(self, name, status):
         self.name, self.status, self.calls = name, status, []
+        self.labels = {"com.docker.compose.service": name}
 
     def start(self):
         self.calls.append("start")
 
     def reload(self):
         self.calls.append("reload")
+        self.status = "running"
 
 
-def _wire_rm_bench(monkeypatch, containers):
-    calls = {"preflight": [], "networks": [], "remove": []}
+def _wire_rm_bench(monkeypatch, containers, db_ready=(True, "")):
+    calls = {"preflight": [], "networks": [], "remove": [], "order": []}
+    monkeypatch.setattr(
+        jobs.rm_cmd,
+        "_wait_for_db_ready",
+        lambda container: calls["order"].append(("db_wait", container.name)) or db_ready,
+    )
     monkeypatch.setattr(jobs, "check_start_port_conflicts", calls["preflight"].append)
     monkeypatch.setattr(jobs.core_docker, "get_project_containers", lambda project: containers)
     monkeypatch.setattr(
@@ -1126,7 +1133,9 @@ def _wire_rm_bench(monkeypatch, containers):
     monkeypatch.setattr(
         jobs.core_rm_bench,
         "remove_bench",
-        lambda project, **kwargs: calls["remove"].append(kwargs) or Result(status=Status.OK),
+        lambda project, **kwargs: calls["remove"].append(kwargs)
+        or calls["order"].append("remove")
+        or Result(status=Status.OK),
     )
     return calls
 
@@ -1141,6 +1150,8 @@ def test_rm_bench_on_a_stopped_instance_starts_only_its_containers(monkeypatch):
     assert calls["preflight"] == ["p"]
     assert calls["networks"] == [["frappe", "db"]]
     assert [c.calls for c in containers] == [["start", "reload"], ["start", "reload"]]
+    # A cold start returns before MariaDB serves; the backup waits for it.
+    assert calls["order"] == [("db_wait", "frappe"), "remove"]
     [kwargs] = calls["remove"]
     assert kwargs["bench"] == "1"
     assert kwargs["auto_start"] is True
@@ -1155,4 +1166,16 @@ def test_rm_bench_on_a_running_instance_starts_nothing(monkeypatch):
 
     assert calls["networks"] == []
     assert [c.calls for c in containers] == [[], []]
-    assert len(calls["remove"]) == 1
+    assert calls["order"] == ["remove"]
+
+
+def test_rm_bench_removes_nothing_when_the_cold_started_database_never_serves(monkeypatch):
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers, db_ready=(False, "Connection refused"))
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, lambda e: None)
+
+    assert error.value.code == "rm_bench.db_not_ready"
+    assert "Connection refused" in error.value.message
+    assert calls["remove"] == []

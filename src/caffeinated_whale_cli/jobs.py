@@ -1126,9 +1126,21 @@ def _remove_bench(
     Starting the bench would make ``remove_bench`` refuse it as running.
     """
     check_start_port_conflicts(project)
-    container_warnings = core_start.start_stopped_containers(
-        project, core_docker.get_project_containers(project) or []
+    containers = core_docker.get_project_containers(project) or []
+    cold = any(c.status != "running" for c in containers)
+    container_warnings = core_start.start_stopped_containers(project, containers)
+    frappe = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"), None
     )
+    if cold and frappe is not None:
+        ready, reason = rm_cmd._wait_for_db_ready(frappe)
+        if not ready:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "rm_bench.db_not_ready",
+                f"MariaDB for '{project}' did not become ready, so nothing was removed: {reason}",
+                hint=f"Check the database with 'cwcli status {project}', then retry.",
+            )
     result = core_rm_bench.remove_bench(
         project,
         bench=bench,
