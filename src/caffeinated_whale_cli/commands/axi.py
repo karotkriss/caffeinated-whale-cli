@@ -2804,7 +2804,19 @@ def axi_init(
     host on a memory-constrained machine - serialize them. Adding a bench to an
     already-running instance never disturbs it or its other benches: the frappe
     container is never pulled, recreated, or restarted, so every already-serving
-    bench keeps running throughout.
+    bench keeps running throughout. Re-running against a stopped instance starts
+    its existing containers as they are, without pulling images or recreating
+    them, so its benches keep their Python environments. If the re-run would
+    change that instance's compose settings, such as a different `--port` on an
+    instance still on the default port range (8000-8005), it refuses with exit 1
+    (`instance.settings_changed`) and names each change; remove the instance
+    with `cwcli rm` (which backs it up) and run init again, or rerun without the
+    changed options. For an instance created on another `--port` or widened by
+    `cwcli scale`, it does not compare `--port`. An instance whose frappe
+    container has never started, such as one left by a first init that failed
+    at `docker compose up`, has no bench to protect, so it neither refuses nor
+    skips recreation there: it pulls images and recreates the containers with
+    the new options.
 
     After the bench+site is created, dev services start by default (reusing the
     same `core.start` behind `cwcli start`/`axi start`), so this leaves a running

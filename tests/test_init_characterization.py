@@ -475,6 +475,39 @@ class TestAlreadyRunningNotice:
         assert "Instance 'proj' is already running" in err
         assert "skipping image pull and preserving its frappe container" in err
 
+    def test_verbose_output_reports_a_stopped_instance_is_started_as_is(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        services = [
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": "2026-10-01T00:00:00Z"}},
+            )
+            for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
+        ]
+
+        port = _free_base_port()
+        compose = (
+            COMPOSE_TEMPLATE.replace("bench:latest", "bench:v5.25.0")
+            .replace("8000-8005:8000-8005", f"{port}-{port + 5}:8000-8005")
+            .replace("9000-9005:9000-9005", f"{port + 1000}-{port + 1005}:9000-9005")
+        )
+
+        result = run_init(
+            monkeypatch,
+            tmp_path,
+            verbose=True,
+            base_port=port,
+            compose_content=compose,
+            project_containers=services,
+        )
+
+        assert [call["cmd"][-3:] for call in result.host_calls] == [["up", "-d", "--no-recreate"]]
+        err = " ".join(capsys.readouterr().err.split())
+        assert "Instance 'proj' already exists" in err
+        assert "without pulling or recreating them" in err
+
 
 class TestRefusals:
     """Non-interactive mode: every prompt has a flag; no flag means honest exit 1."""
@@ -504,6 +537,35 @@ class TestRefusals:
         err = capsys.readouterr().err
         assert "--reuse-bench" in err
         assert "--no-reuse-bench" in err
+
+    def test_changed_port_on_a_stopped_instance_refuses_naming_the_remedy(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        services = [
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": "2026-10-01T00:00:00Z"}},
+            )
+            for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
+        ]
+        port = _free_base_port()
+        compose = COMPOSE_TEMPLATE.replace("bench:latest", "bench:v5.25.0")
+
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                base_port=port,
+                compose_content=compose,
+                project_containers=services,
+            )
+
+        assert exc.value.exit_code == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert f"port 8000 -> {port}" in err
+        assert "cwcli rm proj" in err
+        assert "rerun init without the changed options" in err
 
 
 class TestEnospcMessage:

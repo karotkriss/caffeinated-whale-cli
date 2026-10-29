@@ -675,6 +675,22 @@ def _running_compose_services(project_name: str) -> set[str]:
     }
 
 
+def _frappe_never_started(project_name: str) -> bool:
+    """True when this project's frappe container exists but has never run.
+
+    A first init that failed at ``up`` leaves frappe ``created`` with no bench
+    to protect; Docker reports its ``State.StartedAt`` as the zero time.
+    """
+    frappe = [
+        c
+        for c in core_docker.get_project_containers(project_name) or []
+        if c.labels.get("com.docker.compose.service") == "frappe"
+    ]
+    return bool(frappe) and all(
+        c.attrs["State"]["StartedAt"].startswith("0001-01-01") for c in frappe
+    )
+
+
 def init_instance(
     project_name: str,
     *,
@@ -696,7 +712,9 @@ def init_instance(
     fallback), ``compose pull`` + ``up -d`` via captured subprocess. When this
     project's own frappe container is already running, image pulls are skipped
     and only
-    missing sibling services are started with ``--no-deps``. Then the bounded
+    missing sibling services are started with ``--no-deps``. When the project's
+    containers exist but frappe is stopped, nothing is pulled and ``up -d
+    --no-recreate`` starts them as they are. Then the bounded
     silent readiness poll runs. On poll timeout: ``confirm_start`` choice when
     ``auto_start=False``; typed ``NOT_RUNNING`` when ``auto_start=True`` (the
     structural cap - the caller claimed the start was handled and the
@@ -798,11 +816,16 @@ def init_instance(
     content = compose_path.read_text()
     if new_instance:
         compose_path.unlink()
+    unapplied: list[str] = []
     web_mapping = f"{port}-{port + 5}:8000-8005"
-    content = content.replace("8000-8005:8000-8005", web_mapping)
     socketio_start = port + 1000
     socketio_mapping = f"{socketio_start}-{socketio_start + 5}:9000-9005"
-    content = content.replace("9000-9005:9000-9005", socketio_mapping)
+    customized = content.replace("8000-8005:8000-8005", web_mapping).replace(
+        "9000-9005:9000-9005", socketio_mapping
+    )
+    if customized != content:
+        unapplied.append(f"port 8000 -> {port}")
+    content = customized
     # The upstream devcontainer template sets `working_dir: /workspace/development`
     # - a path cwcli never creates (its bench lives at /workspace/frappe-bench).
     # /workspace is a bind mount to CWCLI_HOME/projects/<name>/, so on `compose up`
@@ -854,8 +877,35 @@ def init_instance(
                 "with the required host port mappings.",
                 hint="Retry init. If the error persists, report the upstream compose change.",
             )
-    content = _apply_db_root_password(project_name, content, db_root_password, emit)
+    customized, remember_password = _apply_db_root_password(
+        project_name, content, db_root_password, emit
+    )
+    if customized != content:
+        unapplied.append("MariaDB root password configuration")
+    content = customized
+
+    running_services = _running_compose_services(project_name)
+    reuse_stopped = (
+        "frappe" not in running_services
+        and bool(core_docker.get_project_containers(project_name))
+        and not _frappe_never_started(project_name)
+    )
+    if reuse_stopped and not new_instance and unapplied:
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "instance.settings_changed",
+            f"Instance '{project_name}' already exists and its containers keep the settings "
+            f"they were created with, so init cannot change: {'; '.join(unapplied)}.",
+            hint=(
+                f"Remove the instance with `cwcli rm {project_name}` (it backs the instance up) "
+                "and run init again, or rerun init without the changed options."
+            ),
+        )
+
     compose_path.write_text(content)
+    if remember_password is not None:
+        path = db_password.remember(project_name, remember_password)
+        emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
 
     # Make the bind-mount source dir writable by the container 'frappe' user when
     # it is aligned to an id other than this process's own - a root host (frappe
@@ -885,7 +935,6 @@ def init_instance(
     # every already-serving bench's supervisord with nothing in the report to
     # say so. Skipping pull+up here makes adding a bench to a running instance
     # structurally unable to disturb it, rather than merely unlikely to.
-    running_services = _running_compose_services(project_name)
     if "frappe" in running_services:
         missing_services = sorted(_EXPECTED_COMPOSE_SERVICES - running_services)
         detail = (
@@ -910,11 +959,37 @@ def init_instance(
                 )
             )
             _run_host_command(
-                compose_base + ["up", "-d", "--no-deps", *missing_services],
+                compose_base + ["up", "-d", "--no-deps", "--no-recreate", *missing_services],
                 cwd=str(conf_dir),
                 phase="up",
                 emit=emit,
             )
+    elif reuse_stopped:
+        # The instance already exists but frappe is not running (a stopped
+        # instance being re-initialized to reuse its bench). Start its containers
+        # exactly as they are: no pull, and --no-recreate. frappe/bench tags are
+        # re-pushed upstream, so a pull - this one or another instance's - can move
+        # this instance's pinned tag to an image with different pyenv patch versions;
+        # a plain `up -d` then RECREATES frappe on it, /home/frappe reverts, and
+        # every bench venv's env/bin/python dangles. Containers that do not exist
+        # yet are still created, and compose pulls only images missing locally.
+        emit(
+            InitNotice(
+                code="instance.existing",
+                text=(
+                    f"Instance '{project_name}' already exists; starting its containers as "
+                    "they are, without pulling or recreating them."
+                ),
+            )
+        )
+        emit(InitStepStart(phase="up", message="Starting existing Docker Compose containers"))
+        _run_host_command(
+            compose_base + ["up", "-d", "--no-recreate"],
+            cwd=str(conf_dir),
+            phase="up",
+            emit=emit,
+            retry_credential_errors=True,
+        )
     else:
         emit(InitStepStart(phase="pull", message="Pulling Docker images"))
         pull_cmd = compose_base + ["pull"]
@@ -971,10 +1046,14 @@ def _apply_db_root_password(
     content: str,
     password: str | None,
     emit: OnEvent,
-) -> str:
-    """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn."""
+) -> tuple[str, str | None]:
+    """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn.
+
+    Returns the compose content and the password to remember once that content is
+    written, or None when there is nothing to remember.
+    """
     if not password or (password == db_password.DEFAULT and not db_password.uses_secret(content)):
-        return content
+        return content, None
     volume_exists = _mariadb_volume_exists(project_name)
     if volume_exists is None:
         raise CwcliError(
@@ -996,11 +1075,8 @@ def _apply_db_root_password(
                     ),
                 )
             )
-        return content
-    content = db_password.apply_to_compose(content)
-    path = db_password.remember(project_name, password)
-    emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
-    return content
+        return content, None
+    return db_password.apply_to_compose(content), password
 
 
 # ------------------------------------------------------------------ stage 2 helpers
