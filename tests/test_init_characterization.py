@@ -483,7 +483,21 @@ class TestAlreadyRunningNotice:
             for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
         ]
 
-        result = run_init(monkeypatch, tmp_path, verbose=True, project_containers=services)
+        port = _free_base_port()
+        compose = (
+            COMPOSE_TEMPLATE.replace("bench:latest", "bench:v5.25.0")
+            .replace("8000-8005:8000-8005", f"{port}-{port + 5}:8000-8005")
+            .replace("9000-9005:9000-9005", f"{port + 1000}-{port + 1005}:9000-9005")
+        )
+
+        result = run_init(
+            monkeypatch,
+            tmp_path,
+            verbose=True,
+            base_port=port,
+            compose_content=compose,
+            project_containers=services,
+        )
 
         assert [call["cmd"][-3:] for call in result.host_calls] == [["up", "-d", "--no-recreate"]]
         err = " ".join(capsys.readouterr().err.split())

@@ -800,11 +800,16 @@ def init_instance(
     content = compose_path.read_text()
     if new_instance:
         compose_path.unlink()
+    unapplied: list[str] = []
     web_mapping = f"{port}-{port + 5}:8000-8005"
-    content = content.replace("8000-8005:8000-8005", web_mapping)
     socketio_start = port + 1000
     socketio_mapping = f"{socketio_start}-{socketio_start + 5}:9000-9005"
-    content = content.replace("9000-9005:9000-9005", socketio_mapping)
+    customized = content.replace("8000-8005:8000-8005", web_mapping).replace(
+        "9000-9005:9000-9005", socketio_mapping
+    )
+    if customized != content:
+        unapplied.append(f"port 8000 -> {port}")
+    content = customized
     # The upstream devcontainer template sets `working_dir: /workspace/development`
     # - a path cwcli never creates (its bench lives at /workspace/frappe-bench).
     # /workspace is a bind mount to CWCLI_HOME/projects/<name>/, so on `compose up`
@@ -813,7 +818,10 @@ def init_instance(
     # `cwcli rm` / test cleanup cannot remove (it re-broke bare pytest by leaking
     # root-owned dirs into a shared temp home). Point it at the mount root, which
     # always exists, so no root-owned working_dir is ever created on the host.
-    content = content.replace("working_dir: /workspace/development", "working_dir: /workspace")
+    customized = content.replace("working_dir: /workspace/development", "working_dir: /workspace")
+    if customized != content:
+        unapplied.append("working directory /workspace/development -> /workspace")
+    content = customized
     emit(
         InitStepStart(
             phase="resolve_bench_tag",
@@ -822,9 +830,12 @@ def init_instance(
     )
     bench_tag = _get_latest_bench_tag(emit, pinned_tag=bench_image_tag)
     emit(InitTrace(text=f"Pinning bench image: docker.io/frappe/bench:{bench_tag}"))
-    content = content.replace(
+    customized = content.replace(
         "docker.io/frappe/bench:latest", f"docker.io/frappe/bench:{bench_tag}"
     )
+    if customized != content:
+        unapplied.append(f"bench image docker.io/frappe/bench:latest -> {bench_tag}")
+    content = customized
     data_dir = project_dir / "data"
     if new_instance:
         # cwcli owns the bench workspace mount: bind the per-project host data/
@@ -856,8 +867,33 @@ def init_instance(
                 "with the required host port mappings.",
                 hint="Retry init. If the error persists, report the upstream compose change.",
             )
-    content = _apply_db_root_password(project_name, content, db_root_password, emit)
+    customized, remember_password = _apply_db_root_password(
+        project_name, content, db_root_password, emit
+    )
+    if customized != content:
+        unapplied.append("MariaDB root password configuration")
+    content = customized
+
+    running_services = _running_compose_services(project_name)
+    reuse_stopped = "frappe" not in running_services and bool(
+        core_docker.get_project_containers(project_name)
+    )
+    if reuse_stopped and not new_instance and unapplied:
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "instance.settings_changed",
+            f"Instance '{project_name}' already exists and its containers keep the settings "
+            f"they were created with, so init cannot change: {'; '.join(unapplied)}.",
+            hint=(
+                f"Remove the instance with `cwcli rm {project_name}` (it backs the instance up) "
+                "and run init again, or rerun init without the changed options."
+            ),
+        )
+
     compose_path.write_text(content)
+    if remember_password is not None:
+        path = db_password.remember(project_name, remember_password)
+        emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
 
     # Make the bind-mount source dir writable by the container 'frappe' user when
     # it is aligned to an id other than this process's own - a root host (frappe
@@ -887,7 +923,6 @@ def init_instance(
     # every already-serving bench's supervisord with nothing in the report to
     # say so. Skipping pull+up here makes adding a bench to a running instance
     # structurally unable to disturb it, rather than merely unlikely to.
-    running_services = _running_compose_services(project_name)
     if "frappe" in running_services:
         missing_services = sorted(_EXPECTED_COMPOSE_SERVICES - running_services)
         detail = (
@@ -917,7 +952,7 @@ def init_instance(
                 phase="up",
                 emit=emit,
             )
-    elif core_docker.get_project_containers(project_name):
+    elif reuse_stopped:
         # The instance already exists but frappe is not running (a stopped
         # instance being re-initialized to reuse its bench). Start its containers
         # exactly as they are: no pull, and --no-recreate. frappe/bench tags are
@@ -999,10 +1034,14 @@ def _apply_db_root_password(
     content: str,
     password: str | None,
     emit: OnEvent,
-) -> str:
-    """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn."""
+) -> tuple[str, str | None]:
+    """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn.
+
+    Returns the compose content and the password to remember once that content is
+    written, or None when there is nothing to remember.
+    """
     if not password or (password == db_password.DEFAULT and not db_password.uses_secret(content)):
-        return content
+        return content, None
     volume_exists = _mariadb_volume_exists(project_name)
     if volume_exists is None:
         raise CwcliError(
@@ -1024,11 +1063,8 @@ def _apply_db_root_password(
                     ),
                 )
             )
-        return content
-    content = db_password.apply_to_compose(content)
-    path = db_password.remember(project_name, password)
-    emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
-    return content
+        return content, None
+    return db_password.apply_to_compose(content), password
 
 
 # ------------------------------------------------------------------ stage 2 helpers
