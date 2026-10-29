@@ -3,7 +3,7 @@ import { boot } from './data/session' // first: strips the #login= code before t
 import { router } from './router'
 import './style.css'
 import './premium/premium.css'
-import './premium/effects' // boots the colour scheme + theme vars before the first paint
+import './premium/effects' // boots the colour scheme and the data-effects flag before the first paint
 import App from './App.vue'
 import { startFleet } from './data/fleet'
 import { isChunkLoadError, shouldReload } from './data/chunk-recovery'

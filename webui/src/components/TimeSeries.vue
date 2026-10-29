@@ -6,7 +6,7 @@
 // value is not connected, so a stopped instance shows nothing for the time it was
 // down instead of a flat invented line.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Button, Checkbox, Popover, Select, TabButtons, Tooltip } from 'frappe-ui'
+import { Button, Checkbox, Popover, Select, TabButtons, Tooltip, useColorScheme } from 'frappe-ui'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
@@ -139,7 +139,8 @@ onBeforeUnmount(() => {
   chart?.dispose()
   chart = null
 })
-watch([visible, yMax, stacked, fmt], render)
+const { resolvedColorScheme } = useColorScheme()
+watch([visible, yMax, stacked, fmt, resolvedColorScheme], render)
 </script>
 
 <template>
