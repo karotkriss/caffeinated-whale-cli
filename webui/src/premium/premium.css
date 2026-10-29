@@ -21,11 +21,11 @@
    readable over it, a surface-coloured wash heaviest on the text side. */
 .cw-c-scrim { background: linear-gradient(100deg, rgb(var(--cw-glass-rgb) / 0.62), rgb(var(--cw-glass-rgb) / 0.3) 60%, rgb(var(--cw-glass-rgb) / 0.12)); }
 
-/* Sign-in: the wordmark over the gradient (Inter Display, i.e. Inter 4 at optical size 32, weight 900, uppercase,
+/* Sign-in: the wordmark over the gradient (Inter Display, i.e. Inter 4 at optical size 32, weight 900, mixed case,
    tight), sized from the viewport so the longer line fills 88 percent of the panel inside its padding: the panel is
-   100vw in the one-column phone layout (45 px at 390) and 50vw from md up (78 px at 1280). */
-.cw-c-wordmark { font-family: 'Inter Variable', sans-serif; font-weight: 900; font-variation-settings: 'opsz' 32, 'wght' 900; text-transform: uppercase; letter-spacing: -0.03em; font-size: 11.53vw; }
-@media (min-width: 768px) { .cw-c-wordmark { font-size: 6.08vw; } }
+   100vw in the one-column phone layout (55 px at 390) and 50vw from md up (96 px at 1280). */
+.cw-c-wordmark { font-family: 'Inter Variable', sans-serif; font-weight: 900; font-variation-settings: 'opsz' 32, 'wght' 900; letter-spacing: -0.035em; font-size: 14.17vw; }
+@media (min-width: 768px) { .cw-c-wordmark { font-size: 7.47vw; } }
 /* A surface-coloured wash under the sign-in's bottom-left headline so ink text keeps AA over the gradient. */
 .cw-c-signin-foot { background: linear-gradient(to top, rgb(var(--cw-glass-rgb) / 0.6), rgb(var(--cw-glass-rgb) / 0.25) 70%, transparent); }
 
