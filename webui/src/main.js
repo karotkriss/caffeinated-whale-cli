@@ -2,6 +2,8 @@ import { createApp } from 'vue'
 import { boot } from './data/session' // first: strips the #login= code before the router reads the URL
 import { router } from './router'
 import './style.css'
+import './premium/premium.css'
+import './premium/effects' // boots the colour scheme + theme vars before the first paint
 import App from './App.vue'
 import { startFleet } from './data/fleet'
 import { isChunkLoadError, shouldReload } from './data/chunk-recovery'

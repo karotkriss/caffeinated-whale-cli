@@ -30,6 +30,16 @@ import { loadSchedules } from '../data/schedules'
 import JobToasts from './JobToasts.vue'
 import HostIcon from './HostIcon.vue'
 import SettingsDialog from './SettingsDialog.vue'
+// --- premium layer (see webui/src/premium/): the Appearance row (theme picker entry + the animated light/dark/system toggle) ---
+// --- the gradient sidebar surface, the sidebar's bottom boundary, the logo and the route crossfade ---
+import ShaderGradient from '../premium/ShaderGradient.vue'
+import GradientPicker from '../premium/GradientPicker.vue'
+import { openPicker } from '../premium/picker'
+import { active, motion, scheme, setScheme, stops } from '../premium/effects'
+import { cssGradient } from '../premium/themes'
+const SCHEME_CYCLE = { light: 'dark', dark: 'system', system: 'light' }
+const SCHEME_ICON = { light: 'lucide-sun', dark: 'lucide-moon', system: 'lucide-monitor' }
+function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
 import { fleet, instances, doctor, details, countSites } from '../data/fleet'
 import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
@@ -93,18 +103,25 @@ watch(() => route.name, (name) => {
 </script>
 
 <template>
-  <div class="h-screen w-full bg-surface-base text-ink-gray-8">
+  <div class="h-screen w-full text-ink-gray-8" :class="active ? 'cw-a-root' : 'bg-surface-base'">
     <DesktopShell>
       <template #sidebar>
-        <Sidebar v-model:collapsed="collapsed" width="15rem" class="border-r border-outline-gray-1">
-          <div class="flex items-center gap-2 px-3 pb-2 pt-3" :class="collapsed && 'justify-center px-2'">
-            <img src="/logo-whale.png" alt="" class="size-7 shrink-0 rounded-4" />
+        <Sidebar v-model:collapsed="collapsed" width="15rem" class="relative border-r border-outline-gray-1" :class="active && 'cw-a-sidebar'">
+          <!-- With effects on, the sidebar's own surface is the moving gradient, as on the right of the sign-in page (the same
+               shader and parameters), under a light tint and a grain, all behind the content. -->
+          <div v-if="active" class="cw-a-side-surface pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden="true">
+            <ShaderGradient :stops="stops" :animate="motion" :scale="0.55" :grain="0.06" />
+            <div class="cw-a-side-tint absolute inset-0" />
+            <div class="cw-a-side-grain absolute inset-0" />
+          </div>
+          <div class="cw-a-side-brand relative flex items-center gap-2 px-3 pb-2 pt-3" :class="collapsed && 'justify-center px-2'">
+            <img src="/logo-whale.png" alt="" class="relative shrink-0 rounded-4" :class="active ? 'size-8' : 'size-7'" />
             <span v-if="!collapsed" class="min-w-0 flex-1">
               <span class="block truncate text-base-medium text-ink-gray-9">Caffeinated Whale</span>
               <span class="block truncate text-xs text-ink-gray-5">{{ session.meta ? `cwcli ${session.meta.version}` : 'cwcli' }}</span>
             </span>
           </div>
-          <div v-if="!collapsed" class="space-y-0.5 px-2 pb-1">
+          <div v-if="!collapsed" class="cw-a-side-head relative space-y-0.5 px-2 pb-1">
             <button class="flex h-7 w-full items-center gap-2 rounded-4 px-2 text-sm text-ink-gray-6 hover:bg-surface-gray-2" @click="openPalette">
               <span class="lucide-search size-3.5" aria-hidden="true" />
               <span class="flex-1 text-left">Search</span>
@@ -159,9 +176,17 @@ watch(() => route.name, (name) => {
               </div>
             </template>
           </ScrollArea>
-          <div class="space-y-0.5 border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
+          <div class="cw-a-side-foot relative space-y-0.5 border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
             <SidebarItem v-if="session.user" :label="session.user.name || session.user.username" icon="lucide-circle-user-round" :active="false" @click="openSettings('account')">
               <template #suffix><span class="mr-1 text-xs text-ink-gray-5" :title="isDirectorySource(session.user.source) ? 'Directory account' : 'Local account'">{{ ROLE_LABEL[session.user.role] }}</span></template>
+            </SidebarItem>
+            <SidebarItem label="Appearance" :active="false" @click="openPicker">
+              <template #prefix><span class="size-4 shrink-0 rounded-full border border-outline-gray-2" :style="{ background: cssGradient(stops) }" aria-hidden="true" /></template>
+              <template #suffix>
+                <button type="button" class="cw-scheme-toggle mr-0.5" :title="`Scheme: ${scheme}. Click for ${SCHEME_CYCLE[scheme] || 'light'}`" :aria-label="`Colour scheme, now ${scheme}; switch to ${SCHEME_CYCLE[scheme] || 'light'}`" @click.stop="cycleScheme">
+                  <span v-for="(icon, id) in SCHEME_ICON" :key="id" :class="icon" :data-on="scheme === id ? '' : null" aria-hidden="true" />
+                </button>
+              </template>
             </SidebarItem>
             <SidebarItem label="Settings" icon="lucide-settings" :active="settingsDialog.open" @click="openSettings()">
               <template #suffix><span v-if="doctor.data && (doctor.data.warned + doctor.data.failed)" class="mr-1 text-xs text-ink-amber-6" :title="`${doctor.data.warned + doctor.data.failed} health check items need attention`" @click.stop="openSettings('health')">{{ doctor.data.warned + doctor.data.failed }}</span><KeyboardShortcut combo="Mod+," class="mr-1" /></template>
@@ -179,7 +204,9 @@ watch(() => route.name, (name) => {
       <div v-else-if="fleet.connection === 'reconnecting'" class="flex items-center gap-2 border-b border-outline-amber-1 bg-surface-amber-1 px-4 py-1.5 text-sm text-ink-amber-6">
         <span class="lucide-loader-circle size-3.5 animate-spin" aria-hidden="true" />Reconnecting to the cwcli daemon
       </div>
-      <router-view :key="route.fullPath" />
+      <router-view v-slot="{ Component }" :key="route.fullPath">
+        <Transition :name="active ? 'cw-fade' : ''" mode="out-in" appear><component :is="Component" /></Transition>
+      </router-view>
     </DesktopShell>
     <ActionDialog />
     <JobDialog />
@@ -193,6 +220,7 @@ watch(() => route.name, (name) => {
     <ReceiveDialog />
     <BackupSettingsDialog />
     <ScheduleDialog />
+    <GradientPicker />
     <SettingsDialog />
     <StartGateDialog />
     <JobToasts />
