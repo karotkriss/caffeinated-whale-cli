@@ -485,14 +485,21 @@ def _proxy_step(run: _Run, part: dict) -> dict:
                 ) from None
             raise
     elif _forwarding(live) != _forwarding(spec):
-        if part.get("id") == live["id"] and _forwarding(live) != _recorded_forwarding(part):
+        now, was = _forwarding(live), _recorded_forwarding(part)
+        if part.get("id") == live["id"] and now != was:
+            changed = []
+            if now[:2] != was[:2]:
+                changed.append(f"it forwards to {now[0]}:{now[1]}, not {was[0]}:{was[1]}")
+            if now[2] != was[2]:
+                changed.append(f"its access list is {now[2] or 'none'}, not {was[2] or 'none'}")
+            if now[3] != was[3]:
+                changed.append("its /socket.io location was changed")
             raise CwcliError(
                 ErrorKind.CONFLICT,
                 "publish.proxy_changed",
-                f"The proxy host for {run.domain} was changed outside cwcli (it forwards to "
-                f"{live.get('forward_host')}:{live.get('forward_port')} now); cwcli leaves "
-                f"it. Change it back to {part.get('forward_host')}:{part.get('forward_port')} "
-                f"or delete it in {client.name}, then retry.",
+                f"The proxy host for {run.domain} was changed outside cwcli "
+                f"({'; '.join(changed)}); cwcli leaves it. Change it back or delete it in "
+                f"{client.name}, then retry.",
             )
         live = client.update_host(live["id"], spec)
     return {

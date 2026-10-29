@@ -2137,7 +2137,14 @@ def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[st
         if args.get("unpublish") is True:
             out.append(("unpublish-site", {"project": project, "site": source}, {}))
         if args.get("publish") is True:
-            out.append(("publish-site", moved, {}))
+            choices = {
+                "address": published.get("address_override"),
+                "proxied": published.get("proxied"),
+                "access_list_id": published.get("access_list_id"),
+            }
+            out.append(
+                ("publish-site", moved, {k: v for k, v in choices.items() if v not in (None, "")})
+            )
     return out
 
 
