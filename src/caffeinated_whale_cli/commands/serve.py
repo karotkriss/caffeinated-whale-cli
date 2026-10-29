@@ -53,10 +53,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
   frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
   (a reconnect always gets a fresh snapshot, which IS the resume)
-* ``POST /api/v1/session``                  - exchange the one-time login code
-  (JSON ``{"code": ...}``) or the bearer token for the browser session cookie
-* ``POST /api/v1/session/code``             - mint a fresh one-time login code
-  (bearer token ONLY; how ``cwcli ui`` signs a second browser in)
+* ``POST /api/v1/session``                  - exchange an account's username and
+  password for the browser session cookie (``core.accounts``)
 * ``POST /api/v1/jobs``                     - create one detached long-running
   job; passwords travel only to the child environment and never enter its spec
 * ``POST /api/v1/jobs/<id>/interrupt``      - request a cleanup-aware interrupt
@@ -133,13 +131,9 @@ an IP literal cannot be rebound.
 when set, otherwise a random token made fresh for each launch. It is read from
 the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
 (the ``core/init.py`` secret-transport rule), and it is never printed. Comparison
-is ``hmac.compare_digest``. A browser signs in through the one-time login code
-in ``http://<bound address>:<port>/#login=<code>``: the fragment is never sent
-to a server or in a ``Referer``, the page posts it once to ``/api/v1/session``
-and strips it from history, and a redeemed code is dead, so a link copied out of
-history or scrollback cannot be replayed. ``cwcli ui`` mints a fresh code for
-every browser it opens through ``POST /api/v1/session/code`` with the bearer
-token it holds in a 0600 file. ``GET /`` and ``GET /api/v1/meta`` stay open
+is ``hmac.compare_digest``. A browser signs in with an account's username and
+password (``POST /api/v1/session``); ``cwcli ui`` keeps the bearer token in a
+0600 file and never hands it to the browser. ``GET /`` and ``GET /api/v1/meta`` stay open
 because they carry no fleet data, and a browser that could not load the page
 could never sign in. ``OPTIONS`` returns no data and dispatches no action.
 
@@ -160,14 +154,14 @@ on the LAN could stop or restart an instance with one ``curl``. That guard is a
 CSRF guard and is correct as one; it was never authentication, and it is kept
 here as defense in depth rather than relied on.
 
-Browsers authenticate once via ``POST /api/v1/session``, which exchanges the
-login code (or the bearer token) for a ``HttpOnly``/``SameSite=Strict`` session
+Browsers authenticate once via ``POST /api/v1/session``, which exchanges an
+account's username and password for a ``HttpOnly``/``SameSite=Strict`` session
 cookie. That exists because ``EventSource`` cannot send request headers, so a
 header-only scheme would leave the SSE stream unauthenticatable from a page. The
-cookie carries one random daemon-wide session id, never the token itself. It is
-replayable if captured until that daemon restarts. ``HttpOnly`` and ``SameSite``
-constrain browser behavior; they do not encrypt plain HTTP. A non-loopback
-listener belongs only on a trusted network.
+cookie carries a random session id whose hash the store keeps, never the token or
+the password. It is replayable if captured until the session ends. ``HttpOnly``
+and ``SameSite`` constrain browser behavior; they do not encrypt plain HTTP. A
+non-loopback listener belongs only on a trusted network.
 
 **No CORS, anywhere.** No response carries an ``Access-Control-*`` header, so no
 other origin's page can read any of it. Non-browser clients send the bearer
@@ -438,7 +432,7 @@ def auth_token() -> str | None:
     """The operator's ``CWCLI_SERVE_TOKEN``, or None when unset.
 
     None never means "no authentication": ``serve`` then makes a random token
-    for this launch, and browsers sign in with the one-time login code.
+    for this launch, and browsers sign in with an account's username and password.
 
     Read from the ENVIRONMENT only. There is deliberately no ``--token`` flag:
     an argv secret is readable by every other process on the machine, which is

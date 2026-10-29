@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
 from caffeinated_whale_cli import jobs
+from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.core.update import UpdatePreflight
 from caffeinated_whale_cli.core.update_preflight import DATA_LOSS, PreflightFinding
+
+_real_discover_stack = supervision.discover_stack
 
 
 @pytest.fixture(autouse=True)
@@ -367,12 +371,98 @@ def test_interrupt_tolerates_a_process_that_exits_before_the_signal(fake_spawn, 
     assert jobs.interrupt_job(record["id"])["state"] == "interrupting"
 
 
-def test_restart_asks_which_bench_before_stopping_anything(fake_spawn, monkeypatch):
-    choice = Result(status=Status.NEEDS_CHOICE)
-    monkeypatch.setattr(jobs.core_resolvers, "resolve_bench", lambda *args: choice)
-    monkeypatch.setattr(jobs.core_stop, "stop", lambda *a, **k: pytest.fail("stopped first"))
+def _wire_instance_restart(monkeypatch, frappe_status, serving, unsupervised=()):
+    calls = []
+    frappe = _Container("frappe", frappe_status)
+    monkeypatch.setattr(
+        jobs.core_resolvers,
+        "cached_benches",
+        lambda project: [{"path": f"/workspace/b{i}"} for i in range(3)],
+    )
+    monkeypatch.setattr(jobs.core_docker, "get_frappe_container", lambda project: frappe)
 
-    assert jobs._restart_instance({"project": "p"}, lambda event: None) is choice
+    def discover(container, path, required=False):
+        assert required is True
+        calls.append(("probe", path))
+        return SimpleNamespace(supervisor_up=path in serving)
+
+    monkeypatch.setattr(jobs.core_supervision, "discover_stack", discover)
+
+    def discover_unsupervised(container, path, required=False):
+        assert required is True
+        return SimpleNamespace(manager_up=path in unsupervised)
+
+    monkeypatch.setattr(jobs.core_supervision, "discover_unsupervised_stack", discover_unsupervised)
+    monkeypatch.setattr(
+        jobs.core_stop,
+        "stop",
+        lambda project, **kwargs: calls.append("stop") or Result(status=Status.OK),
+    )
+    monkeypatch.setattr(jobs.core_start, "resolve_project_containers", lambda project: [frappe])
+    monkeypatch.setattr(
+        jobs,
+        "_start_containers_only",
+        lambda project, containers: calls.append("containers") or [],
+    )
+    monkeypatch.setattr(
+        jobs.core_start,
+        "start",
+        lambda project, **kwargs: calls.append(kwargs["bench_path"]) or Result(status=Status.OK),
+    )
+    monkeypatch.setattr(
+        jobs.core_resolvers, "resolve_bench", lambda *a: pytest.fail("asked which bench")
+    )
+    return calls
+
+
+def test_instance_restart_brings_back_only_the_benches_that_were_serving(monkeypatch):
+    calls = _wire_instance_restart(monkeypatch, "running", {"/workspace/b0", "/workspace/b2"})
+
+    result = jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert [c for c in calls if not isinstance(c, tuple)] == [
+        "stop",
+        "/workspace/b0",
+        "/workspace/b2",
+    ]
+    assert calls.index("stop") > max(i for i, c in enumerate(calls) if isinstance(c, tuple))
+    assert result.data["restarted_benches"] == ["/workspace/b0", "/workspace/b2"]
+    assert jobs._result_ok(result) is True
+
+
+def test_instance_restart_brings_back_a_bench_serving_under_bench_start(monkeypatch):
+    calls = _wire_instance_restart(monkeypatch, "running", set(), unsupervised={"/workspace/b1"})
+
+    result = jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert [c for c in calls if not isinstance(c, tuple)] == ["stop", "/workspace/b1"]
+    assert result.data["restarted_benches"] == ["/workspace/b1"]
+
+
+def test_instance_restart_stops_nothing_when_the_process_table_is_unreadable(monkeypatch):
+    calls = _wire_instance_restart(monkeypatch, "running", {"/workspace/b0"})
+    monkeypatch.setattr(jobs.core_supervision, "discover_stack", _real_discover_stack)
+    frappe = jobs.core_docker.get_frappe_container("p")
+    frappe.exec_run = lambda cmd, **kwargs: (1, b"exec failed")
+
+    with pytest.raises(CwcliError) as error:
+        jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert error.value.code == "supervisor.process_state_unknown"
+    assert calls == []
+
+
+@pytest.mark.parametrize("frappe_status", ["running", "exited"])
+def test_instance_restart_with_nothing_serving_starts_only_the_containers(
+    monkeypatch, frappe_status
+):
+    calls = _wire_instance_restart(monkeypatch, frappe_status, set())
+
+    result = jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert [c for c in calls if not isinstance(c, tuple)] == ["stop", "containers"]
+    assert result.status is Status.OK
+    assert result.data["restarted_benches"] == []
 
 
 def test_restart_starts_the_bench_it_resolved_before_the_stop(fake_spawn, monkeypatch):
@@ -855,20 +945,21 @@ def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(mon
 
 
 def test_rm_bench_forwards_the_selector_consent_and_secret(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        jobs.core_rm_bench,
-        "remove_bench",
-        lambda project, **kwargs: calls.append((project, kwargs)) or Result(status=Status.OK),
-    )
+    calls = _wire_rm_bench(monkeypatch, [_Container("frappe", "running")])
 
     emit = lambda e: None  # noqa: E731 - identity matters below
     jobs._dispatch(
         "rm-bench", {"project": "p", "bench": "lab"}, {}, True, {"db_root_password": "x"}, emit
     )
 
-    assert calls == [
-        ("p", {"bench": "lab", "consent": True, "db_root_password": "x", "on_event": emit})
+    assert calls["remove"] == [
+        {
+            "bench": "lab",
+            "auto_start": True,
+            "consent": True,
+            "db_root_password": "x",
+            "on_event": emit,
+        }
     ]
 
 
@@ -1099,3 +1190,235 @@ def test_a_self_update_worker_with_the_daemon_context_schedules_the_ui_restart(
     jobs._schedule_ui_restart()
 
     assert fake_spawn[-1][0][-1] == "restart-ui"
+
+
+class _Container:
+    def __init__(self, name, status):
+        self.name, self.status, self.calls = name, status, []
+        self.labels = {"com.docker.compose.service": name}
+
+    def start(self):
+        self.calls.append("start")
+
+    def reload(self):
+        self.calls.append("reload")
+        self.status = "running"
+
+
+class _Emit:
+    def __init__(self):
+        self.lifecycles = []
+
+    def __call__(self, event):
+        pass
+
+    def lifecycle(self, kind, message, **data):
+        self.lifecycles.append((kind, message))
+
+
+def _wire_rm_bench(monkeypatch, containers, db_ready=(True, ""), removal=None):
+    calls = {"preflight": [], "networks": [], "remove": [], "order": [], "stops": []}
+    monkeypatch.setattr(
+        jobs.core_stop,
+        "stop",
+        lambda project, **k: calls["stops"].append(project) or Result(status=Status.OK),
+    )
+    monkeypatch.setattr(
+        jobs.rm_cmd,
+        "_wait_for_db_ready",
+        lambda container: calls["order"].append(("db_wait", container.name)) or db_ready,
+    )
+    monkeypatch.setattr(jobs, "check_start_port_conflicts", calls["preflight"].append)
+    monkeypatch.setattr(jobs.core_start, "get_project_containers", lambda project: containers)
+    monkeypatch.setattr(
+        jobs.core_start,
+        "recreate_missing_project_networks",
+        lambda project, stopped: calls["networks"].append([c.name for c in stopped]) or [],
+    )
+    monkeypatch.setattr(jobs.core_start, "start", lambda *a, **k: pytest.fail("started a bench"))
+    monkeypatch.setattr(
+        jobs.core_rm_bench,
+        "remove_bench",
+        lambda project, **kwargs: calls["remove"].append(kwargs)
+        or calls["order"].append("remove")
+        or (removal() if removal else Result(status=Status.OK)),
+    )
+    return calls
+
+
+def test_rm_bench_on_a_stopped_instance_starts_only_its_containers(monkeypatch):
+    """Starting the bench would make remove_bench refuse it as running."""
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, lambda e: None)
+
+    assert calls["preflight"] == ["p"]
+    assert calls["networks"] == [["frappe", "db"]]
+    assert [c.calls for c in containers] == [["start", "reload"], ["start", "reload"]]
+    # A cold start returns before MariaDB serves; the backup waits for it.
+    assert calls["order"] == [("db_wait", "frappe"), "remove"]
+    [kwargs] = calls["remove"]
+    assert kwargs["bench"] == "1"
+    assert kwargs["auto_start"] is True
+    assert kwargs["consent"] is True
+
+
+def test_rm_bench_on_a_running_instance_starts_nothing(monkeypatch):
+    containers = [_Container("frappe", "running"), _Container("db", "running")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, lambda e: None)
+
+    assert calls["networks"] == []
+    assert [c.calls for c in containers] == [[], []]
+    assert calls["order"] == ["remove"]
+    assert calls["stops"] == []
+
+
+def test_rm_bench_removes_nothing_when_the_cold_started_database_never_serves(monkeypatch):
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers, db_ready=(False, "Connection refused"))
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert error.value.code == "start.db_not_ready"
+    assert "Connection refused" in error.value.message
+    assert calls["remove"] == []
+    assert calls["stops"] == ["p"]
+
+
+def _refused():
+    raise CwcliError(jobs.ErrorKind.NOT_FOUND, "bench.not_found", "no such bench")
+
+
+@pytest.mark.parametrize(
+    "removal",
+    [
+        _refused,
+        lambda: Result(status=Status.NEEDS_CHOICE),
+        lambda: Result(status=Status.WARNING, data={"ok": False}),
+    ],
+)
+def test_an_incomplete_removal_stops_the_containers_it_started(monkeypatch, removal):
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers, removal=removal)
+
+    try:
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+    except CwcliError:
+        pass
+
+    assert calls["stops"] == ["p"]
+
+
+@pytest.mark.parametrize(
+    "removal", [_refused, lambda: Result(status=Status.WARNING, data={"ok": False})]
+)
+def test_an_incomplete_removal_never_stops_an_instance_that_was_running(monkeypatch, removal):
+    containers = [_Container("frappe", "running"), _Container("db", "running")]
+    calls = _wire_rm_bench(monkeypatch, containers, removal=removal)
+
+    try:
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+    except CwcliError:
+        pass
+
+    assert calls["stops"] == []
+
+
+def test_a_container_start_that_fails_partway_stops_what_it_started(monkeypatch):
+    class _Broken(_Container):
+        def start(self):
+            raise RuntimeError("docker refused")
+
+    containers = [_Container("frappe", "exited"), _Broken("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    with pytest.raises(RuntimeError):
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert containers[0].calls == ["start", "reload"]
+    assert calls["remove"] == []
+    assert calls["stops"] == ["p"]
+
+
+def test_a_completed_removal_leaves_the_started_containers_alone(monkeypatch):
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert calls["stops"] == []
+
+
+def test_a_failed_stop_again_is_a_warning_never_an_error(monkeypatch):
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    _wire_rm_bench(
+        monkeypatch, containers, removal=lambda: Result(status=Status.WARNING, data={"ok": False})
+    )
+
+    def boom(project, **k):
+        raise RuntimeError("daemon gone")
+
+    monkeypatch.setattr(jobs.core_stop, "stop", boom)
+    result = jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert [w.code for w in result.warnings] == ["rm_bench.stop_failed"]
+
+
+def test_a_containers_only_start_never_starts_a_bench(monkeypatch):
+    """The page's start gate, with no bench to name, never asks which bench."""
+    containers = [_Container("frappe", "exited"), _Container("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    result = jobs._dispatch(
+        "start", {"project": "p"}, {"containers_only": True}, False, {}, _Emit()
+    )
+
+    assert calls["preflight"] == ["p"]
+    assert [c.calls for c in containers] == [["start", "reload"], ["start", "reload"]]
+    assert calls["order"] == [("db_wait", "frappe")]
+    assert result.status is Status.OK
+    assert jobs._result_ok(result) is True
+
+
+@pytest.mark.parametrize(
+    ("containers", "code"), [(None, "docker.unreachable"), ([], "project.not_found")]
+)
+@pytest.mark.parametrize(("verb", "args"), [("start", {"containers_only": True}), ("rm-bench", {})])
+def test_a_containers_only_start_fails_without_docker_or_the_project(
+    monkeypatch, containers, code, verb, args
+):
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch(verb, {"project": "p", "bench": "1"}, args, True, {}, _Emit())
+
+    assert error.value.code == code
+    assert calls["preflight"] == []
+    assert calls["remove"] == []
+
+
+def test_a_removal_never_stops_an_instance_whose_frappe_container_was_running(monkeypatch):
+    containers = [_Container("frappe", "running"), _Container("db", "exited")]
+    calls = _wire_rm_bench(
+        monkeypatch, containers, removal=lambda: Result(status=Status.WARNING, data={"ok": False})
+    )
+
+    jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert containers[1].calls == ["start", "reload"]
+    assert calls["stops"] == []
+
+
+def test_a_containers_only_start_reports_whether_the_frappe_container_was_stopped(monkeypatch):
+    containers = [_Container("frappe", "running"), _Container("db", "exited")]
+    _wire_rm_bench(monkeypatch, containers)
+
+    result = jobs._dispatch(
+        "start", {"project": "p"}, {"containers_only": True}, False, {}, _Emit()
+    )
+
+    assert result.data == {"containers_started": False}

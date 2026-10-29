@@ -72,8 +72,8 @@ async function start() {
   running.value = true
   error.value = null
   try {
-    if (!(await ensureRunning(d.project, mode.value === 'move' ? 'Move sites' : 'Clone sites'))) return
-    if (targetProject.value !== d.project && !(await ensureRunning(targetProject.value, 'the target instance'))) return
+    if (!(await ensureRunning(d.project, mode.value === 'move' ? 'Move sites' : 'Clone sites', { bench: d.bench }))) return
+    if (targetProject.value !== d.project && !(await ensureRunning(targetProject.value, 'the target instance', { bench: targetBench.value }))) return
     const record = await createJob({
       verb: mode.value === 'move' ? 'move-sites' : 'clone-sites',
       target: { project: d.project, bench: d.bench },

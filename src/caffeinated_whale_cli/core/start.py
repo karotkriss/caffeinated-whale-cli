@@ -94,6 +94,55 @@ def _noop(_event: StartEvent) -> None:
     """The drain-and-discard consumption mode."""
 
 
+def resolve_project_containers(project_name: str) -> list:
+    """A project's containers; raises ``DOCKER`` when unreachable, ``NOT_FOUND`` when none."""
+    containers = get_project_containers(project_name)
+    if containers is None:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
+        )
+    if not containers:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project_name}' not found."
+        )
+    return containers
+
+
+def start_stopped_containers(project_name: str, containers: list) -> list[Message]:
+    """Start every stopped container of a project, and nothing inside them.
+
+    A crash that removed the compose network is repaired first, or the start dies
+    with Docker's raw `network <id> not found`. Returns the warnings for any
+    network it recreated.
+    """
+    warnings: list[Message] = []
+    stopped = [c for c in containers if c.status != "running"]
+    try:
+        recreated = recreate_missing_project_networks(project_name, stopped) if stopped else []
+    except DockerException as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            f"Could not check the instance network: {e}",
+            hint=DOCKER_UNREACHABLE_HINT,
+        ) from e
+    for name in recreated:
+        warnings.append(
+            Message(
+                "start.network_recreated",
+                f"The network '{name}' was missing (a Docker or WSL crash removes it); "
+                "cwcli recreated it.",
+            )
+        )
+    for container in stopped:
+        container.start()
+        container.reload()
+    return warnings
+
+
 def start(
     project_name: str,
     *,
@@ -132,46 +181,12 @@ def start(
 
     # 1. Resolve the project's containers (raises DOCKER / NOT_FOUND).
     emit(StartStepStart(phase="resolve", message="Resolving the instance containers"))
-    containers = get_project_containers(project_name)
-    if containers is None:
-        raise CwcliError(
-            ErrorKind.DOCKER,
-            "docker.unreachable",
-            "Could not connect to Docker daemon.",
-            hint=DOCKER_UNREACHABLE_HINT,
-        )
-    if not containers:
-        raise CwcliError(
-            ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project_name}' not found."
-        )
+    containers = resolve_project_containers(project_name)
     emit(StartStepEnd(phase="resolve"))
 
-    # 2. Start every stopped container (unconditional - start's whole job). A crash
-    #    that removed the compose network is repaired first, or the start dies with
-    #    Docker's raw `network <id> not found`.
+    # 2. Start every stopped container (unconditional - start's whole job).
     emit(StartStepStart(phase="containers", message="Starting stopped containers"))
-    stopped = [c for c in containers if c.status != "running"]
-    try:
-        recreated = recreate_missing_project_networks(project_name, stopped) if stopped else []
-    except DockerException as e:
-        raise CwcliError(
-            ErrorKind.DOCKER,
-            "docker.unreachable",
-            f"Could not check the instance network: {e}",
-            hint=DOCKER_UNREACHABLE_HINT,
-        ) from e
-    for name in recreated:
-        warnings.append(
-            Message(
-                "start.network_recreated",
-                f"The network '{name}' was missing (a Docker or WSL crash removes it); "
-                "cwcli recreated it.",
-            )
-        )
-    for container in containers:
-        if container.status != "running":
-            container.start()
-            container.reload()
+    warnings.extend(start_stopped_containers(project_name, containers))
     emit(StartStepEnd(phase="containers"))
 
     frappe_container = next(
