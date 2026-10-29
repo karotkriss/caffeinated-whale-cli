@@ -59,7 +59,7 @@ const menu = (i) => [
     <template v-if="can('operator')" #actions>
       <Button variant="solid" icon-left="lucide-plus" label="New instance" @click="openJob('init')" />
       <!-- Captain note 41: the updates check lives here, as a job; the card badge says the rest. -->
-      <Dropdown :options="[{ label: 'Check for updates', icon: 'refresh-cw', onClick: async () => trackJob((await createJob({ verb: 'check-updates', target: {}, args: {} })).id) }]" align="end">
+      <Dropdown :options="[{ label: 'Check for updates', icon: 'lucide-refresh-cw', onClick: async () => trackJob((await createJob({ verb: 'check-updates', target: {}, args: {} })).id) }]" align="end">
         <Button variant="ghost" icon="lucide-ellipsis" aria-label="More" />
       </Dropdown>
     </template>

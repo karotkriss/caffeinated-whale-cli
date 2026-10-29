@@ -16,11 +16,11 @@ async function verify(s) {
 export function setMenu(s) {
   const op = can('operator')
   return [{ group: 'Set', options: [
-    op && { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
-    op && { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
-    op && { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s) },
-    op && backups.data?.offsite_target && { label: s.offsite ? 'Copy off-site again' : 'Copy off-site', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
-    op && { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
-    can('admin') && { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => openAction('delete_backup', { project: s.project, site: s.site, set: s }) },
+    op && { label: 'Restore…', icon: 'lucide-rotate-ccw', onClick: () => openRestoreWizard(s) },
+    op && { label: 'Verify again', icon: 'lucide-shield-check', onClick: () => verify(s) },
+    op && { label: 'Send to another machine…', icon: 'lucide-send', onClick: () => sendSet(s) },
+    op && backups.data?.offsite_target && { label: s.offsite ? 'Copy off-site again' : 'Copy off-site', icon: 'lucide-cloud-upload', onClick: () => copyOffsite(s) },
+    op && { label: 'Download (.tar)', icon: 'lucide-download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
+    can('admin') && { label: 'Delete', icon: 'lucide-trash-2', theme: 'red', onClick: () => openAction('delete_backup', { project: s.project, site: s.site, set: s }) },
   ].filter(Boolean) }]
 }

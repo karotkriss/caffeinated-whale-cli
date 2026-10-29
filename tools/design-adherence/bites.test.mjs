@@ -53,7 +53,7 @@ const good = runEslint("fixtures/good.jsx");
 const goodProblems = good.report.reduce((n, f) => n + f.messages.length, 0);
 check(good.code === 0 && goodProblems === 0, "good.jsx passes with zero problems");
 
-// --- raw-hex detector self-check ---
+// --- raw-hex + bare-menu-icon detector self-check ---
 try {
   execFileSync("node", [here("check-webui-tokens.mjs"), "--selfcheck"], { stdio: "inherit" });
   console.log("  ok: check-webui-tokens selfcheck passed");
