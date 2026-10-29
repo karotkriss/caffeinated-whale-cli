@@ -22,7 +22,7 @@ import { openAction } from '../data/dialog'
 import { loadSiteIcons, refreshSiteIcons, siteIcons } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
 import { can } from '../data/session'
-import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publications, SHOWN_PARTS } from '../data/publish'
+import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publicationAt, SHOWN_PARTS } from '../data/publish'
 
 onMounted(() => {
   setFocus(null)
@@ -56,11 +56,7 @@ const rows = computed(() => {
           word: QUIET[token] || token,
           isDefault: s.name === b.default_site,
           devMode: details[i.project]?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,
-          // A public name is published in one place: here only when it is this bench.
-          pub: (() => {
-            const p = publications.sites[s.name]
-            return p && p.project === i.project && p.bench_path === b.path ? p : null
-          })(),
+          pub: publicationAt(s.name, i.project, b.path),
         })
       }
     }

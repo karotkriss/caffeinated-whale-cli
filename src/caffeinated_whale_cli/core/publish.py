@@ -149,6 +149,21 @@ def entry(domain: str) -> dict | None:
     return entries().get(domain)
 
 
+def entry_at(domain: str, project: str | None, bench: str | None) -> dict | None:
+    """``domain``'s publication only when it is published from ``project``'s ``bench``:
+    a same-named copy elsewhere is not the published site."""
+    rec = entry(domain)
+    if project is None or rec is None or rec.get("project") != project:
+        return None
+    try:
+        found = resolvers.resolve_bench(project, bench, None)
+    except CwcliError:
+        return None
+    if found is None or found.status is not Status.OK:
+        return None
+    return rec if found.data == rec.get("bench_path") else None
+
+
 def view() -> dict[str, Any]:
     """What the Sites list shows: every published site's parts, and which DNS and
     proxy integrations are on (no secret, and no call to either)."""
@@ -201,6 +216,84 @@ def _proxy_allows_proxied(proxy_client: Any) -> bool:
     return getattr(proxy_client, "challenge", "http") == "dns"
 
 
+def _addresses(prior: dict, dns: tuple | None, address: str | None) -> tuple[str, str, str]:
+    """The site's address override (this call's, else the one it was published with)
+    and the IPv4 and IPv6 addresses its records point at."""
+    override = (address if address is not None else prior.get("address_override") or "").strip()
+    settings = dns[1] if dns else {}
+    ipv4 = override or str(settings.get("ipv4") or "").strip()
+    ipv6 = "" if override else str(settings.get("ipv6") or "").strip()
+    return override, ipv4, ipv6
+
+
+def _proxied(prior: dict, dns: tuple | None, proxy_client: Any, proxied: bool | None) -> tuple:
+    """Whether the site wants its record proxied (this call's choice, else the one it
+    was published with, else the DNS integration's default), and whether it may be."""
+    if proxied is None:
+        proxied = (
+            prior["proxied"] if "proxied" in prior else bool(dns and dns[1].get("proxied_default"))
+        )
+    return bool(proxied), proxy_client is not None and _proxy_allows_proxied(proxy_client)
+
+
+def _dns_decide(
+    live_all: list[dict],
+    held: dict[str, dict],
+    rtype: str,
+    content: str,
+    proxied: bool,
+    domain: str,
+    zone_name: str,
+    client_name: str,
+) -> tuple[str, dict | None]:
+    """What one wanted record needs: ``keep`` or ``update`` cwcli's own record,
+    ``adopt`` an identical one cwcli did not create, or ``create`` it. Raises a
+    ``CONFLICT`` for a name that is taken or a record of cwcli's changed by hand.
+    Shared by the preflight and the DNS step, so both decide alike."""
+    if any(r["type"] == "CNAME" for r in live_all):
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "publish.dns_taken",
+            f"{domain} is a CNAME in {zone_name}; remove it in {client_name} or choose "
+            "another name.",
+        )
+    live = [r for r in live_all if r["type"] == rtype]
+    mine = next((r for r in live if r["id"] in held), None)
+    if mine is not None:
+        wrote = held[mine["id"]]
+        if (mine["content"], mine["proxied"]) == (content, proxied):
+            return "keep", mine
+        if (mine["content"], mine["proxied"]) == (wrote["content"], wrote["proxied"]):
+            return "update", mine
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "publish.dns_changed",
+            f"The {rtype} record for {domain} was changed outside cwcli (it points "
+            f"at {mine['content']} now); cwcli leaves it. Change it back to "
+            f"{wrote['content']} or delete it, then retry.",
+        )
+    if not live:
+        return "create", None
+    if len(live) == 1 and (live[0]["content"], live[0]["proxied"]) == (content, proxied):
+        return "adopt", live[0]
+    raise CwcliError(
+        ErrorKind.CONFLICT,
+        "publish.dns_taken",
+        f"{domain} already has an {rtype} record "
+        f"({', '.join(r['content'] for r in live)}) that cwcli did not create; "
+        f"remove it in {client_name} or choose another name.",
+    )
+
+
+def _held(part: dict, zone_id: str) -> dict[str, dict]:
+    """The records cwcli created in ``zone_id``, by id."""
+    return {
+        r["id"]: r
+        for r in part.get("records") or []
+        if r.get("owned") and part.get("zone_id") == zone_id
+    }
+
+
 @dataclass(slots=True)
 class _Run:
     domain: str
@@ -235,6 +328,25 @@ def _host_spec(run: _Run) -> dict[str, Any]:
             }
         ],
     }
+
+
+def _recorded_forwarding(part: dict) -> tuple:
+    """``_forwarding`` of the host as cwcli last wrote it."""
+    host = part.get("forward_host")
+    return _forwarding(
+        {
+            "forward_host": host,
+            "forward_port": part.get("forward_port"),
+            "access_list_id": part.get("access_list_id"),
+            "locations": [
+                {
+                    "path": "/socket.io",
+                    "forward_host": host,
+                    "forward_port": part.get("socketio_port"),
+                }
+            ],
+        }
+    )
 
 
 def _forwarding(host: dict) -> tuple:
@@ -276,25 +388,22 @@ def _dns_step(run: _Run, part: dict) -> dict:
             "token's Zone Resources or choose a name in one of its zones.",
         )
     wanted = [("A", run.address)] + ([("AAAA", run.address6)] if run.address6 else [])
-    held = {
-        r["id"]: r
-        for r in part.get("records") or []
-        if r.get("owned") and part.get("zone_id") == zone["id"]
-    }
+    held = _held(part, zone["id"])
     live_all = client.records(zone["id"], run.domain)
-    if any(r["type"] == "CNAME" for r in live_all):
-        raise CwcliError(
-            ErrorKind.CONFLICT,
-            "publish.dns_taken",
-            f"{run.domain} is a CNAME in {zone['name']}; remove it in {client.name} or choose "
-            "another name.",
-        )
     comment = f"cwcli {socket.gethostname()} {run.rec['bench']} {run.domain}"[:100]
     out: list[dict] = []
+
+    def remember(record: dict) -> None:
+        # Recorded as soon as it is written, so a later write that fails keeps it named.
+        part.update(provider=integ.id, zone_id=zone["id"], zone=zone["name"])
+        part["records"] = [r for r in part.get("records") or [] if r["id"] != record["id"]]
+        part["records"].append(record)
+
     adopted = False
     for rtype, content in wanted:
-        live = [r for r in live_all if r["type"] == rtype]
-        mine = next((r for r in live if r["id"] in held), None)
+        action, found = _dns_decide(
+            live_all, held, rtype, content, run.proxied, run.domain, zone["name"], client.name
+        )
         desired = {
             "type": rtype,
             "name": run.domain,
@@ -302,38 +411,32 @@ def _dns_step(run: _Run, part: dict) -> dict:
             "proxied": run.proxied,
             "comment": comment,
         }
-        if mine is not None:
-            wrote = held[mine["id"]]
-            if (mine["content"], mine["proxied"]) == (content, run.proxied):
-                kept = mine
-            elif (mine["content"], mine["proxied"]) == (wrote["content"], wrote["proxied"]):
-                kept = client.update(zone["id"], mine["id"], desired)
-            else:
-                raise CwcliError(
-                    ErrorKind.CONFLICT,
-                    "publish.dns_changed",
-                    f"The {rtype} record for {run.domain} was changed outside cwcli (it points "
-                    f"at {mine['content']} now); cwcli leaves it. Change it back to "
-                    f"{wrote['content']} or delete it, then retry.",
-                )
-            out.append({**kept, "owned": True})
-        elif live:
-            if len(live) == 1 and (live[0]["content"], live[0]["proxied"]) == (
-                content,
-                run.proxied,
-            ):
-                out.append({**live[0], "owned": False})
-                adopted = True
-            else:
-                raise CwcliError(
-                    ErrorKind.CONFLICT,
-                    "publish.dns_taken",
-                    f"{run.domain} already has an {rtype} record "
-                    f"({', '.join(r['content'] for r in live)}) that cwcli did not create; "
-                    f"remove it in {client.name} or choose another name.",
-                )
+        if action == "adopt":
+            out.append({**(found or {}), "owned": False})
+            adopted = True
+            continue
+        if action == "keep":
+            kept = found or {}
+        elif action == "update":
+            kept = client.update(zone["id"], (found or {})["id"], desired)
         else:
-            out.append({**client.create(zone["id"], desired), "owned": True})
+            kept = client.create(zone["id"], desired)
+        out.append({**kept, "owned": True})
+        remember(out[-1])
+    types = {rtype for rtype, _ in wanted}
+    for rid, wrote in held.items():
+        # A record cwcli made that is no longer wanted (its IPv6 address was cleared):
+        # deleted while it still matches what cwcli wrote, else kept named and left.
+        if wrote["type"] in types:
+            continue
+        live = next((r for r in live_all if r["id"] == rid), None)
+        if live is None:
+            continue
+        if (live["content"], live["proxied"]) == (wrote["content"], wrote["proxied"]):
+            client.delete(zone["id"], rid)
+            part["records"] = [r for r in part.get("records") or [] if r["id"] != rid]
+        else:
+            out.append(wrote)
     mode = "proxied" if run.proxied else "DNS only"
     message = f"{run.domain} points at {run.address} ({mode})"
     if adopted:
@@ -382,6 +485,15 @@ def _proxy_step(run: _Run, part: dict) -> dict:
                 ) from None
             raise
     elif _forwarding(live) != _forwarding(spec):
+        if part.get("id") == live["id"] and _forwarding(live) != _recorded_forwarding(part):
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "publish.proxy_changed",
+                f"The proxy host for {run.domain} was changed outside cwcli (it forwards to "
+                f"{live.get('forward_host')}:{live.get('forward_port')} now); cwcli leaves "
+                f"it. Change it back to {part.get('forward_host')}:{part.get('forward_port')} "
+                f"or delete it in {client.name}, then retry.",
+            )
         live = client.update_host(live["id"], spec)
     return {
         "state": "done",
@@ -391,6 +503,7 @@ def _proxy_step(run: _Run, part: dict) -> dict:
         "forward_host": spec["forward_host"],
         "forward_port": spec["forward_port"],
         "socketio_port": run.rec["socketio_port"],
+        "access_list_id": spec["access_list_id"],
         "message": f"{run.domain} forwards to {spec['forward_host']}:{spec['forward_port']} "
         f"(socket.io :{run.rec['socketio_port']})",
     }
@@ -524,12 +637,14 @@ def publish_site(
             "nothing would reach it.",
             hint=f"Run cwcli scale {project} if the bench has no published port.",
         )
+    # A choice this call does not make is the one the site was published with, so a
+    # Retry or a Move keeps the site's own address, proxy status and access list.
     prior = entry(site) or {}
     proxy_client = proxy[0].hooks["proxy_host"](proxy[1], proxy[2]) if proxy else None
-    wants_proxied = (
-        bool(dns[1].get("proxied_default")) if proxied is None and dns else bool(proxied)
-    )
-    allowed = proxy_client is not None and _proxy_allows_proxied(proxy_client)
+    override, ipv4, ipv6 = _addresses(prior, dns, address)
+    wants_proxied, allowed = _proxied(prior, dns, proxy_client, proxied)
+    if access_list_id is None:
+        access_list_id = int(prior.get("access_list_id") or 0)
     if wants_proxied and not allowed:
         warnings.append(
             Message(
@@ -546,7 +661,8 @@ def publish_site(
         "bench": bench_path.rstrip("/").rsplit("/", 1)[-1],
         "web_port": ports[0],
         "socketio_port": ports[1],
-        "address": (address or (dns[1].get("ipv4") if dns else "") or "").strip(),
+        "address": ipv4,
+        "address_override": override,
         "proxied": wants_proxied and allowed,
         "access_list_id": int(access_list_id or 0),
         "url": f"https://{site}" if proxy else f"http://{site}:{ports[0]}",
@@ -558,7 +674,7 @@ def publish_site(
         domain=site,
         rec=rec,
         address=rec["address"],
-        address6="" if address else str((dns[1].get("ipv6") if dns else "") or ""),
+        address6=ipv6,
         proxied=rec["proxied"],
         access_list_id=rec["access_list_id"],
         dns=dns,
@@ -567,6 +683,7 @@ def publish_site(
         emit=emit,
     )
     failed: str | None = None
+    ran: set[str] = set()
     for name in PARTS:
         prior_part = dict(rec["parts"].get(name) or {})
         off = (name == "dns" and dns is None) or (name in ("proxy", "certificate") and not proxy)
@@ -577,6 +694,7 @@ def publish_site(
             emit(PublishStepStart(phase=name, message=TITLES[name]))
         # Laid over what was recorded, so an object cwcli created stays named (and
         # removable by Unpublish) even while its integration is off.
+        ran.add(name)
         try:
             part = {**prior_part, **_STEPS[name](run, prior_part)}
         except CwcliError as e:
@@ -588,10 +706,13 @@ def publish_site(
             status = "ok" if part["state"] == "done" else "failed"
             emit(PublishStepEnd(phase=name, status=status, message=part["message"]))
     _put(site, rec)
+    # Only an integration this run called: one whose steps waited keeps its last outcome.
     for found, parts in ((dns, ("dns",)), (proxy, ("proxy", "certificate"))):
-        if found is not None:
+        if found is not None and ran.intersection(parts):
             errors = [
-                rec["parts"][p]["message"] for p in parts if rec["parts"][p]["state"] == "failed"
+                rec["parts"][p]["message"]
+                for p in parts
+                if p in ran and rec["parts"][p]["state"] == "failed"
             ]
             integrations.record_outcome(found[0].id, errors[0] if errors else None)
     report = PublishReport(ok=failed is None, domain=site, url=rec["url"], parts=rec["parts"])
@@ -842,7 +963,12 @@ def options() -> dict[str, Any]:
 
 
 def preflight(
-    project: str, bench: str | None, domain: str, *, address: str | None = None
+    project: str,
+    bench: str | None,
+    domain: str,
+    *,
+    address: str | None = None,
+    proxied: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Read-only checks before a site is created and published: one row per part,
     ``ok``, ``warn`` or ``fail``. A ``fail`` refuses the publish before the site
@@ -893,7 +1019,9 @@ def preflight(
         row("port", "fail", e.message)
     if dns is not None:
         integ, settings, secrets = dns
-        target = (address or settings.get("ipv4") or "").strip()
+        _override, target, target6 = _addresses(recorded, dns, address)
+        proxy_client = proxy[0].hooks["proxy_host"](proxy[1], proxy[2]) if proxy else None
+        wants_proxied, allowed = _proxied(recorded, dns, proxy_client, proxied)
         try:
             client = integ.hooks["dns_record"](settings, secrets)
             zone = _zone_for(client.zones(), domain)
@@ -902,24 +1030,30 @@ def preflight(
             elif zone is None:
                 row("dns", "fail", f"No zone the {client.name} token can see holds {domain}.")
             else:
-                owned = {
-                    r["id"]
-                    for r in (recorded.get("parts") or {}).get("dns", {}).get("records") or []
-                    if r.get("owned")
+                held = _held((recorded.get("parts") or {}).get("dns") or {}, zone["id"])
+                live = client.records(zone["id"], domain)
+                wanted = [("A", target)] + ([("AAAA", target6)] if target6 else [])
+                actions = {
+                    _dns_decide(
+                        live,
+                        held,
+                        rtype,
+                        content,
+                        wants_proxied and allowed,
+                        domain,
+                        zone["name"],
+                        client.name,
+                    )[0]
+                    for rtype, content in wanted
                 }
-                live = [
-                    r for r in client.records(zone["id"], domain) if r["type"] in ("A", "CNAME")
-                ]
-                if not live:
+                if actions == {"create"}:
                     row(
                         "dns",
                         "ok",
                         f"{domain} is free in {zone['name']}; an A record pointing "
                         f"at {target} is created.",
                     )
-                elif all(r["id"] in owned for r in live):
-                    row("dns", "ok", f"{domain} is already cwcli's record in {zone['name']}.")
-                elif len(live) == 1 and live[0]["type"] == "A" and live[0]["content"] == target:
+                elif "adopt" in actions:
                     row(
                         "dns",
                         "ok",
@@ -927,12 +1061,7 @@ def preflight(
                         "record in place.",
                     )
                 else:
-                    row(
-                        "dns",
-                        "fail",
-                        f"{domain} already has a record "
-                        f"({', '.join(r['content'] for r in live)}) that cwcli did not create.",
-                    )
+                    row("dns", "ok", f"{domain} is already cwcli's record in {zone['name']}.")
         except CwcliError as e:
             row("dns", "fail", e.message)
     if proxy is not None:

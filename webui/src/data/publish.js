@@ -5,8 +5,6 @@
 import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
 import { getJson, postJson } from './api'
-import { createJob } from './jobs'
-import { trackJob } from './job-toasts'
 
 export const publications = reactive({ sites: {}, dns: null, proxy: null, loaded: false })
 
@@ -40,18 +38,14 @@ export const canPublish = () => !!(publications.dns || publications.proxy)
 // A real domain (not .localhost, has a dot): the only kind of name that can be published.
 export const isPublicName = (name) => /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]+$/.test(name || '') && !name.endsWith('.localhost')
 
-export function publicationOf(site) {
-  return publications.sites[site] || null
+// A public name is published in one place: `site`'s publication only when it is the
+// one on this instance's bench, never a same-named copy elsewhere.
+export function publicationAt(site, project, benchPath) {
+  const p = publications.sites[site]
+  return p && p.project === project && p.bench_path === benchPath ? p : null
 }
 // Every part done (or not used), and the check passed.
 export const isLive = (p) => !!p && Object.values(p.parts || {}).every((part) => ['done', 'off'].includes(part.state))
-
-// Publish (or Retry: the same idempotent job, which repeats only what is missing).
-export async function publishSite({ project, bench, site }, args = {}) {
-  const record = await createJob({ verb: 'publish-site', target: { project, bench: bench != null ? String(bench) : undefined, site }, args })
-  trackJob(record.id)
-  return record
-}
 
 // Read-only drift check: compares what cwcli made with what is live, repairs nothing.
 export async function checkSite(site) {

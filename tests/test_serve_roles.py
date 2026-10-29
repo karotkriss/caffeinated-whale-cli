@@ -341,8 +341,8 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     monkeypatch.setattr(
         publish,
         "preflight",
-        lambda p, b, s, address=None: [
-            {"part": "dns", "state": "ok", "text": f"{p} {b} {s} {address}"}
+        lambda p, b, s, address=None, proxied=None: [
+            {"part": "dns", "state": "ok", "text": f"{p} {b} {s} {address} {proxied}"}
         ],
     )
     monkeypatch.setattr(publish, "check_site", lambda s: {"domain": s, "ok": True, "parts": {}})
@@ -351,12 +351,18 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     assert _req(daemon, "/api/v1/publications", cookie=viewer)[0] == 200
     assert _req(daemon, "/api/v1/publish/options", cookie=viewer)[0] == 403
     assert _req(daemon, "/api/v1/publish/options", cookie=operator)[0] == 200
-    site = {"project": "p", "bench": 0, "site": "erp.example.com", "address": "203.0.113.5"}
+    site = {
+        "project": "p",
+        "bench": 0,
+        "site": "erp.example.com",
+        "address": "203.0.113.5",
+        "proxied": True,
+    }
     for path in ("/api/v1/publish/preflight", "/api/v1/publish/check"):
         assert _req(daemon, path, site, viewer)[0] == 403
     status, body, _ = _req(daemon, "/api/v1/publish/preflight", site, operator)
     assert status == 200
-    assert body["data"]["rows"][0]["text"] == "p 0 erp.example.com 203.0.113.5"
+    assert body["data"]["rows"][0]["text"] == "p 0 erp.example.com 203.0.113.5 True"
     status, body, _ = _req(daemon, "/api/v1/publish/check", site, operator)
     assert status == 200 and body["data"]["domain"] == "erp.example.com"
     job = {"verb": "publish-site", "target": {"project": "p", "site": "erp.example.com"}}

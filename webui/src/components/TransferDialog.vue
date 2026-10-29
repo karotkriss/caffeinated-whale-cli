@@ -14,7 +14,7 @@ import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
 import { can } from '../data/session'
-import { canPublish, loadPublications, publicationOf } from '../data/publish'
+import { canPublish, loadPublications, publicationAt } from '../data/publish'
 
 const d = transferDialog
 const mode = ref('clone')
@@ -75,7 +75,7 @@ const confirmWord = computed(() => {
 const confirmWhat = computed(() => (overwrites.value.length ? (mode.value === 'move' ? 'the move and the replacement' : 'the replacement') : 'the move'))
 const confirmed = computed(() => !needsConsent.value || typed.value.trim() === confirmWord.value)
 // Published sources of a move: those keeping their name, and those renamed.
-const published = computed(() => (mode.value === 'move' ? pairs.value.filter((p) => publicationOf(p.site)) : []))
+const published = computed(() => (mode.value === 'move' ? pairs.value.filter((p) => publicationAt(p.site, d.project, sourceBench.value?.path)) : []))
 const kept = computed(() => published.value.filter((p) => p.site === p.target_site))
 const renamed = computed(() => published.value.filter((p) => p.site !== p.target_site))
 function toggle(site) {

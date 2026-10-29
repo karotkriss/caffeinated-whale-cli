@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from caffeinated_whale_cli.core import cloudflare, integrations, npm, publish, webapi
-from caffeinated_whale_cli.core.errors import CwcliError
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 from .publish_fakes import CF_TOKEN, NPM_EMAIL, NPM_PASSWORD, FakeCloudflare, FakeNpm
 
@@ -74,6 +74,12 @@ def turn_on(world, *, dns=True, proxy=True, challenge=npm.HTTP_CHALLENGE, proxie
             enable=True,
         )
         assert view["enabled"], check
+
+
+def set_ipv6(address: str) -> None:
+    integrations.configure(
+        "cloudflare", {"ipv4": "203.0.113.7", "ipv6": address}, None, enable=True
+    )
 
 
 def states(report) -> dict[str, str]:
@@ -180,6 +186,68 @@ class TestPublish:
         assert report.ok
         [record] = world.cf.records.values()
         assert record["content"] == "203.0.113.50"
+
+    def test_publishing_again_keeps_the_sites_own_choices(self, world):
+        turn_on(world, challenge=npm.DNS_CHALLENGE)
+        world.npm.cert_error = "Some challenges have failed."
+        first = publish.publish_site(
+            "p", SITE, address="203.0.113.50", proxied=True, access_list_id=3
+        ).data
+        assert first.parts["certificate"]["state"] == "failed"
+        world.npm.cert_error = None
+        assert publish.publish_site("p", SITE).data.ok  # Retry sends no choice
+        [record] = world.cf.records.values()
+        assert (record["content"], record["proxied"]) == ("203.0.113.50", True)
+        [host] = world.npm.hosts.values()
+        assert host["access_list_id"] == 3
+
+    def test_a_proxy_host_changed_by_hand_is_never_overwritten(self, world):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        [host] = world.npm.hosts.values()
+        host["forward_port"] = 9999
+        world.ports["value"] = (8003, 9003)
+        report = publish.publish_site("p", SITE).data
+        assert report.parts["proxy"]["state"] == "failed"
+        assert "changed outside cwcli" in report.parts["proxy"]["message"]
+        assert host["forward_port"] == 9999
+
+    def test_a_record_written_before_a_failed_write_stays_cwclis(self, world, monkeypatch):
+        turn_on(world)
+        set_ipv6("2001:db8::7")
+        real = cloudflare.Cloudflare.create
+
+        def create(self, zone_id, record):
+            if record["type"] == "AAAA":
+                raise CwcliError(ErrorKind.DOCKER, "cf.down", "Cloudflare went away.")
+            return real(self, zone_id, record)
+
+        monkeypatch.setattr(cloudflare.Cloudflare, "create", create)
+        report = publish.publish_site("p", SITE).data
+        assert report.parts["dns"]["state"] == "failed"
+        [a] = publish.entry(SITE)["parts"]["dns"]["records"]
+        assert (a["type"], a["owned"]) == ("A", True)
+        monkeypatch.setattr(cloudflare.Cloudflare, "create", real)
+        assert publish.publish_site("p", SITE).data.ok
+        assert publish.unpublish_site(SITE).data.ok
+        assert world.cf.records == {}
+
+    def test_a_record_no_longer_wanted_is_removed_while_unchanged(self, world):
+        turn_on(world)
+        set_ipv6("2001:db8::7")
+        publish.publish_site("p", SITE)
+        assert sorted(r["type"] for r in world.cf.records.values()) == ["A", "AAAA"]
+        set_ipv6("")
+        assert publish.publish_site("p", SITE).data.ok
+        assert [r["type"] for r in world.cf.records.values()] == ["A"]
+        assert [r["type"] for r in publish.entry(SITE)["parts"]["dns"]["records"]] == ["A"]
+
+    def test_a_failed_dns_step_leaves_the_proxys_last_outcome(self, world):
+        turn_on(world)
+        integrations.record_outcome("npm", "The proxy was down.")
+        world.cf.add("example.com", "A", SITE, "198.51.100.1")
+        assert publish.publish_site("p", SITE).data.parts["proxy"]["state"] == "waiting"
+        assert integrations.view("npm")[0]["state"] == "error"
 
     def test_a_domain_held_by_another_npm_user_is_refused(self, world):
         turn_on(world)
@@ -366,6 +434,23 @@ class TestPreflight:
         monkeypatch.setattr(publish.core_docker, "get_frappe_container", lambda p: container)
         rows = {r["part"]: r["state"] for r in publish.preflight("p", None, SITE)}
         assert rows == {"port": "warn", "dns": "fail", "proxy": "fail"}
+
+    @pytest.mark.parametrize(
+        "rtype, content, proxied",
+        [("AAAA", "2001:db8::99", False), ("A", "203.0.113.7", True)],
+    )
+    def test_it_refuses_what_the_dns_step_would_refuse(
+        self, world, monkeypatch, rtype, content, proxied
+    ):
+        turn_on(world, proxy=False)
+        set_ipv6("2001:db8::7")
+        world.cf.add("example.com", rtype, SITE, content, proxied=proxied)
+        monkeypatch.setattr(
+            publish.core_docker, "get_frappe_container", lambda p: SimpleNamespace(status="exited")
+        )
+        rows = {r["part"]: r for r in publish.preflight("p", None, SITE)}
+        assert rows["dns"]["state"] == "fail" and "did not create" in rows["dns"]["text"]
+        assert not publish.publish_site("p", SITE).data.ok  # the step agrees
 
     def test_a_name_outside_every_zone_fails(self, world, monkeypatch):
         turn_on(world, proxy=False)

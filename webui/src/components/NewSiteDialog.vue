@@ -125,14 +125,14 @@ const publishSays = computed(() => {
 })
 let preflightTimer = null
 let preflightSeq = 0
-watch([publishing, fullName, project, bench, recordAddress], () => {
+watch([publishing, fullName, project, bench, recordAddress, proxied], () => {
   clearTimeout(preflightTimer)
   rows.value = null
   if (!publishing.value || !fullName.value || !project.value || bench.value == null) return
   const seq = ++preflightSeq
   preflightTimer = setTimeout(async () => {
     try {
-      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '' })
+      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value })
       if (seq === preflightSeq) rows.value = out.rows
     } catch (e) {
       if (seq === preflightSeq) rows.value = [{ part: 'name', state: 'fail', text: e.hint ? `${e.message} ${e.hint}` : e.message }]
