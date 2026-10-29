@@ -12,6 +12,7 @@ import DoctorView from '../components/DoctorView.vue'
 import { config, cacheProjects } from '../data/fleet'
 import { settingsDialog, ADMIN_SECTIONS } from '../data/settings-dialog'
 import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session'
+import { agentLabel } from '../data/user-agent'
 import PasswordForm from './PasswordForm.vue'
 import IntegrationDialog from './IntegrationDialog.vue'
 import CommunityDialog from './CommunityDialog.vue'
@@ -384,24 +385,26 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
           </SettingsBody>
         </SettingsPanel>
       </template>
-        <SettingsPanel value="account">
+        <!-- min-w-0: the panel is a flex-row item, so without it one no-wrap session row sets
+             the column's minimum width and the right edge of the panel leaves the dialog. -->
+        <SettingsPanel value="account" class="min-w-0">
           <SettingsHeader title="Your account" :description="`Signed in as ${session.user?.name ? `${session.user.name} (${session.user.username})` : session.user?.username || ''} · ${ROLE_LABEL[session.user?.role] || 'Admin'}`" />
           <SettingsBody>
             <SettingsRow v-if="directoryUser && session.user?.source === 'ldap'" title="Directory account" :description="`Your directory groups gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password and groups are managed in the directory.`" />
             <SettingsRow v-else-if="directoryUser" title="Signed in through an integration" :description="`The sign-in integration that is on gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password is managed there, not in cwcli.`" />
             <template v-else>
-              <SettingsRow title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
+              <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
                 <Button :label="pwOpen ? 'Hide' : 'Change…'" @click="pwOpen = !pwOpen" />
               </SettingsRow>
               <div v-if="pwOpen" class="max-w-sm px-1 pb-4"><PasswordForm @done="pwOpen = false; pwChanged = true" /><p v-if="pwChanged" class="mt-2 text-p-sm text-ink-green-6">Password changed.</p></div>
             </template>
-            <SettingsRow title="Other sessions" :description="otherSessions.length ? `${otherSessions.length} other ${otherSessions.length === 1 ? 'browser is' : 'browsers are'} signed in as ${session.user?.username}.` : 'No other browser is signed in.'">
+            <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Other sessions" :description="otherSessions.length ? `${otherSessions.length} other ${otherSessions.length === 1 ? 'browser is' : 'browsers are'} signed in as ${session.user?.username}.` : 'No other browser is signed in.'">
               <Button label="Sign out everywhere else" :disabled="!otherSessions.length" :loading="signingOutOthers" @click="signOutOthers" />
             </SettingsRow>
             <ul v-if="otherSessions.length" class="space-y-1 px-1 pb-3 text-sm text-ink-gray-6">
-              <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate">{{ s.agent || 'unknown browser' }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
+              <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate" :title="s.agent || undefined">{{ agentLabel(s.agent) }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
             </ul>
-            <SettingsRow title="Sign out" description="Ends this browser's session.">
+            <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Sign out" description="Ends this browser's session.">
               <div class="flex items-center gap-1"><CommandCopy v-if="!directoryUser" command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>
             </SettingsRow>
           </SettingsBody>
