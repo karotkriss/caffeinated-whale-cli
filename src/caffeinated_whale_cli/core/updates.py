@@ -33,7 +33,7 @@ import shlex
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from multiprocessing.pool import ThreadPool
 from typing import Any
 
 from . import docker as core_docker
@@ -408,8 +408,9 @@ def check_updates(catalog_apps: list) -> list[dict[str, Any]]:
         return rows
 
     items: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for rows in pool.map(lambda kv: one_project(kv[0], kv[1]), sorted(bench_paths.items())):
+    # Daemon workers, as the catalog scan's (app_catalog._SCAN_WORKERS says why).
+    with ThreadPool(4) as pool:
+        for rows in pool.imap(lambda kv: one_project(kv[0], kv[1]), sorted(bench_paths.items())):
             items.extend(rows)
     core_first = sorted(
         items, key=lambda it: (not it["core"], it["project"], it["bench_index"], it["app"])
