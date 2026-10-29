@@ -1,5 +1,5 @@
-/* The premium layer's CSS. Colour only ever comes from frappe-ui's token variables or the gradient theme stops the
-   effects store writes (--cw-g0..3 as "r g b"), so the design-adherence token lint stays green. */
+/* The premium layer's CSS. Colour only ever comes from frappe-ui's token variables or the glass and grain variables
+   below, so the design-adherence token lint stays green. */
 
 /* Theme swatches: the selected ring moves with a transition (feedback tier). */
 .cw-swatch-chip { transition: box-shadow 120ms var(--ease-out), transform 120ms var(--ease-out); }

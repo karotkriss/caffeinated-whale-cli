@@ -32,12 +32,6 @@ export const stops = computed(() => currentTheme.value[resolvedScheme.value])
 export const active = computed(() => effects.enabled)
 export const motion = computed(() => effects.enabled && !effects.reducedMotion && !effects.hidden)
 
-// The stops as CSS variables (`--cw-g0: r g b`) so tints, scrims and swatches
-// can follow the theme from plain CSS: rgb(var(--cw-g1) / 0.3).
 watchEffect(() => {
-  const root = document.documentElement.style
-  stops.value.forEach((c, i) => root.setProperty(`--cw-g${i}`, `${c[0]} ${c[1]} ${c[2]}`))
-  // The OTHER scheme's stops: what gradient text is cut from, so it stays dark on light and light on dark.
-  currentTheme.value[resolvedScheme.value === 'dark' ? 'light' : 'dark'].forEach((c, i) => root.setProperty(`--cw-t${i}`, `${c[0]} ${c[1]} ${c[2]}`))
   document.documentElement.toggleAttribute('data-effects', effects.enabled)
 })
