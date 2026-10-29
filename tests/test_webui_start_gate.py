@@ -16,8 +16,12 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from caffeinated_whale_cli import jobs
+from caffeinated_whale_cli.core.envelope import Result, Status
 
 DATA = Path(__file__).resolve().parents[1] / "webui" / "src" / "data"
 
@@ -69,6 +73,7 @@ STUBS = {
         "    inst.container_running = true\n"
         "  }\n"
         "  if (spec.verb === 'rm-bench' && t.started.includes(String(spec.target.bench))) t.states[id] = 'failed'\n"
+        "  if (spec.verb === 'restart' && spec.target.bench == null) t.states[id] = t.restartState\n"
         "  return { id }\n"
         "}\n"
         "export async function loadJob(id) { return { id, state: globalThis.__t.states[id] } }"
@@ -109,9 +114,9 @@ def run(tmp_path):
         f"import {{ register }} from 'node:module'\nregister({json.dumps(hooks.as_uri())})\n"
     )
 
-    def _run(body, instances=STOPPED_TWO_BENCHES):
+    def _run(body, instances=STOPPED_TWO_BENCHES, restart_state="needs_choice"):
         script = (
-            f"globalThis.__t = {{ instances: {json.dumps(instances)}, calls: [], states: {{}}, started: [], toasts: [] }}\n"
+            f"globalThis.__t = {{ instances: {json.dumps(instances)}, restartState: {json.dumps(restart_state)}, calls: [], states: {{}}, started: [], toasts: [] }}\n"
             "globalThis.window = { open(url) { globalThis.__t.calls.push({ open: url }) } }\n"
             f"const dialog = await import({json.dumps((DATA / 'dialog.js').as_uri())})\n"
             f"const jobDialog = await import({json.dumps((DATA / 'job-dialog.js').as_uri())})\n"
@@ -244,10 +249,35 @@ def test_every_job_from_a_bench_or_site_starts_its_own_bench(run, verb, ctx):
     assert out["calls"][-1]["job"]["target"]["bench"] == "1"
 
 
+def _real_bench_less_restart_state(monkeypatch):
+    """What the real restart job ends as on the two-bench instance the gate just brought up."""
+    frappe = SimpleNamespace(status="running", labels={"com.docker.compose.service": "frappe"})
+    monkeypatch.setattr(
+        jobs.core_resolvers,
+        "cached_benches",
+        lambda project: [{"path": "/workspace/a"}, {"path": "/workspace/b"}],
+    )
+    monkeypatch.setattr(jobs.core_docker, "get_frappe_container", lambda project: frappe)
+    monkeypatch.setattr(
+        jobs.core_supervision,
+        "discover_stack",
+        lambda container, path: SimpleNamespace(supervisor_up=False),
+    )
+    monkeypatch.setattr(jobs.core_stop, "stop", lambda project, **k: Result(status=Status.OK))
+    monkeypatch.setattr(jobs.core_start, "resolve_project_containers", lambda project: [frappe])
+    monkeypatch.setattr(jobs, "_start_containers_only", lambda project, containers: [])
+    monkeypatch.setattr(jobs.core_start, "start", lambda *a, **k: pytest.fail("started a bench"))
+    result = jobs._restart_instance({"project": "acme"}, lambda event: None)
+    if result.status is Status.NEEDS_CHOICE:
+        return "needs_choice"
+    return "succeeded" if jobs._result_ok(result) else "failed"
+
+
 @pytest.mark.parametrize("action", ["instance.scale", "instance.restart", "instance.remove"])
-def test_an_instance_action_starts_only_the_containers_never_a_bench(run, action):
+def test_an_instance_action_starts_only_the_containers_never_a_bench(run, action, monkeypatch):
     out = run(
-        f"return startThen(dialog.runAction({json.dumps(action)}, {{ project: 'acme' }}, {{}}))"
+        f"return startThen(dialog.runAction({json.dumps(action)}, {{ project: 'acme' }}, {{}}))",
+        restart_state=_real_bench_less_restart_state(monkeypatch),
     )
     assert out["opened"]
     starts = [c["job"] for c in out["calls"] if c.get("job", {}).get("verb") == "start"]
