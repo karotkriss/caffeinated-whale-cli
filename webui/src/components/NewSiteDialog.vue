@@ -22,6 +22,7 @@ import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
 import { canPublish, loadPublications, preflightPublish, publishOptions } from '../data/publish'
+import { can } from '../data/session'
 
 const project = ref(null)
 const bench = ref(null)
@@ -264,7 +265,7 @@ async function start() {
                   <dd class="flex flex-wrap items-center gap-x-2 gap-y-1 text-ink-gray-8 max-sm:mb-1.5">
                     <span v-if="!changeAddress">points at <span class="font-mono">{{ recordAddress || 'no address set' }}</span> · {{ proxied ? 'proxied' : 'DNS only' }}</span>
                     <TextInput v-else v-model="address" class="w-44" :placeholder="options.dns.ipv4" aria-label="Address for this site's A record" spellcheck="false" />
-                    <button type="button" class="text-left text-xs text-ink-gray-6 underline-offset-2 hover:underline" @click="changeAddress = !changeAddress; address = ''">{{ changeAddress ? 'Use the machine\'s address' : 'Use another address for this site' }}</button>
+                    <button v-if="can('admin')" type="button" class="text-left text-xs text-ink-gray-6 underline-offset-2 hover:underline" @click="changeAddress = !changeAddress; address = ''">{{ changeAddress ? 'Use the machine\'s address' : 'Use another address for this site' }}</button>
                   </dd>
                 </template>
                 <template v-if="options.proxy">

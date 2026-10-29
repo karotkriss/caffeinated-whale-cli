@@ -287,6 +287,32 @@ class TestPublish:
         assert host["forward_port"] == 8003 and host["locations"][0]["forward_port"] == 9003
         assert len(world.cf.records) == 1
 
+    def test_another_benchs_publication_is_refused_and_only_a_move_repoints_it(
+        self, world, monkeypatch
+    ):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        writes = (len(world.cf.writes()), len(world.npm.writes()))
+        other = "/workspace/other-bench"
+        monkeypatch.setattr(
+            publish.resolvers,
+            "resolve_container_and_bench",
+            lambda p, b, path: (object(), other, []),
+        )
+        for project in ("p", "q"):
+            with pytest.raises(CwcliError) as e:
+                publish.publish_site(project, SITE, bench="1")
+            assert (e.value.kind, e.value.code) == (ErrorKind.CONFLICT, "publish.owned_elsewhere")
+            assert "already published from p (bench frappe-bench)" in e.value.message
+            assert "Move" in e.value.hint
+        assert (len(world.cf.writes()), len(world.npm.writes())) == writes
+        assert publish.entry(SITE)["bench_path"] == BENCH
+        world.ports["value"] = (8003, 9003)
+        assert publish.publish_site("q", SITE, bench="1", move=True).data.ok
+        assert (publish.entry(SITE)["project"], publish.entry(SITE)["bench_path"]) == ("q", other)
+        [host] = world.npm.hosts.values()
+        assert host["forward_port"] == 8003
+
     def test_proxied_is_refused_with_the_http_challenge_and_allowed_with_dns(self, world):
         turn_on(world)
         result = publish.publish_site("p", SITE, proxied=True)
@@ -504,6 +530,26 @@ class TestPreflight:
         for e in (published, checked):
             assert (e.value.kind, e.value.code) == (ErrorKind.USAGE, "publish.address")
         assert world.cf.writes() == [] and world.npm.writes() == []
+
+    def test_a_name_published_from_another_bench_fails_before_any_other_row(
+        self, world, monkeypatch
+    ):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        benches = {"0": BENCH, "1": "/workspace/other-bench"}
+        monkeypatch.setattr(
+            publish.resolvers,
+            "resolve_bench",
+            lambda p, b, path: SimpleNamespace(status=publish.Status.OK, data=benches[b]),
+        )
+        monkeypatch.setattr(
+            publish.core_docker, "get_frappe_container", lambda p: SimpleNamespace(status="exited")
+        )
+        for project, bench in (("p", "1"), ("q", "0")):
+            rows = publish.preflight(project, bench, SITE)
+            assert [(r["part"], r["state"]) for r in rows] == [("name", "fail")]
+            assert "already published from p" in rows[0]["text"]
+        assert {r["part"] for r in publish.preflight("p", "0", SITE)} == {"port", "dns", "proxy"}
 
     def test_a_name_outside_every_zone_fails(self, world, monkeypatch):
         turn_on(world, proxy=False)

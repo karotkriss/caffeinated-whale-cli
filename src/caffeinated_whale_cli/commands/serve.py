@@ -999,6 +999,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/jobs":
             admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
             return "admin" if admin else "operator"
+        if path == "/api/v1/publish/preflight":
+            admin = core_accounts.admin_only("publish-site", {"address": payload.get("address")})
+            return "admin" if admin else "operator"
         if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
             job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
             try:

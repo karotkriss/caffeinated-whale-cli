@@ -1593,7 +1593,7 @@ def test_a_move_repoints_a_kept_name_and_unpublishes_a_renamed_one(fake_spawn, m
         ("publish-site", "c.example.com"),
     ]
     assert children[0]["target"] == {"project": "q", "bench": "1", "site": "a.example.com"}
-    assert children[0]["args"] == {}  # publish-site keeps the site's own choices
+    assert children[0]["args"] == {"move": True}  # repoints the site, keeping its choices
     assert children[1]["target"] == {"project": "p", "site": "b.example.com"}
     assert children[2]["args"] == {"proxied": False, "access_list_id": 3}  # the source's choices
 
@@ -1631,3 +1631,4 @@ def test_publish_site_dispatches_to_the_core(monkeypatch):
     )
     assert seen["bench"] == "1" and seen["address"] == "203.0.113.5"
     assert seen["proxied"] is True and seen["access_list_id"] == 4
+    assert seen["move"] is False

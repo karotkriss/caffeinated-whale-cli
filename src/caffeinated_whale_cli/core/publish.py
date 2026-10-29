@@ -165,6 +165,16 @@ def entry_at(domain: str, project: str | None, bench: str | None) -> dict | None
     return rec if found.data == rec.get("bench_path") else None
 
 
+def _owned_elsewhere(domain: str, rec: dict) -> CwcliError:
+    return CwcliError(
+        ErrorKind.CONFLICT,
+        "publish.owned_elsewhere",
+        f"{domain} is already published from {rec.get('project')} (bench "
+        f"{rec.get('bench')}); cwcli does not repoint it from another bench.",
+        hint=f"An Admin can Move {domain} to this bench, which repoints its publication.",
+    )
+
+
 def view() -> dict[str, Any]:
     """What the Sites list shows: every published site's parts, and which DNS and
     proxy integrations are on (no secret, and no call to either)."""
@@ -630,10 +640,13 @@ def publish_site(
     address: str | None = None,
     proxied: bool | None = None,
     access_list_id: int | None = None,
+    move: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[PublishReport]:
     """Publish ``site`` (its name is its public domain). Idempotent: see the module
-    docstring. The report's ``ok`` is False when any step failed."""
+    docstring. The report's ``ok`` is False when any step failed. A publication
+    recorded for another instance or bench is refused unless ``move`` (a Move of
+    that site to this bench) repoints it."""
     emit = on_event or (lambda _e: None)
     check_domain(site)
     dns = integrations.provider("dns_record")
@@ -661,6 +674,9 @@ def publish_site(
     # A choice this call does not make is the one the site was published with, so a
     # Retry or a Move keeps the site's own address, proxy status and access list.
     prior = entry(site) or {}
+    owner = (prior.get("project"), prior.get("bench_path"))
+    if prior and not move and owner != (project, bench_path):
+        raise _owned_elsewhere(site, prior)
     proxy_client = proxy[0].hooks["proxy_host"](proxy[1], proxy[2]) if proxy else None
     override, ipv4, ipv6 = _addresses(prior, dns, address)
     wants_proxied, allowed = _proxied(prior, dns, proxy_client, proxied)
@@ -1001,6 +1017,9 @@ def preflight(
         row("name", "fail", "Turn on Cloudflare DNS or Nginx Proxy Manager first.")
         return rows
     recorded = entry(domain) or {}
+    if recorded and entry_at(domain, project, bench) is None:
+        row("name", "fail", _owned_elsewhere(domain, recorded).message)
+        return rows
     try:
         container = core_docker.get_frappe_container(project)
         if getattr(container, "status", "running") != "running":

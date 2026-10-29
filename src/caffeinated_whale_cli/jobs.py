@@ -1653,6 +1653,7 @@ def _dispatch(
             address=str(args["address"]).strip() if args.get("address") is not None else None,
             proxied=args.get("proxied") if isinstance(args.get("proxied"), bool) else None,
             access_list_id=int(access_list) if access_list.isdigit() else None,
+            move=args.get("move") is True,
             on_event=emit,
         )
     if verb == "unpublish-site":
@@ -2136,7 +2137,7 @@ def _follow_ups(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any], dict[st
             "site": name,
         }
         if name == source:
-            out.append(("publish-site", moved, {}))
+            out.append(("publish-site", moved, {"move": True}))
             continue
         if args.get("unpublish") is True:
             out.append(("unpublish-site", {"project": project, "site": source}, {}))
