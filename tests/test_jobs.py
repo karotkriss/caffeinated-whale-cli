@@ -10,10 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 from caffeinated_whale_cli import jobs
+from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.core.update import UpdatePreflight
 from caffeinated_whale_cli.core.update_preflight import DATA_LOSS, PreflightFinding
+
+_real_discover_stack = supervision.discover_stack
 
 
 @pytest.fixture(autouse=True)
@@ -378,7 +381,8 @@ def _wire_instance_restart(monkeypatch, frappe_status, serving):
     )
     monkeypatch.setattr(jobs.core_docker, "get_frappe_container", lambda project: frappe)
 
-    def discover(container, path):
+    def discover(container, path, required=False):
+        assert required is True
         calls.append(("probe", path))
         return SimpleNamespace(supervisor_up=path in serving)
 
@@ -418,6 +422,19 @@ def test_instance_restart_brings_back_only_the_benches_that_were_serving(monkeyp
     assert calls.index("stop") > max(i for i, c in enumerate(calls) if isinstance(c, tuple))
     assert result.data["restarted_benches"] == ["/workspace/b0", "/workspace/b2"]
     assert jobs._result_ok(result) is True
+
+
+def test_instance_restart_stops_nothing_when_the_process_table_is_unreadable(monkeypatch):
+    calls = _wire_instance_restart(monkeypatch, "running", {"/workspace/b0"})
+    monkeypatch.setattr(jobs.core_supervision, "discover_stack", _real_discover_stack)
+    frappe = jobs.core_docker.get_frappe_container("p")
+    frappe.exec_run = lambda cmd, **kwargs: (1, b"exec failed")
+
+    with pytest.raises(CwcliError) as error:
+        jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert error.value.code == "supervisor.process_state_unknown"
+    assert calls == []
 
 
 @pytest.mark.parametrize("frappe_status", ["running", "exited"])

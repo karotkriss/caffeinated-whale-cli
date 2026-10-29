@@ -261,7 +261,7 @@ def _real_bench_less_restart_state(monkeypatch):
     monkeypatch.setattr(
         jobs.core_supervision,
         "discover_stack",
-        lambda container, path: SimpleNamespace(supervisor_up=False),
+        lambda container, path, required=False: SimpleNamespace(supervisor_up=False),
     )
     monkeypatch.setattr(jobs.core_stop, "stop", lambda project, **k: Result(status=Status.OK))
     monkeypatch.setattr(jobs.core_start, "resolve_project_containers", lambda project: [frappe])
