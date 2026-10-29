@@ -42,7 +42,8 @@ async function submit() {
   <!-- Split page. One column on a phone (gradient band on top, form below), two halves from md up. -->
   <div class="cw-c-signin grid min-h-full grid-rows-[auto,1fr] bg-surface-gray-1 md:grid-cols-2 md:grid-rows-1">
     <section class="relative order-first h-52 overflow-hidden md:order-last md:h-auto" :class="!active && 'bg-surface-gray-3'" aria-hidden="true">
-      <ShaderGradient v-if="active" :stops="stops" :animate="motion" :scale="0.55" :grain="0.06" />
+      <!-- Absolutely positioned so the canvas's own pixel size never sets the section's height on a resize. -->
+      <div v-if="active" class="absolute inset-0"><ShaderGradient :stops="stops" :animate="motion" :scale="0.55" :grain="0.06" /></div>
       <div class="absolute inset-0 flex items-center justify-center px-6">
         <p class="cw-c-wordmark text-center leading-[0.95] text-ink-gray-9">
           <span class="block">Caffeinated</span>
