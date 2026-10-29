@@ -318,7 +318,7 @@ class TestRoles:
         cookie = self._as(daemon, "otto")
         _req(daemon, "/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}, cookie)
         verb, origin = daemon.jobs[-1]
-        assert verb == "start" and origin["account"] == "otto"
+        assert verb == "start" and origin["account"] == "otto" and origin["role"] == "operator"
         assert origin["account_source"] == "ldap"
 
 
@@ -348,8 +348,8 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     monkeypatch.setattr(
         publish,
         "preflight",
-        lambda p, b, s, address=None, proxied=None: [
-            {"part": "dns", "state": "ok", "text": f"{p} {b} {s} {address} {proxied}"}
+        lambda p, b, s, address=None, proxied=None, admin=False: [
+            {"part": "dns", "state": "ok", "text": f"{p} {b} {s} {address} {proxied} {admin}"}
         ],
     )
     monkeypatch.setattr(publish, "check_site", lambda s: {"domain": s, "ok": True, "parts": {}})
@@ -372,9 +372,9 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     assert status == 403 and _code(body) == "auth.role_forbidden"
     status, body, _ = _req(daemon, "/api/v1/publish/preflight", site, admin)
     assert status == 200
-    assert body["data"]["rows"][0]["text"] == "p 0 erp.example.com 203.0.113.5 True"
+    assert body["data"]["rows"][0]["text"] == "p 0 erp.example.com 203.0.113.5 True True"
     status, body, _ = _req(daemon, "/api/v1/publish/preflight", {**site, "address": ""}, operator)
-    assert status == 200 and body["data"]["rows"][0]["text"] == "p 0 erp.example.com  True"
+    assert status == 200 and body["data"]["rows"][0]["text"] == "p 0 erp.example.com  True False"
     status, body, _ = _req(daemon, "/api/v1/publish/check", site, operator)
     assert status == 200 and body["data"]["domain"] == "erp.example.com"
     job = {"verb": "publish-site", "target": {"project": "p", "site": "erp.example.com"}}

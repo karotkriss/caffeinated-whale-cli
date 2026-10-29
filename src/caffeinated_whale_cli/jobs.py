@@ -632,7 +632,12 @@ def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def retry_job(job_id: str, *, ui_context: dict[str, str | int] | None = None) -> dict[str, Any]:
+def retry_job(
+    job_id: str,
+    *,
+    ui_context: dict[str, str | int] | None = None,
+    origin: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Start a NEW job with the same verb, target, args and secrets as a finished one.
 
     Consent is never carried over: a destructive verb comes back as the same
@@ -650,6 +655,7 @@ def retry_job(job_id: str, *, ui_context: dict[str, str | int] | None = None) ->
         record["args"],
         secret_values=_held_secrets(record),
         ui_context=ui_context,
+        origin=origin,
     )
 
 
@@ -660,6 +666,7 @@ def continue_job(
     *,
     consent: bool = False,
     ui_context: dict[str, str | int] | None = None,
+    origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Answer a ``needs_choice`` job with a NEW job that reuses the secrets it was started with.
 
@@ -688,6 +695,7 @@ def continue_job(
         consent=consent,
         secret_values=_held_secrets(record),
         ui_context=ui_context,
+        origin=origin,
     )
     # The decision is taken: the waiting job is ANSWERED (and names its follow-up),
     # so a list never offers the same choice twice (captain note 06:39Z).
@@ -1441,6 +1449,8 @@ def _dispatch(
     consent: bool,
     secret_values: dict[str, str],
     emit: _Recorder,
+    *,
+    admin: bool = False,
 ) -> Result:
     project = _project(target) if verb not in _PROJECTLESS_VERBS else ""
     bench = _bench(target)
@@ -1540,6 +1550,7 @@ def _dispatch(
                         if isinstance(args["publish"].get("proxied"), bool)
                         else None
                     ),
+                    admin=admin,
                 )
                 if row["state"] == "fail"
             ]
@@ -1654,6 +1665,7 @@ def _dispatch(
             proxied=args.get("proxied") if isinstance(args.get("proxied"), bool) else None,
             access_list_id=int(access_list) if access_list.isdigit() else None,
             move=args.get("move") is True,
+            admin=admin,
             on_event=emit,
         )
     if verb == "unpublish-site":
@@ -2034,6 +2046,7 @@ def run_job(job_id: str) -> int:
             bool(spec.get("consent")),
             secret_values,
             emit,
+            admin=(spec.get("origin") or {}).get("role") == "admin",
         )
         if result.status is Status.NEEDS_CHOICE:
             emit.lifecycle(
@@ -2180,6 +2193,7 @@ def _start_follow_ups(job_id: str, spec: dict[str, Any], emit: _Recorder) -> Non
                     "of": len(planned) + 1,
                     "account": origin.get("account"),
                     "account_source": origin.get("account_source"),
+                    "role": origin.get("role"),
                 },
             )
         except CwcliError as exc:

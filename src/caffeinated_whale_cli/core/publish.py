@@ -165,13 +165,43 @@ def entry_at(domain: str, project: str | None, bench: str | None) -> dict | None
     return rec if found.data == rec.get("bench_path") else None
 
 
-def _owned_elsewhere(domain: str, rec: dict) -> CwcliError:
+def _owner_live(domain: str, rec: dict) -> bool:
+    """Whether the site a publication was recorded for still exists on its instance
+    and bench. Only an absent instance, bench or site is gone; anything cwcli cannot
+    read (Docker unreachable, a stopped instance) counts as still there."""
+    try:
+        container = core_docker.get_frappe_container(str(rec.get("project") or ""))
+    except CwcliError as e:
+        return e.kind is not ErrorKind.NOT_FOUND
+    if getattr(container, "status", "running") != "running":
+        return True
+    try:
+        code, _ = container.exec_run(["test", "-d", f"{rec.get('bench_path')}/sites/{domain}"])
+    except Exception:
+        return True
+    return bool(code != 1)
+
+
+def _owner_refusal(domain: str, rec: dict, *, admin: bool) -> CwcliError | None:
+    """Why ``domain``'s publication, recorded for another instance or bench, may not
+    be taken over here; None when its site is gone and an Admin asked."""
+    owner = f"{rec.get('project')} (bench {rec.get('bench')})"
+    if _owner_live(domain, rec):
+        return CwcliError(
+            ErrorKind.CONFLICT,
+            "publish.owned_elsewhere",
+            f"{domain} is already published from {owner}; cwcli does not repoint it "
+            "from another bench.",
+            hint=f"An Admin can Move {domain} to this bench, which repoints its "
+            "publication, or Unpublish it first.",
+        )
+    if admin:
+        return None
     return CwcliError(
         ErrorKind.CONFLICT,
-        "publish.owned_elsewhere",
-        f"{domain} is already published from {rec.get('project')} (bench "
-        f"{rec.get('bench')}); cwcli does not repoint it from another bench.",
-        hint=f"An Admin can Move {domain} to this bench, which repoints its publication.",
+        "publish.orphaned",
+        f"{domain} has an orphaned publication from {owner}, whose site no longer exists.",
+        hint="An Admin can take it over by publishing it here, or Unpublish it.",
     )
 
 
@@ -641,12 +671,14 @@ def publish_site(
     proxied: bool | None = None,
     access_list_id: int | None = None,
     move: bool = False,
+    admin: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[PublishReport]:
     """Publish ``site`` (its name is its public domain). Idempotent: see the module
     docstring. The report's ``ok`` is False when any step failed. A publication
     recorded for another instance or bench is refused unless ``move`` (a Move of
-    that site to this bench) repoints it."""
+    that site to this bench) repoints it, or its site is gone and ``admin`` (the
+    requester's server-checked role) takes it over at this machine's address."""
     emit = on_event or (lambda _e: None)
     check_domain(site)
     dns = integrations.provider("dns_record")
@@ -676,7 +708,17 @@ def publish_site(
     prior = entry(site) or {}
     owner = (prior.get("project"), prior.get("bench_path"))
     if prior and not move and owner != (project, bench_path):
-        raise _owned_elsewhere(site, prior)
+        refused = _owner_refusal(site, prior, admin=admin)
+        if refused is not None:
+            raise refused
+        warnings.append(
+            Message(
+                "publish.adopted",
+                f"Took over the orphaned publication from {prior.get('project')} "
+                f"(bench {prior.get('bench')}).",
+            )
+        )
+        prior = {**prior, "address_override": ""}
     proxy_client = proxy[0].hooks["proxy_host"](proxy[1], proxy[2]) if proxy else None
     override, ipv4, ipv6 = _addresses(prior, dns, address)
     wants_proxied, allowed = _proxied(prior, dns, proxy_client, proxied)
@@ -997,6 +1039,7 @@ def preflight(
     *,
     address: str | None = None,
     proxied: bool | None = None,
+    admin: bool = False,
 ) -> list[dict[str, Any]]:
     """Read-only checks before a site is created and published: one row per part,
     ``ok``, ``warn`` or ``fail``. A ``fail`` refuses the publish before the site
@@ -1018,8 +1061,17 @@ def preflight(
         return rows
     recorded = entry(domain) or {}
     if recorded and entry_at(domain, project, bench) is None:
-        row("name", "fail", _owned_elsewhere(domain, recorded).message)
-        return rows
+        refused = _owner_refusal(domain, recorded, admin=admin)
+        if refused is not None:
+            row("name", "fail", f"{refused.message} {refused.hint}")
+            return rows
+        row(
+            "name",
+            "warn",
+            f"{domain} has an orphaned publication from {recorded.get('project')} (bench "
+            f"{recorded.get('bench')}); publishing it here takes it over.",
+        )
+        recorded = {**recorded, "address_override": ""}
     try:
         container = core_docker.get_frappe_container(project)
         if getattr(container, "status", "running") != "running":
