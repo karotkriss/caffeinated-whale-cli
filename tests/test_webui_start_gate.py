@@ -40,6 +40,10 @@ STUBS = {
         "export const session = { user: { role: 'admin' } }"
     ),
     "./job-toasts": "export const trackJob = () => {}",
+    "./publish": (
+        "export const publicationOf = (site) => (globalThis.__t.published || []).includes(site) ? {} : null\n"
+        "export const publications = { dns: { name: 'Cloudflare DNS' }, proxy: null }"
+    ),
     "../router": "export const router = { push() {} }",
     "./fleet": (
         "export const instance = (p) => globalThis.__t.instances[p]\n"
@@ -322,3 +326,19 @@ def test_a_running_instance_asks_about_a_stopped_bench_only_when_the_verb_needs_
     assert out["plainOpened"] is False
     assert out["servingOpened"] is True
     assert out["calls"] == []
+
+
+@pytest.mark.parametrize(("published", "sent"), [(True, {"unpublish": True}), (False, {})])
+def test_dropping_a_published_site_offers_also_unpublish_ticked(run, published, sent):
+    running = {"acme": {**STOPPED_TWO_BENCHES["acme"], "container_running": True}}
+    out = run(
+        f"globalThis.__t.published = {json.dumps(['b.localhost'] if published else [])}\n"
+        f"dialog.openAction('site.remove', {json.dumps(SITE)})\n"
+        "const values = { ...dialog.dialogState.values }\n"
+        "await dialog.runAction('site.remove', dialog.dialogState.ctx, values)\n"
+        "return { values, published: dialog.dialogState.ctx.published }",
+        instances=running,
+    )
+    assert out["published"] is published
+    assert out["values"] == ({"unpublish": True} if published else {})
+    assert out["calls"][-1]["job"]["args"] == sent

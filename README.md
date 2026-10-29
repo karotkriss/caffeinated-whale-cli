@@ -2213,7 +2213,7 @@ With LDAP / Active Directory sign-in turned on (Settings > Integrations, below),
 **Roles:** every signed-in person is an Admin, an Operator or a Viewer, and the daemon checks each request against the role it needs.
 A Viewer reads everything the UI shows except the contents of backup sets (no download).
 An Operator also runs the fleet: lifecycle actions, jobs, backups, transfers and schedules.
-An Admin also changes Settings, Integrations and each instance's backup settings (retention, the daily schedule and off-site copies), updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
+An Admin also changes Settings, Integrations and each instance's backup settings (retention, the daily schedule and off-site copies), updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, unpublishing a site, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
 A schedule that runs one of those (a prune) is created, changed, enabled or run by hand only by an Admin, and each scheduled run checks that the Admin who last saved it is still an Admin (a directory user is looked up in the directory again); otherwise the run is skipped and the schedule shows why.
 The local `admin` account and a programmatic client holding the bearer token are Admins; a directory user's role comes from their directory groups.
 The page hides what a role cannot do, and a request beyond the role is refused with `auth.role_forbidden`.
@@ -2245,9 +2245,9 @@ Schedules puts any of those jobs on a timetable (templates, a friendly recurrenc
 Turning one on opens its setup, tests the connection, and turns it on only when the test passes; a change to an integration that is already on is applied only when the changed settings pass the test, so a typo never takes a working one down.
 Each integration shows one of four states: Off, Needs setup (the last attempt to turn it on failed its test), On, or Error (it is on, and its last use failed).
 Secrets are stored encrypted (AES-256-GCM) in `~/.cwcli/integrations.json` under a key in `~/.cwcli/keys/integrations.key`, both 0600; after a save the page shows only that a secret is set, and a new value replaces it.
-A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, or the S3 endpoint) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
-Two official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
-Each integration provides hook points that cwcli calls: **sign-in** (who may sign in to the web UI, and with which role) and **the backup target** (where encrypted off-site copies go).
+A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, the S3 endpoint, or the Nginx Proxy Manager admin URL or email) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
+Four official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
+Each integration provides hook points that cwcli calls: **sign-in** (who may sign in to the web UI, and with which role), **the backup target** (where encrypted off-site copies go), **DNS records** (where a published site's name is written) and **the proxy** (what serves a published site over HTTPS).
 Only one integration serves a hook point at a time.
 Turning on a second one that provides it asks the Admin to choose: **Test and switch** runs the new one's test and, only if it passes, turns it on and turns the other off, keeping its settings; nothing switches silently.
 
@@ -2263,6 +2263,17 @@ Turning on a second one that provides it asks the Admin to choose: **Test and sw
   Copies of an instance that used a different bucket are paused, never silently: the S3 card here and the Backups page name the instance and its old endpoint and bucket until its copies are turned back on.
   Every per-instance plaintext secret file (`~/.cwcli/backups/keys/s3-<instance>.secret`) is removed; type the secret key again in this integration if you set up that bucket here.
   `cwcli backups s3 configure` sets up the same integration from a terminal.
+- **Cloudflare DNS:** writes a published site's A record (and an AAAA record when an IPv6 address is set) in the Cloudflare zone that holds its name.
+  Make the API token from Cloudflare's "Edit zone DNS" template with Zone Resources limited to the zones cwcli may publish in.
+  The record points at this machine's public IPv4 address, a setting of its own: **Detect** fills it from Cloudflare's own `/cdn-cgi/trace`, and an Admin confirms it by saving, because behind NAT, a VPN or two uplinks the address a machine reaches out from can differ from the one visitors reach; nothing detects the address while a job runs.
+  **Test connection** only reads: the token is active, and which zones it can see.
+  Cloudflare has no read that proves a token may edit a zone, so **Check edit access** creates and deletes a TXT record named `_cwcli-check.<zone>` in each zone the token can see, and names the missing permission when it is refused.
+  Records are DNS only by default; "Proxy new records through Cloudflare" applies only while Nginx Proxy Manager uses the DNS challenge, because with the HTTP challenge the certificate would depend on zone settings cwcli does not own.
+- **Nginx Proxy Manager:** makes a published site's proxy host (its name forwarded to the bench's published web port, with a `/socket.io` location on the bench's socket.io port) and requests its Let's Encrypt certificate.
+  It has no API keys, so cwcli signs in as a dedicated Nginx Proxy Manager user: not an administrator, visibility "Created items only" (so cwcli never sees or changes a host a person made), Manage for proxy hosts and SSL certificates, and two-factor sign-in off.
+  When Nginx Proxy Manager runs in a container on this machine, the setup finds it and fills the admin URL (`127.0.0.1`, so its admin port 81 can stay closed to the network) and the forward address (the Docker bridge gateway); otherwise type this machine's LAN address.
+  **Test connection** checks that it answers, that the user signs in and may manage proxy hosts and certificates, and, for a local container, that a bench's published port answers from inside it at the forward address (it says when that check was skipped).
+  Certificates use the HTTP challenge by default, which needs port 80 open to the internet; the DNS challenge goes through Cloudflare with its own "Edit zone DNS" token that Nginx Proxy Manager keeps for renewals, and cwcli never copies its Cloudflare integration's token into it.
 - **Community integrations:** **Add from a repository…** takes a GitHub, GitLab.com or self-hosted GitLab repository URL and an optional branch or tag.
   cwcli fetches the repository and reads its declaration without building or running anything, then shows the trust screen: the integration's name, publisher, description, the hook points it declares, the repository, and the exact commit the branch or tag points at.
   Nothing is installed until the Admin clicks **Install**, and then only that commit; if the branch moved in the meantime, cwcli refuses and asks for a new review.
@@ -2273,6 +2284,23 @@ Turning on a second one that provides it asks the Admin to choose: **Test and sw
   **Check for update** shows the installed and the latest commit with the trust screen, and **Update** installs only that reviewed commit and turns the integration off, keeping its settings and secrets, so the new code's test runs before it is on again; nothing updates by itself.
   **Remove…** deletes the package, its settings and its secrets after the id is typed back.
   See `integrations` below for the terminal commands, the declaration a repository needs, and where the code is installed.
+
+**Publishing a site at its own domain:** with Cloudflare DNS, Nginx Proxy Manager or both turned on, **New site** offers "Publish it at a public address".
+With Cloudflare on, the site name becomes a name plus a zone the token can see, so a typo cannot land in another zone, and a read-only preflight checks each part before anything is created: the bench's published port, whether the name is free in the zone (or already cwcli's), and whether a proxy host cwcli can see already uses it; with Nginx Proxy Manager alone it shows what the name resolves to now.
+A failing preflight row keeps **Create site** disabled, and the `new-site` job runs the same preflight first, so a name that cannot be published never leaves a site behind.
+The site is created exactly as without publishing; as soon as it exists a second job, **Publish site** (the card follows it as "part 2 of 2"), writes the A record, makes the proxy host, requests the certificate, then checks that `https://<site>/api/method/ping` answers.
+Each step reads what exists before it writes, so **Retry** (or Publish again) repeats only what is missing, and the same job publishes a site that already exists.
+A record already pointing at this machine is used and never deleted; a record or proxy host cwcli did not create stops the publish with a message naming the fix.
+With Cloudflare alone the site answers at its bench port (`http://<site>:<port>`) and nothing is proxied; with Nginx Proxy Manager alone the name must already point at this machine, and a wildcard record such as `*.apps.example.com` covers every later site.
+New site also takes another address for one site, Cloudflare's proxy (only with the DNS challenge), and an Nginx Proxy Manager access list; the bench runs Frappe's development server, so restrict a site not meant for everyone.
+A failed publish never removes the site: the job fails, naming the part and its reason, the integration that failed shows Error until its next success, and the Sites list's **Public address** column shows each part (DNS, Proxy, Certificate) as done, failed or waiting.
+Each row's globe menu offers **Publish…**, **Retry what is missing…**, **Check for drift** (a read-only comparison that reports a record pointed elsewhere, a deleted proxy host, or a certificate whose renewal is failing, and repairs nothing) and, for an Admin, **Unpublish…**.
+Unpublish removes the proxy host, then its certificate when no other host uses it, then the DNS record, each only while it still matches what cwcli wrote; anything changed by hand is left and reported, and a part whose integration is off stays recorded so Retry finishes it.
+Drop site offers "Also unpublish it", ticked for a published site, and starts **Unpublish site** once the site is dropped.
+Moving a published site keeps its name's public address and points its proxy host at the new bench; a move that renames it offers to unpublish the old name (ticked) and to publish the new one.
+Turning an integration off never deletes anything it created.
+What cwcli created for each published name is recorded, without any secret, in `~/.cwcli/publications.json` (0600).
+Publishing is an Operator's job and unpublishing an Admin's; neither has a terminal command or a schedule yet.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
@@ -2343,7 +2371,7 @@ localdir = "cwcli_localdir:INTEGRATION"   # one per repository; the name is the 
 name = "Local directory backup target"
 publisher = "Example Org"
 description = "Keeps off-site copies in a directory on this machine."
-provides = ["backup_target"]       # sign_in and/or backup_target
+provides = ["backup_target"]       # any of sign_in, backup_target, dns_record, proxy_host
 ```
 
 The entry point names a `caffeinated_whale_cli.core.integrations.Integration` (its settings fields, connection test, optional actions) whose `hooks` maps each hook point it provides to the function cwcli calls; cwcli refuses one whose id or hook points differ from the declaration or that lacks a hook's function, and shows the declared name and description.
@@ -2354,6 +2382,9 @@ Once an Admin turns it on (its test runs first), cwcli calls it exactly where it
   An optional `current_role(settings, secrets, username)` lets a schedule confirm its owner is still an Admin; without it, an Admin-only schedule saved by one of its users is skipped with that reason.
 - `backup_target(settings, secrets)` returns the store off-site copies go to: an object with `location` (shown to people), `key(*parts)`, `ensure()`, `put_file(key, path)`, `put_bytes(key, data)`, `get_to_file(key, path)`, `get_bytes(key)`, `delete(key)` and `list(prefix)` (a list of `{"key": ...}`).
   cwcli encrypts every part before it reaches the target, exactly as for the S3 bucket, and `cwcli backups s3 list/copy/fetch/prune` work with whichever target is on.
+- `dns_record(settings, secrets)` returns the DNS provider a published site's record is written through: an object with `name` and `zones()` (`[{"id", "name"}]`), `records(zone_id, name)`, `record(zone_id, record_id)` (`None` when gone), `create(zone_id, record)`, `update(zone_id, record_id, record)` and `delete(zone_id, record_id)`, where a record is `{"id", "type", "name", "content", "proxied", "comment"}`.
+- `proxy_host(settings, secrets)` returns the reverse proxy: an object with `name`, `challenge` (`"http"` or `"dns"`), `me()`, `hosts()`, `host(id)`, `create_host(spec)`, `update_host(id, spec)`, `delete_host(id)`, `certificates()`, `certificate(id)`, `request_certificate(domain)` and `delete_certificate(id)`, in Nginx Proxy Manager's own object shapes, and optionally `access_lists()`.
+  cwcli decides what is read and written through both (it reads before it writes and changes only what it recorded creating), so a provider implements plain reads and writes.
 
 A failure inside a hook reads as that integration's Error state, never as a crash: a sign-in that fails is "the directory could not check your sign-in", and a failing target is an off-site copy that failed.
 cwcli installs each package with pip into its own directory under `~/.cwcli/integrations/community/`, never into cwcli's environment or the system, using a private venv there for pip; cwcli's own packages take precedence over any copy a package brings along.

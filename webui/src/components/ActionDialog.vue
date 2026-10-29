@@ -31,8 +31,10 @@ const avail = computed(() =>
   ),
 )
 const needsTyped = computed(() => action.value?.confirm === 'typed')
-const textFields = computed(() => (action.value?.fields || []).filter((f) => f.type !== 'checkbox'))
-const checkboxes = computed(() => (action.value?.fields || []).filter((f) => f.type === 'checkbox'))
+const shown = computed(() => (action.value?.fields || []).filter((f) => !f.show || f.show(ctx.value)))
+const textFields = computed(() => shown.value.filter((f) => f.type !== 'checkbox'))
+const checkboxes = computed(() => shown.value.filter((f) => f.type === 'checkbox'))
+const command = computed(() => (action.value ? action.value.cli(ctx.value, dialogState.values) : null))
 watch(() => [dialogState.open, ...checkboxes.value.map((f) => !!dialogState.values[f.name])], () => (typed.value = ''))
 // Every non-password text field is required; a password field left blank means its default.
 const fieldsFilled = computed(() =>
@@ -75,9 +77,9 @@ function confirm() {
         title="No backup will be taken. This cannot be undone."
         :description="`Every database, site and file of ${ctx.project} is deleted the moment you confirm. Nothing is archived, so there is no restore. Untick Force to keep the verified backup, or tick Keep the named volumes to leave the data on Docker.`"
       />
-      <div class="space-y-1.5">
+      <div v-if="command" class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running</div>
-        <CommandLine :command="action.cli(ctx, dialogState.values)" />
+        <CommandLine :command="command" />
       </div>
       <FormControl
         v-if="needsTyped"

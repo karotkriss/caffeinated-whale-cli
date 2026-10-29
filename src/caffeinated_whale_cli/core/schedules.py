@@ -65,7 +65,9 @@ SCHEDULABLE: dict[str, str] = {
     "build": "bench",
 }
 NEEDS_UNATTENDED_FLAG = frozenset({"apps-update", "migrate"})
-NEVER = frozenset({"rm", "rm-site", "rm-bench", "delete-backup", "move-sites", "restore-set"})
+NEVER = frozenset(
+    {"rm", "rm-site", "rm-bench", "delete-backup", "move-sites", "restore-set", "unpublish-site"}
+)
 
 DEFAULT_GUARDS = {"min_free_disk_gb": 5, "min_free_mem_mb": 512}
 _lock = threading.RLock()
