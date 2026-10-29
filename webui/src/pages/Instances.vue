@@ -18,6 +18,7 @@ import { openJob } from '../data/job-dialog'
 import { can, session } from '../data/session'
 // --- premium layer (see webui/src/premium/): the fleet hero ---
 import { Motion } from 'motion-v'
+import { useNow } from '@vueuse/core'
 import ShaderGradient from '../premium/ShaderGradient.vue'
 import { active, motion, stops, effects } from '../premium/effects'
 const EASE = [0.23, 1, 0.32, 1]
@@ -28,11 +29,12 @@ onMounted(() => {
   cacheProjects.load()
 })
 const query = ref('')
-const activeJobsLabel = computed(() => (activeJobs.value.length ? `${activeJobs.value.length} ${activeJobs.value.length === 1 ? 'job' : 'jobs'} running` : 'no jobs running'))
+const activeJobsLabel = computed(() => (activeJobs.value.length ? `${activeJobs.value.length} active ${activeJobs.value.length === 1 ? 'job' : 'jobs'}` : 'no active jobs'))
 const up = computed(() => instances.value.filter((i) => i.container_running).length)
 // The hero label: a time-of-day greeting by the browser's local clock with the signed-in name.
+const now = useNow({ interval: 60000 })
 const greeting = computed(() => {
-  const h = new Date().getHours()
+  const h = now.value.getHours()
   const part = h >= 5 && h < 12 ? 'Good morning' : h >= 12 && h < 18 ? 'Good afternoon' : 'Good evening'
   const who = session.user?.name || session.user?.username
   return who ? `${part}, ${who}` : part
