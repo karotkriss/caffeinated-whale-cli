@@ -2206,6 +2206,7 @@ The page asks for the **administrator account**: the username is `admin` and the
 Sessions last 8 hours idle and 7 days at most; "Keep me signed in" makes both 30 days.
 Five failed sign-ins within ten minutes lock the address for a minute and refuse further wrong passwords for the username, while the username's correct password still signs in, so nobody can lock the owner out.
 Your account (in Settings) changes the password, lists the other signed-in browsers, signs them out, and signs out.
+Appearance (in Settings, or the sidebar's Appearance row) picks the gradient theme and light, dark or the system setting (the default), and turns the moving visual effects off; the choice is kept in this browser.
 If the password is lost, `cwcli admin reset-password` on the host puts the account back to `admin` / `admin` with the change forced again (see below).
 With LDAP / Active Directory sign-in turned on (Settings > Integrations, below), directory users sign in on the same page with their own directory password, and the local `admin` account keeps working beside them as the way in when the directory is unreachable or misconfigured.
 
