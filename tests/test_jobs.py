@@ -1238,6 +1238,22 @@ def test_an_incomplete_removal_never_stops_an_instance_that_was_running(monkeypa
     assert calls["stops"] == []
 
 
+def test_a_container_start_that_fails_partway_stops_what_it_started(monkeypatch):
+    class _Broken(_Container):
+        def start(self):
+            raise RuntimeError("docker refused")
+
+    containers = [_Container("frappe", "exited"), _Broken("db", "exited")]
+    calls = _wire_rm_bench(monkeypatch, containers)
+
+    with pytest.raises(RuntimeError):
+        jobs._dispatch("rm-bench", {"project": "p", "bench": "1"}, {}, True, {}, _Emit())
+
+    assert containers[0].calls == ["start", "reload"]
+    assert calls["remove"] == []
+    assert calls["stops"] == ["p"]
+
+
 def test_a_completed_removal_leaves_the_started_containers_alone(monkeypatch):
     containers = [_Container("frappe", "exited"), _Container("db", "exited")]
     calls = _wire_rm_bench(monkeypatch, containers)
