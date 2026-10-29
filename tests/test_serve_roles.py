@@ -214,6 +214,13 @@ class TestRoles:
         status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/retry", {}, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
 
+    def test_an_operator_cannot_retry_a_publish_to_another_address(self, daemon, monkeypatch):
+        cookie = self._as(daemon, "otto")
+        job = {"verb": "publish-site", "args": {"address": "203.0.113.5"}}
+        monkeypatch.setattr(core_jobs, "read_job", lambda job_id, **kw: job)
+        status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/retry", {}, cookie)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
+
     def test_an_operator_cannot_continue_a_job_into_a_forced_update(self, daemon, monkeypatch):
         cookie = self._as(daemon, "otto")
         job = {"verb": "apps-update", "args": {"apps": ["x"]}, "state": "needs_choice"}
@@ -348,6 +355,7 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     monkeypatch.setattr(publish, "check_site", lambda s: {"domain": s, "ok": True, "parts": {}})
     viewer = _sign_in(daemon, "vic", "vic-pw")[2]
     operator = _sign_in(daemon, "otto", "otto-pw")[2]
+    admin = _sign_in(daemon, "admin", ADMIN_PW)[2]
     assert _req(daemon, "/api/v1/publications", cookie=viewer)[0] == 200
     assert _req(daemon, "/api/v1/publish/options", cookie=viewer)[0] == 403
     assert _req(daemon, "/api/v1/publish/options", cookie=operator)[0] == 200
@@ -361,11 +369,30 @@ def test_publication_reads_checks_and_jobs_by_role(daemon, monkeypatch):
     for path in ("/api/v1/publish/preflight", "/api/v1/publish/check"):
         assert _req(daemon, path, site, viewer)[0] == 403
     status, body, _ = _req(daemon, "/api/v1/publish/preflight", site, operator)
+    assert status == 403 and _code(body) == "auth.role_forbidden"
+    status, body, _ = _req(daemon, "/api/v1/publish/preflight", site, admin)
     assert status == 200
     assert body["data"]["rows"][0]["text"] == "p 0 erp.example.com 203.0.113.5 True"
+    status, body, _ = _req(daemon, "/api/v1/publish/preflight", {**site, "address": ""}, operator)
+    assert status == 200 and body["data"]["rows"][0]["text"] == "p 0 erp.example.com  True"
     status, body, _ = _req(daemon, "/api/v1/publish/check", site, operator)
     assert status == 200 and body["data"]["domain"] == "erp.example.com"
     job = {"verb": "publish-site", "target": {"project": "p", "site": "erp.example.com"}}
     assert _req(daemon, "/api/v1/jobs", job, operator)[0] == 202
+    for args in ({"address": "203.0.113.5"}, {"move": True}):
+        status, body, _ = _req(daemon, "/api/v1/jobs", {**job, "args": args}, operator)
+        assert status == 403 and _code(body) == "auth.role_forbidden", args
+        assert _req(daemon, "/api/v1/jobs", {**job, "args": args}, admin)[0] == 202
+    assert _req(daemon, "/api/v1/jobs", {**job, "args": {"address": " "}}, operator)[0] == 202
+    new_site = {
+        "verb": "new-site",
+        "target": {"project": "p", "site": "erp.example.com"},
+        "args": {"publish": {"address": "", "proxied": False}},
+    }
+    assert _req(daemon, "/api/v1/jobs", new_site, operator)[0] == 202
+    new_site["args"]["publish"]["address"] = "203.0.113.5"
+    status, body, _ = _req(daemon, "/api/v1/jobs", new_site, operator)
+    assert status == 403 and _code(body) == "auth.role_forbidden"
+    assert _req(daemon, "/api/v1/jobs", new_site, admin)[0] == 202
     job["verb"] = "unpublish-site"
     assert _req(daemon, "/api/v1/jobs", job, operator)[0] == 403
