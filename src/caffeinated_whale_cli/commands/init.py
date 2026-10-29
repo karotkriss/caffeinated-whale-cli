@@ -177,7 +177,7 @@ class _InitRenderer:
             "init.db_password_not_applied",
         ):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
-        elif code == "instance.already_running" and self.verbose:
+        elif code in ("instance.already_running", "instance.existing") and self.verbose:
             stderr_console.print(f"[dim]{event.text}[/dim]")
         elif code == "ports.retry":
             # Unmissable in both rendering modes: a caller waiting on this run
@@ -219,7 +219,14 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
             if output:
                 stderr_console.print(output)
     elif (
-        e.code in ("exec.stream_lost", "exec.exit_code_unknown", "bench_parent.mismatch") and e.hint
+        e.code
+        in (
+            "exec.stream_lost",
+            "exec.exit_code_unknown",
+            "bench_parent.mismatch",
+            "instance.settings_changed",
+        )
+        and e.hint
     ):
         # The contract's honest lost-stream errors are new on this surface;
         # their hint says what the user should actually do. Same for the
@@ -608,7 +615,19 @@ def init(
     on a memory-constrained machine - serialize them instead. Adding a bench
     to an already-running instance never disturbs it or its other benches:
     the frappe container is never pulled, recreated, or restarted, so every
-    already-serving bench keeps running throughout.
+    already-serving bench keeps running throughout. Re-running init against a
+    stopped instance starts its existing containers as they are, without pulling
+    images or recreating them, so its benches keep their Python environments.
+    If the re-run would change that instance's compose settings, such as a
+    different --port on an instance still on the default port range
+    (8000-8005), init refuses with exit 1 and names each change; remove the
+    instance with `cwcli rm` (which backs it up) and run init again, or rerun
+    init without the changed options. For an instance created on another
+    --port or widened by `cwcli scale`, init does not compare --port. An
+    instance whose frappe container has never started, such as one left by a
+    first init that failed at `docker compose up`, has no bench to protect, so
+    init neither refuses nor skips recreation there: it pulls images and
+    recreates the containers with the new options.
 
     If project_name is not provided, prompts interactively.
 

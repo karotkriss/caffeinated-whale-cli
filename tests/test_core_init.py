@@ -25,6 +25,9 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import config_utils, db_utils
 
 PROJECT = "proj"
+# Docker reports a never-started container's State.StartedAt as the zero time.
+STARTED_AT = "2026-10-01T00:00:00Z"
+NEVER_STARTED_AT = "0001-01-01T00:00:00Z"
 BENCH_PATH = "/workspace/frappe-bench"
 SITE = "development.localhost"
 SITE_PATH = f"{BENCH_PATH}/sites/{SITE}"
@@ -36,6 +39,17 @@ COMPOSE_TEMPLATE = """services:
     ports:
       - "8000-8005:8000-8005"
       - "9000-9005:9000-9005"
+"""
+
+# COMPOSE_TEMPLATE as an earlier `init --port 18000` left it: an existing
+# instance re-initialized with the same options finds nothing to change.
+COMPOSE_CUSTOMIZED_18000 = """services:
+  frappe:
+    image: docker.io/frappe/bench:v5.25.0
+    working_dir: /workspace
+    ports:
+      - "18000-18005:8000-8005"
+      - "19000-19005:9000-9005"
 """
 
 # The real upstream shape (frappe_docker devcontainer-example): the bench
@@ -119,6 +133,7 @@ class FakeContainer:
         self.id = "fake-frappe"
         self.status = status
         self.labels = {"com.docker.compose.service": "frappe"}
+        self.attrs = {"State": {"StartedAt": STARTED_AT}}
         self.client = SimpleNamespace(api=api or FakeApi())
         self.dirs_exist = set(dirs_exist)
         # substring -> (exit_code, bytes) for buffered exec_run calls
@@ -830,19 +845,21 @@ class TestInitInstance:
                 "up",
                 "-d",
                 "--no-deps",
+                "--no-recreate",
                 "mariadb",
             ]
         ]
 
-    def test_pull_and_up_still_run_when_a_sibling_container_is_up_but_frappe_is_not(
+    def test_up_still_runs_when_a_sibling_container_is_up_but_frappe_is_not(
         self, monkeypatch, tmp_path, patched
     ):
-        """The skip is scoped to the frappe SERVICE, not "any container up".
+        """The running-frappe skip is scoped to the frappe SERVICE, not "any container up".
 
         A stopped frappe beside a running mariadb/redis must still go through
         compose to come back up - skipping there would leave frappe down.
         """
         s = instance_setup(monkeypatch, tmp_path)
+        s.compose_path.write_text(COMPOSE_CUSTOMIZED_18000)
         sibling = SimpleNamespace(
             status="running", labels={"com.docker.compose.service": "mariadb"}
         )
@@ -850,7 +867,130 @@ class TestInitInstance:
         result = core_init.init_instance(PROJECT, port=18000)
 
         assert result.status is Status.OK
-        assert [c["cmd"][-1] for c in s.host_calls] == ["--quiet", "-d"]
+        assert [c["cmd"][-3:] for c in s.host_calls] == [["up", "-d", "--no-recreate"]]
+
+    def test_a_stopped_instance_is_started_without_pulling_or_recreating(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """Re-initializing a STOPPED instance to reuse its bench must start its
+        containers as they are.
+
+        frappe/bench tags are re-pushed upstream, so `pull` can move the pinned
+        tag to an image with different pyenv patch versions, and a plain `up -d`
+        then recreates frappe on it: /home/frappe reverts and the bench venv's
+        env/bin/python dangles (the reported defect). `--no-recreate` also covers
+        a tag another instance's pull already moved.
+        """
+        events: list = []
+        stopped = [
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        s.compose_path.write_text(COMPOSE_CUSTOMIZED_18000)
+
+        result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+
+        assert result.status is Status.OK
+        assert [c["cmd"] for c in s.host_calls] == [
+            [
+                "docker",
+                "compose",
+                "-p",
+                PROJECT,
+                "-f",
+                "docker-compose.yml",
+                "up",
+                "-d",
+                "--no-recreate",
+            ]
+        ]
+        notices = [e for e in events if isinstance(e, core_init.InitNotice)]
+        assert any(n.code == "instance.existing" for n in notices)
+
+    def test_a_stopped_instance_refuses_a_changed_port_and_keeps_its_compose(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A retry with a new --port cannot reach containers started with
+        `--no-recreate`, so init refuses instead of rewriting the compose file
+        to claim ports the live containers do not publish."""
+        stopped = [
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        original = COMPOSE_TEMPLATE.replace(
+            "docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.25.0"
+        )
+        original = original.replace(
+            "working_dir: /workspace/development", "working_dir: /workspace"
+        )
+        s.compose_path.write_text(original)
+
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=19000)
+
+        assert exc.value.kind is ErrorKind.CONFLICT
+        assert exc.value.code == "instance.settings_changed"
+        assert "port 8000 -> 19000" in str(exc.value)
+        assert s.compose_path.read_bytes() == original.encode()
+        assert s.host_calls == []
+
+    def test_a_never_started_instance_is_recreated_on_a_new_port(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A first init whose `up` failed leaves frappe `created`, never started,
+        with no bench to protect. Retrying with a new --port (the `ports.in_use`
+        remedy) must recreate it on that port, not refuse."""
+        created = [
+            SimpleNamespace(
+                status="created",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": NEVER_STARTED_AT}},
+            )
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=created)
+
+        result = core_init.init_instance(PROJECT, port=19000)
+
+        assert result.status is Status.OK
+        assert [c["cmd"][6:] for c in s.host_calls] == [["pull", "--quiet"], ["up", "-d"]]
+        assert '"19000-19005:8000-8005"' in s.compose_path.read_text()
+
+    def test_a_stopped_pre_migration_instance_is_not_refused_for_init_owned_rewrites(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """An instance created before init rewrote `working_dir` and pinned the
+        bench image still carries both; re-initializing it with its own port
+        changes no user option, so it starts as it is instead of refusing."""
+        stopped = [
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+        s.compose_path.write_text(
+            COMPOSE_TEMPLATE.replace("8000-8005:8000-8005", "18000-18005:8000-8005").replace(
+                "9000-9005:9000-9005", "19000-19005:9000-9005"
+            )
+        )
+
+        result = core_init.init_instance(PROJECT, port=18000)
+
+        assert result.status is Status.OK
+        assert [c["cmd"][-3:] for c in s.host_calls] == [["up", "-d", "--no-recreate"]]
 
     def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
         """The skip is scoped to a RUNNING project. A stopped one holds no ports, so
