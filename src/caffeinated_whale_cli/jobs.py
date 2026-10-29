@@ -892,7 +892,10 @@ def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
 
 
 def _serving_bench_paths(project: str) -> list[str]:
-    """The benches whose cwcli supervisor is up, read before anything is stopped."""
+    """The benches serving under cwcli's supervisor or honcho / ``bench start``.
+
+    Read before anything is stopped; an unreadable process table raises.
+    """
     container = core_docker.get_frappe_container(project)
     if container.status != "running":
         return []
@@ -903,6 +906,7 @@ def _serving_bench_paths(project: str) -> list[str]:
         p
         for p in paths
         if core_supervision.discover_stack(container, p, required=True).supervisor_up
+        or core_supervision.discover_unsupervised_stack(container, p, required=True).manager_up
     ]
 
 

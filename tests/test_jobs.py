@@ -371,7 +371,7 @@ def test_interrupt_tolerates_a_process_that_exits_before_the_signal(fake_spawn, 
     assert jobs.interrupt_job(record["id"])["state"] == "interrupting"
 
 
-def _wire_instance_restart(monkeypatch, frappe_status, serving):
+def _wire_instance_restart(monkeypatch, frappe_status, serving, unsupervised=()):
     calls = []
     frappe = _Container("frappe", frappe_status)
     monkeypatch.setattr(
@@ -387,6 +387,12 @@ def _wire_instance_restart(monkeypatch, frappe_status, serving):
         return SimpleNamespace(supervisor_up=path in serving)
 
     monkeypatch.setattr(jobs.core_supervision, "discover_stack", discover)
+
+    def discover_unsupervised(container, path, required=False):
+        assert required is True
+        return SimpleNamespace(manager_up=path in unsupervised)
+
+    monkeypatch.setattr(jobs.core_supervision, "discover_unsupervised_stack", discover_unsupervised)
     monkeypatch.setattr(
         jobs.core_stop,
         "stop",
@@ -422,6 +428,15 @@ def test_instance_restart_brings_back_only_the_benches_that_were_serving(monkeyp
     assert calls.index("stop") > max(i for i, c in enumerate(calls) if isinstance(c, tuple))
     assert result.data["restarted_benches"] == ["/workspace/b0", "/workspace/b2"]
     assert jobs._result_ok(result) is True
+
+
+def test_instance_restart_brings_back_a_bench_serving_under_bench_start(monkeypatch):
+    calls = _wire_instance_restart(monkeypatch, "running", set(), unsupervised={"/workspace/b1"})
+
+    result = jobs._restart_instance({"project": "p"}, lambda event: None)
+
+    assert [c for c in calls if not isinstance(c, tuple)] == ["stop", "/workspace/b1"]
+    assert result.data["restarted_benches"] == ["/workspace/b1"]
 
 
 def test_instance_restart_stops_nothing_when_the_process_table_is_unreadable(monkeypatch):
