@@ -20,6 +20,7 @@ import { can, session } from '../data/session'
 import { Motion } from 'motion-v'
 import ShaderGradient from '../premium/ShaderGradient.vue'
 import { active, motion, stops, effects } from '../premium/effects'
+const EASE = [0.23, 1, 0.32, 1]
 
 onMounted(() => {
   loadUpdates()
