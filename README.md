@@ -2224,6 +2224,9 @@ It refuses any request whose `Host` is not this machine, so another site in your
 
 **What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range (the same core confirmation `cwcli scale` asks for, typed back as the instance name), and check out an app ref without `--reset`.
 These lifecycle changes run as jobs too, so their steps and outcome remain visible after navigation.
+When an action needs a stopped instance running, the page offers to start it first: an action on a bench, site or app starts that bench (`cwcli start <project> --bench <n>`), so a multi-bench instance never asks which bench, and an instance-level action starts only the containers, never a bench.
+Remove bench on a stopped instance starts only its containers, and stops them again if the removal does not complete.
+Restarting an instance from the page brings back exactly the benches that were serving (under cwcli's supervisor or `bench start`), unlike `cwcli restart <project>`, which brings back the first bench.
 The long-job forms cover `init`, `apps install`, `apps update`, `apps checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, and `self-update`.
 `apps update` runs the same preflight as the CLI and shows every finding in the job view before the reset begins.
 A failed job leads with its plain cause (for example MariaDB rejecting the database root password, or git failing to authenticate) when cwcli recognizes one in the failing step's output, and otherwise says it did not and points at that output.
