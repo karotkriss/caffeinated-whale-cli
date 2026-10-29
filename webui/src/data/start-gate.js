@@ -18,8 +18,11 @@ export function benchRunning(project, bench) {
 }
 let settle = null
 
-export function ensureRunning(project, verb = '', { bench = null, benchLabel = null } = {}) {
-  if (!project || (instance(project)?.container_running && benchRunning(project, bench))) return Promise.resolve(true)
+// `bench` is the bench the page acts on: the start starts that one, so a
+// multi-bench instance never comes back asking which bench. `serving` also asks
+// when the container is up but that bench is not serving (Install apps).
+export function ensureRunning(project, verb = '', { bench = null, benchLabel = null, serving = false } = {}) {
+  if (!project || (instance(project)?.container_running && (!serving || benchRunning(project, bench)))) return Promise.resolve(true)
   return new Promise((resolve) => {
     settle?.(false)
     settle = resolve

@@ -107,7 +107,8 @@ function spec() {
 
 export async function submitJob() {
   const verb = jobDialog.verb
-  if (!['init', 'self-update'].includes(verb) && !(await ensureRunning(jobDialog.context.project, JOB_LABEL[verb]))) return null
+  const { project, bench = null, benchName = null } = jobDialog.context
+  if (!['init', 'self-update'].includes(verb) && !(await ensureRunning(project, JOB_LABEL[verb], { bench, benchLabel: benchName }))) return null
   jobDialog.running = true
   jobDialog.error = null
   try {
