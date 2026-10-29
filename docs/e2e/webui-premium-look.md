@@ -30,7 +30,10 @@ The three share one store, so a change in the panel is reflected in the sidebar 
 
 ## The desk with effects on: Instances hero, gradient sidebar, detail header
 
-Illustrative captures with names replaced: these were taken against real instances, and every instance, bench, site, path, host and user name in the page was swapped for a neutral demo name in the browser before the capture (a text substitution over the rendered page, no code change), so the data shown is the layout, not any one machine.
+Illustrative captures with names and source icons replaced: these were taken against real instances, and two things were replaced in the browser before each capture, with no code change.
+Every instance, bench, path, host and user name in the page text was swapped for a neutral demo name (a text substitution over the rendered page).
+Every App sources icon in the sidebar (GitHub, the self-hosted Git host and Marketplace) was swapped for the generic globe the page shows when a host has no icon, so no forge's own favicon appears.
+The data shown is the layout, not any one machine.
 
 The Instances page carries a hero on the gradient with a time-of-day greeting for the signed-in user, the running count and the bench, site and job totals, above the stock instance cards and the performance charts (the host chart now shows memory used).
 With effects on, the sidebar's own surface is the gradient under a light tint and a matte grain; its fixed bottom block is set off from the nav by a soft fade-in hairline.
@@ -53,7 +56,7 @@ It renders at 0.4 of the CSS pixel size (the field is smooth; the browser upscal
 
 - stops drawing and holds one static frame when the visual-effects switch is off or `prefers-reduced-motion` is set;
 - pauses while the tab is hidden or the canvas is scrolled out of view, and resumes from where it was;
-- recovers a lost WebGL context, and falls back to a CSS radial gradient built from the same stops when there is no WebGL at all;
+- recovers a lost WebGL context, and falls back to a CSS radial gradient built from the same stops when there is no WebGL at all or the shader fails to compile or link;
 - fires an occasional spot of turbulence (a swirl and a fading ripple at a random point, easing in and settling back over 1.8 s) every 9 to 17 seconds per surface, scheduled only inside the running frame loop, so never under reduced motion, with effects off, or while hidden.
 
 Measured on a software rasteriser (headless Chrome with no GPU), a gradient covering the whole 1280 x 800 viewport costs about 180 percent of one CPU core; the sign-in half, the sidebar and the hero surfaces each cover a fraction of that area and cost proportionally less.

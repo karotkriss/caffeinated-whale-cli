@@ -69,9 +69,8 @@ export function sumSeries(points, field, name) {
 
 export function hostSeries(points) {
   return {
-    memAvailable: [{ name: 'available', points: points.map((p) => [p.ts * 1000, p.mem_available ?? null]) }],
     // The host chart shows memory USED: total minus available, from the same /proc point.
-    memUsed: [{ name: 'used', points: points.map((p) => [p.ts * 1000, (p.mem_total != null && p.mem_available != null ? p.mem_total - p.mem_available : null) ?? null]) }],
+    memUsed: [{ name: 'used', points: points.map((p) => [p.ts * 1000, p.mem_total != null && p.mem_available != null ? p.mem_total - p.mem_available : null]) }],
     load: [{ name: 'load (1m)', points: points.map((p) => [p.ts * 1000, p.load1 ?? null]) }],
     memTotal: points.length ? points[points.length - 1].mem_total : null,
     cpus: points.length ? points[points.length - 1].cpus : null,

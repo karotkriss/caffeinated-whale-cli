@@ -204,8 +204,8 @@ watch(() => route.name, (name) => {
       <div v-else-if="fleet.connection === 'reconnecting'" class="flex items-center gap-2 border-b border-outline-amber-1 bg-surface-amber-1 px-4 py-1.5 text-sm text-ink-amber-6">
         <span class="lucide-loader-circle size-3.5 animate-spin" aria-hidden="true" />Reconnecting to the cwcli daemon
       </div>
-      <router-view v-slot="{ Component }" :key="route.fullPath">
-        <Transition :name="active ? 'cw-fade' : ''" mode="out-in" appear><component :is="Component" /></Transition>
+      <router-view v-slot="{ Component }">
+        <Transition :name="motion ? 'cw-fade' : ''" mode="out-in" appear><div :key="route.fullPath"><component :is="Component" /></div></Transition>
       </router-view>
     </DesktopShell>
     <ActionDialog />
