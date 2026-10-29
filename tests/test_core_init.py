@@ -25,6 +25,9 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import config_utils, db_utils
 
 PROJECT = "proj"
+# Docker reports a never-started container's State.StartedAt as the zero time.
+STARTED_AT = "2026-10-01T00:00:00Z"
+NEVER_STARTED_AT = "0001-01-01T00:00:00Z"
 BENCH_PATH = "/workspace/frappe-bench"
 SITE = "development.localhost"
 SITE_PATH = f"{BENCH_PATH}/sites/{SITE}"
@@ -130,6 +133,7 @@ class FakeContainer:
         self.id = "fake-frappe"
         self.status = status
         self.labels = {"com.docker.compose.service": "frappe"}
+        self.attrs = {"State": {"StartedAt": STARTED_AT}}
         self.client = SimpleNamespace(api=api or FakeApi())
         self.dirs_exist = set(dirs_exist)
         # substring -> (exit_code, bytes) for buffered exec_run calls
@@ -879,7 +883,11 @@ class TestInitInstance:
         """
         events: list = []
         stopped = [
-            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
             for service in core_init._EXPECTED_COMPOSE_SERVICES
         ]
         s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
@@ -911,7 +919,11 @@ class TestInitInstance:
         `--no-recreate`, so init refuses instead of rewriting the compose file
         to claim ports the live containers do not publish."""
         stopped = [
-            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
             for service in core_init._EXPECTED_COMPOSE_SERVICES
         ]
         s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
@@ -932,6 +944,28 @@ class TestInitInstance:
         assert s.compose_path.read_bytes() == original.encode()
         assert s.host_calls == []
 
+    def test_a_never_started_instance_is_recreated_on_a_new_port(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A first init whose `up` failed leaves frappe `created`, never started,
+        with no bench to protect. Retrying with a new --port (the `ports.in_use`
+        remedy) must recreate it on that port, not refuse."""
+        created = [
+            SimpleNamespace(
+                status="created",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": NEVER_STARTED_AT}},
+            )
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=created)
+
+        result = core_init.init_instance(PROJECT, port=19000)
+
+        assert result.status is Status.OK
+        assert [c["cmd"][6:] for c in s.host_calls] == [["pull", "--quiet"], ["up", "-d"]]
+        assert '"19000-19005:8000-8005"' in s.compose_path.read_text()
+
     def test_a_stopped_pre_migration_instance_is_not_refused_for_init_owned_rewrites(
         self, monkeypatch, tmp_path, patched
     ):
@@ -939,7 +973,11 @@ class TestInitInstance:
         bench image still carries both; re-initializing it with its own port
         changes no user option, so it starts as it is instead of refusing."""
         stopped = [
-            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            SimpleNamespace(
+                status="exited",
+                labels={"com.docker.compose.service": service},
+                attrs={"State": {"StartedAt": STARTED_AT}},
+            )
             for service in core_init._EXPECTED_COMPOSE_SERVICES
         ]
         s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)

@@ -2812,7 +2812,11 @@ def axi_init(
     (`instance.settings_changed`) and names each change; remove the instance
     with `cwcli rm` (which backs it up) and run init again, or rerun without the
     changed options. For an instance created on another `--port` or widened by
-    `cwcli scale`, it does not compare `--port`.
+    `cwcli scale`, it does not compare `--port`. An instance whose frappe
+    container has never started, such as one left by a first init that failed
+    at `docker compose up`, has no bench to protect, so it neither refuses nor
+    skips recreation there: it pulls images and recreates the containers with
+    the new options.
 
     After the bench+site is created, dev services start by default (reusing the
     same `core.start` behind `cwcli start`/`axi start`), so this leaves a running
