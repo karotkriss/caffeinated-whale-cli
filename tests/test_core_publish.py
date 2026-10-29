@@ -489,6 +489,22 @@ class TestPreflight:
         assert rows["dns"]["state"] == "fail" and "did not create" in rows["dns"]["text"]
         assert not publish.publish_site("p", SITE).data.ok  # the step agrees
 
+    @pytest.mark.parametrize("address", ["203.0.113.300", "2001:db8::1", "erp"])
+    def test_an_override_that_is_not_ipv4_is_refused_before_anything_is_written(
+        self, world, monkeypatch, address
+    ):
+        turn_on(world)
+        with pytest.raises(CwcliError) as published:
+            publish.publish_site("p", SITE, address=address)
+        monkeypatch.setattr(
+            publish.core_docker, "get_frappe_container", lambda p: SimpleNamespace(status="exited")
+        )
+        with pytest.raises(CwcliError) as checked:
+            publish.preflight("p", None, SITE, address=address)
+        for e in (published, checked):
+            assert (e.value.kind, e.value.code) == (ErrorKind.USAGE, "publish.address")
+        assert world.cf.writes() == [] and world.npm.writes() == []
+
     def test_a_name_outside_every_zone_fails(self, world, monkeypatch):
         turn_on(world, proxy=False)
         monkeypatch.setattr(
