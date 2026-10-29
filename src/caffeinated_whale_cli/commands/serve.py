@@ -1389,7 +1389,11 @@ class _Handler(BaseHTTPRequestHandler):
                     _required_str(payload, "project"),
                     str(payload["bench"]) if payload.get("bench") is not None else None,
                     _required_str(payload, "site"),
-                    address=str(payload.get("address") or "").strip() or None,
+                    address=(
+                        str(payload["address"]).strip()
+                        if payload.get("address") is not None
+                        else None
+                    ),
                     proxied=(
                         payload["proxied"] if isinstance(payload.get("proxied"), bool) else None
                     ),

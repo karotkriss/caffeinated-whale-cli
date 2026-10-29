@@ -215,6 +215,14 @@ class TestPublish:
         )
         assert host["forward_port"] == 9999
 
+    def test_an_explicit_empty_choice_clears_the_stored_one(self, world):
+        turn_on(world)
+        publish.publish_site("p", SITE, address="203.0.113.50", access_list_id=3)
+        assert publish.publish_site("p", SITE, address="", access_list_id=0).data.ok
+        [record] = world.cf.records.values()
+        [host] = world.npm.hosts.values()
+        assert (record["content"], host["access_list_id"]) == ("203.0.113.7", 0)
+
     def test_a_hand_added_access_list_is_named_in_the_conflict(self, world):
         turn_on(world)
         publish.publish_site("p", SITE)
@@ -367,6 +375,14 @@ class TestUnpublish:
         assert [w.code for w in result.warnings] == ["publish.left"]
         assert world.npm.hosts == {}
 
+    def test_a_hand_added_access_list_keeps_the_proxy_host(self, world):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        [host] = world.npm.hosts.values()
+        host["access_list_id"] = 3
+        data = publish.unpublish_site(SITE).data
+        assert world.npm.hosts and world.npm.certs and "left as it is" in data.left[0]
+
     def test_a_proxy_host_edited_by_hand_keeps_its_certificate(self, world):
         turn_on(world)
         publish.publish_site("p", SITE)
@@ -405,6 +421,14 @@ class TestCheck:
         publish.publish_site("p", SITE)
         result = publish.check_site(SITE)
         assert result["ok"] and {p["state"] for p in result["parts"].values()} == {"ok"}
+
+    def test_a_hand_added_access_list_is_drift(self, world):
+        turn_on(world)
+        publish.publish_site("p", SITE)
+        next(iter(world.npm.hosts.values()))["access_list_id"] = 3
+        result = publish.check_site(SITE)
+        assert result["parts"]["proxy"]["state"] == "drift"
+        assert "its access list is 3, not none" in result["parts"]["proxy"]["message"]
 
     def test_it_reports_drift_and_repairs_nothing(self, world):
         turn_on(world)
