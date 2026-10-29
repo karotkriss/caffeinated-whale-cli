@@ -1114,6 +1114,37 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
     return Result(status=result.status, data=outcome, warnings=warnings)
 
 
+def _remove_bench(
+    project: str,
+    bench: str | None,
+    consent: bool,
+    secret_values: dict[str, str],
+    emit: _Recorder,
+) -> Result:
+    """Bring a stopped instance's containers up, never the bench, then remove the bench.
+
+    Starting the bench would make ``remove_bench`` refuse it as running.
+    """
+    check_start_port_conflicts(project)
+    container_warnings = core_start.start_stopped_containers(
+        project, core_docker.get_project_containers(project) or []
+    )
+    result = core_rm_bench.remove_bench(
+        project,
+        bench=bench,
+        auto_start=True,
+        consent=consent,
+        db_root_password=_db_root_password(secret_values),
+        on_event=emit,
+    )
+    return Result(
+        status=result.status,
+        data=result.data,
+        warnings=[*container_warnings, *result.warnings],
+        choice=result.choice,
+    )
+
+
 def _run_init(
     target: dict[str, Any], args: dict[str, Any], secret_values: dict[str, str], emit: _Recorder
 ) -> Result:
@@ -1458,13 +1489,7 @@ def _dispatch(
             on_event=emit,
         )
     if verb == "rm-bench":
-        return core_rm_bench.remove_bench(
-            project,
-            bench=bench,
-            consent=consent,
-            db_root_password=_db_root_password(secret_values),
-            on_event=emit,
-        )
+        return _remove_bench(project, bench, consent, secret_values, emit)
     if verb == "init":
         return _run_init(target, args, secret_values, emit)
     if verb == "apps-install":
