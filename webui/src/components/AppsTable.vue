@@ -8,7 +8,7 @@ import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import { menuOption, dangerGroup } from '../data/dialog'
 import UpdatePill from './UpdatePill.vue'
-import { updateItem } from '../data/updates'
+import { updatesFor } from '../data/updates'
 import { openJob } from '../data/job-dialog'
 
 const props = defineProps({
@@ -47,7 +47,7 @@ const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, 
     <ListRows :items="rows" row-key="name" v-slot="{ item }">
       <ListRow :on-click="appOpener(host, item.name)">
         <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
-        <AppNameCell :app="catalogApp(item.name)" :name="item.name"><UpdatePill :item="updateItem(project, bench.index, item.name, host)" compact /></AppNameCell>
+        <AppNameCell :app="catalogApp(item.name)" :name="item.name"><UpdatePill :item="updatesFor(project, bench.index, host).find((u) => u.app === item.name) || null" compact /></AppNameCell>
         <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.versions.join(', ') || 'unknown' }}</span></ListCell>
         <ListCell class="gap-1 overflow-hidden max-md:hidden">
           <span v-if="!item.branches.length" class="text-sm text-ink-gray-5">not installed on a site</span>
