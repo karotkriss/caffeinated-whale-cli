@@ -1,7 +1,7 @@
 # Tasks: `cwcli axi logs` over a bounded `core.read_logs`
 
 Implementation is sequenced AFTER `cwcli-axi-usage-error-toon-u3` lands (both touch `commands/axi.py`);
-firstmate sequenced it. Implemented in phase B; the real-instance E2E (7.2) is the remaining validation,
+the planner sequenced it. Implemented in phase B; the real-instance E2E (7.2) is the remaining validation,
 run in the validation phase (this phase is unit-verified: fast tier green, lint/mypy clean).
 
 ## 1. Baseline pinned before anything moves

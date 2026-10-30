@@ -5,8 +5,8 @@ Several people on one machine share the SAME Frappe instances through the
 locked down hard (cache ``0700``, DB ``0600``, config owned by whoever ran cwcli
 first, a per-user credential-bridge daemon). The second person then hits
 ``EACCES`` on the cache, cannot edit config, and the credential bridge either
-locks them out or hands them the FIRST user's token. See the scout report
-``firstmate/data/cwcli-shared-home-multiuser/report.md``.
+locks them out or hands them the FIRST user's token. See the internal design
+note behind this change.
 
 The fix is a well-trodden pattern (Docker's ``root:docker`` socket, Homebrew on
 Linux's shared setgid tree): an OPT-IN dedicated ``cwcli`` group, a system state
