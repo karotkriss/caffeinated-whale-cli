@@ -2910,7 +2910,11 @@ class _Handler(BaseHTTPRequestHandler):
             # does, which is what an infinite stream means over HTTP/1.1.
             self.send_header("Connection", "close")
             self.end_headers()
-            snapshot: dict = {"instances": self.fleet.snapshot(), "jobs": core_jobs.list_jobs()}
+            snapshot: dict = {
+                "instances": self.fleet.snapshot(),
+                "docker": self.fleet.docker_state(),
+                "jobs": core_jobs.list_jobs(),
+            }
             if not via_hub:
                 snapshot["hosts"] = self.hosts.snapshot()
             self.wfile.write(_sse_frame("snapshot", snapshot, self.hub.next_id()))
@@ -3391,11 +3395,19 @@ def run_daemon(
     # reports focus back to the fleet), so the delta sink is bound after both exist.
     fleet = core_fleet.Fleet()
     hub = _Hub(fleet.set_focus)
-    fleet.set_publish(hub.publish)
+    fleet.set_publish(hub.publish, docker=lambda state: hub.publish_event("docker", state))
     stop = threading.Event()
 
     def _warn(exc: Exception) -> None:
         stderr_console.print(f"[yellow]serve:[/yellow] {exc}")
+
+    def _docker_lost(exc: Exception) -> None:
+        stderr_console.print(
+            f"[yellow]serve:[/yellow] Docker is not reachable ({exc}); retrying until it is back"
+        )
+
+    def _docker_back() -> None:
+        stderr_console.print("[green]serve:[/green] Docker is reachable again")
 
     try:
         fleet.bootstrap()
@@ -3495,14 +3507,15 @@ def run_daemon(
                             _warn(e)
                 schedule_cmd.tick_once(tick_state)
             except Exception as e:  # the tick must never take the daemon down
-                _warn(e)
+                if not fleet.docker_down():  # the event loop already said Docker is gone
+                    _warn(e)
 
     threads = [
         threading.Thread(target=_schedule_loop, daemon=True),
         threading.Thread(
             target=core_fleet.event_loop,
             args=(fleet, stop),
-            kwargs={"on_error": _warn},
+            kwargs={"on_error": _docker_lost, "on_recover": _docker_back},
             daemon=True,
         ),
         threading.Thread(
