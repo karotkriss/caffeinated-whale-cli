@@ -266,7 +266,7 @@ async function start() {
           <p class="mt-1 text-xs" :class="nameState.ok ? (nameState.warn ? 'text-ink-amber-6' : 'text-ink-gray-5') : site.trim() ? 'text-ink-red-5' : 'text-ink-gray-5'">{{ nameState.warn || nameState.text }}</p>
         </div>
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
-        <div v-if="askDbRootPassword">
+        <div v-if="askDbRootPassword" class="sm:col-span-2">
           <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
           <ErrorMessage class="mt-1" :message="rejection" />
         </div>
