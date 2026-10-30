@@ -242,7 +242,8 @@ def test_credential_path_end_to_end_through_the_persistent_bridge(bridge_enabled
     inst = bridge_enabled
 
     # The ensure step wrote the stable shim into the workspace bind mount and
-    # pointed the container's SYSTEM git config at it (any user, lowest priority).
+    # pointed the container's SYSTEM git config at it (any user; git asks the system
+    # helper first, before the global one).
     assert (_workspace(inst.name) / STABLE_SHIM).exists(), "stable shim not in the workspace"
     assert STABLE_SHIM in _system_helpers(inst.name), "system config line missing"
 
