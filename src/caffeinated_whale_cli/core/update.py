@@ -61,9 +61,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ..utils import cache, db_utils
+from ..utils import bench_sites, cache, db_utils
+from . import app_deps, bench_ops, bench_read, credbridge, resolvers, supervision, update_preflight
 from . import apps as core_apps
-from . import bench_ops, bench_read, credbridge, resolvers, supervision, update_preflight
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -922,6 +922,289 @@ def _reown_dubious_apps(
     return reowned
 
 
+_REQUIRED_CODES = frozenset({"app.required_app_missing", "app.required_app_not_installed"})
+
+
+def _dependency_facts(
+    container,
+    *,
+    bench_path: str,
+    apps: list[str],
+    sites_filter: list[str] | None,
+    ranges: bool,
+) -> list[dict]:
+    """The dependency tier, for EVERY named app: what its new code declares.
+
+    Each app's tracked branch is fetched (objects and FETCH_HEAD only, never the
+    working tree, so a refusal leaves the checkout as it was; the pull that follows
+    fetches nothing new) and its ``pyproject.toml``, ``hooks.py`` and ``__init__.py``
+    are read at that tip. A required app the bench does not hold, or that a site with
+    the app installed lacks, is a blocker: neither bench nor the migrate would fetch
+    or install it. ``ranges`` adds the ``[tool.bench.frappe-dependencies]`` check (the
+    core path's content tier already makes it for every app on the bench).
+
+    Fail honest: an app whose tip could not be read is ``app.dependencies_unverified``.
+    """
+    bench = app_deps.read_bench_apps(container, bench_path)
+    if bench is None:
+        return [
+            {
+                "code": "app.dependencies_unverified",
+                "app": None,
+                "error": "the bench's apps could not be read",
+            }
+        ]
+    try:
+        sites = sorted(bench_sites.list_sites(container, bench_path) or [])
+    except Exception:  # noqa: BLE001 - an unknown site set is reported per fact below
+        sites = []
+    if sites_filter:
+        sites = [s for s in sites if s in sites_filter]
+    installed = core_apps._read_installed_apps(container, bench_path, sites, emit=lambda _e: None)
+    facts: list[dict] = []
+    tips: dict[str, tuple[app_deps.Declarations, str]] = {}
+    for app in apps:
+        if app not in bench:
+            continue  # the pull reports app.not_found itself
+        app_path = f"{bench_path}/apps/{app}"
+        try:
+            remote, branch = _tracked_branch(container, app_path, app)
+        except CwcliError as error:
+            facts.append(
+                {"code": "app.dependencies_unverified", "app": app, "error": error.message}
+            )
+            continue
+        code, out = container.exec_run(
+            ["git", "fetch", "--quiet", "--no-tags", remote, branch], workdir=app_path
+        )
+        if code != 0:
+            cause = (_decode(out).strip().splitlines() or ["git fetch failed"])[-1]
+            facts.append({"code": "app.dependencies_unverified", "app": app, "error": cause})
+            continue
+
+        def show(path: str, app_path: str = app_path) -> str | None:
+            code, out = container.exec_run(["git", "show", f"FETCH_HEAD:{path}"], workdir=app_path)
+            return _decode(out) if code == 0 else None
+
+        decl = app_deps.declarations_from(
+            app,
+            pyproject=show("pyproject.toml"),
+            hooks=show(f"{app}/hooks.py"),
+            init=show(f"{app}/__init__.py"),
+            branch=branch,
+        )
+        tips[app] = (decl, f"{remote}/{branch}")
+    versions = {name: d.version for name, d in bench.items()}
+    versions.update({app: d.version or versions.get(app) for app, (d, _) in tips.items()})
+    for app, (decl, ref) in tips.items():
+        if not decl.readable:
+            facts.append({"code": "app.dependencies_unverified", "app": app, "error": decl.error})
+        app_sites = [s for s in sites if app in (installed.get(s, (None, None))[0] or [])]
+        branch = ref.split("/", 1)[1]
+        for entry in decl.required:
+            dep, _pin = app_deps.entry_module(entry)
+            if dep in ("frappe", app):
+                continue
+            if dep not in bench:
+                facts.append(
+                    {
+                        "code": "app.required_app_missing",
+                        "app": app,
+                        "dep": dep,
+                        "ref": ref,
+                        "branch": branch,
+                        "sites": app_sites,
+                    }
+                )
+                continue
+            for site in app_sites:
+                if dep not in (installed.get(site, (None, None))[0] or []):
+                    facts.append(
+                        {
+                            "code": "app.required_app_not_installed",
+                            "app": app,
+                            "dep": dep,
+                            "site": site,
+                            "ref": ref,
+                            "branch": branch,
+                        }
+                    )
+        if not ranges:
+            continue
+        for dep, spec in sorted(decl.ranges.items()):
+            if not app_deps.range_parses(spec):
+                facts.append(
+                    {"code": "app.range_unparseable", "app": app, "dep": dep, "spec": spec}
+                )
+                continue
+            have = versions.get(dep)
+            if have and app_deps.simple_spec(spec, have) is False:
+                facts.append(
+                    update_preflight.dependency_unsatisfied(
+                        app, dep, spec, have, versions.get("frappe")
+                    )
+                )
+    return facts
+
+
+def _install_required(
+    project_name: str,
+    *,
+    bench_path: str,
+    facts: list[dict],
+    dep_sources: dict[str, str] | None,
+    emit: OnEvent,
+    warnings: list[Message],
+) -> bool:
+    """``--with-deps``: fetch and install every required app the facts name, on the
+    sites that have its dependent, BEFORE the pull. True when every one landed.
+
+    Each goes through ``core.apps.install_apps`` with the same plan an install gets
+    (catalog source, the dependent's branch name first, its own range checked, its own
+    required apps first), so the update never grows a second way to fetch an app.
+    """
+    wanted: dict[str, tuple[set[str], str | None, str]] = {}
+    for fact in facts:
+        if fact.get("code") not in _REQUIRED_CODES:
+            continue
+        sites, branch, parent = wanted.get(
+            fact["dep"], (set(), fact.get("branch"), str(fact.get("app")))
+        )
+        sites.update(fact.get("sites") or ([fact["site"]] if fact.get("site") else []))
+        wanted[fact["dep"]] = (sites, branch, parent)
+    ok = True
+    for dep, (sites, branch, parent) in wanted.items():
+        emit(
+            UpdateStepStart(
+                phase="install_required",
+                item=dep,
+                message=f"Fetching and installing {dep}, which {parent}'s new code requires",
+            )
+        )
+
+        def relay(event, dep: str = dep) -> None:
+            if isinstance(event, core_apps.AppsOutput):
+                emit(
+                    UpdateOutput(
+                        phase="install_required", item=dep, stream=event.stream, text=event.text
+                    )
+                )
+
+        status, why = "ok", None
+        try:
+            result = core_apps.install_apps(
+                project_name,
+                [dep],
+                bench_path=bench_path,
+                sites=sorted(sites) or None,
+                fetch_only=not sites,
+                if_not_present=True,
+                with_deps=True,
+                dep_sources=dep_sources,
+                prefer_ref=branch,
+                on_event=relay,
+            )
+            warnings.extend(result.warnings)
+            if result.status is Status.NEEDS_CHOICE:
+                status, why = "failed", result.choice.prompt if result.choice else "a choice"
+            elif result.data is None or not result.data.ok:
+                status, why = "failed", f"installing {dep} failed"
+        except CwcliError as error:
+            status, why = "failed", error.message
+        if status != "ok":
+            ok = False
+            warnings.append(Message("app.required_app_install_failed", f"{dep}: {why}"))
+        emit(UpdateStepEnd(phase="install_required", item=dep, status=status, message=why))
+    return ok
+
+
+def _app_checks(
+    frappe_container,
+    *,
+    project_name: str,
+    bench: str | None,
+    path: str | None,
+    bench_path: str,
+    apps: list[str],
+    sites_filter: list[str] | None,
+    fix_branches: bool,
+    with_deps: bool,
+    dep_sources: dict[str, str] | None,
+    emit: OnEvent,
+    warnings: list[Message],
+) -> tuple[list[PreflightFinding], Result[UpdateReport] | None]:
+    """The preflight of an update that resets no core app: the dependency tier alone.
+
+    A plain ``git pull`` cannot lose work the way the core reset can, so the reset's
+    predictions do not apply; what does is the new code's own declarations. A blocker
+    refuses with nothing pulled, the same report shape the core path returns.
+    """
+    emit(UpdateStepStart(phase="preflight"))
+    started = time.monotonic()
+
+    def check() -> list[dict]:
+        return _dependency_facts(
+            frappe_container,
+            bench_path=bench_path,
+            apps=apps,
+            sites_filter=sites_filter,
+            ranges=True,
+        )
+
+    facts = check()
+    changed = False
+    if fix_branches and update_preflight.fixable_branches(facts):
+        changed = _switch_mismatched_apps(project_name, bench_path, facts, emit, warnings)
+    if with_deps and any(f.get("code") in _REQUIRED_CODES for f in facts):
+        changed = (
+            _install_required(
+                project_name,
+                bench_path=bench_path,
+                facts=facts,
+                dep_sources=dep_sources,
+                emit=emit,
+                warnings=warnings,
+            )
+            or changed
+        )
+    if changed:
+        facts = check()
+    findings = update_preflight.classify(facts, project=project_name, bench=bench, path=path)
+    blocked = any(f.severity == update_preflight.BLOCKER for f in findings)
+    emit(
+        UpdatePreflight(
+            findings=findings,
+            summary=f"{len(apps)} app(s) on {bench_path}: required apps and Frappe ranges at "
+            f"the new tip ({time.monotonic() - started:.1f}s)",
+            blocked=blocked,
+        )
+    )
+    if not blocked:
+        return findings, None
+    report = _build_report(
+        project_name=project_name,
+        bench_path=bench_path,
+        apps=apps,
+        frappe_reset=False,
+        affected=set(),
+        migrated=[],
+        failed_apps=[],
+        unknown_apps=[],
+        failed_maintenance_enable=[],
+        failed_migrations=[],
+        unknown_migrations=[],
+        failed_builds=[],
+        unknown_builds=[],
+        failed_cache_clears=[],
+        failed_website_cache_clears=[],
+        failed_maintenance_disable=[],
+        preflight=findings,
+        preflight_blocked=True,
+        aborted=False,
+    )
+    return findings, Result(status=Status.WARNING, data=report, warnings=warnings)
+
+
 def _frappe_checks(
     frappe_container,
     *,
@@ -933,6 +1216,9 @@ def _frappe_checks(
     preflight: bool,
     force: bool,
     fix_branches: bool = False,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
+    sites_filter: list[str] | None = None,
     emit: OnEvent,
     warnings: list[Message],
 ) -> tuple[list[PreflightFinding], list[str], Result[UpdateReport] | None]:
@@ -954,7 +1240,7 @@ def _frappe_checks(
     emit(UpdateStepStart(phase="preflight" if preflight else "local_work"))
 
     def check() -> update_preflight.PreflightOutcome:
-        return update_preflight.run_preflight(
+        outcome = update_preflight.run_preflight(
             frappe_container,
             bench_path,
             project=project_name,
@@ -962,8 +1248,37 @@ def _frappe_checks(
             path=path,
             local_only=not preflight,
         )
+        if not preflight:
+            return outcome
+        # The dependency tier's required apps; the content tier already checks every
+        # app's frappe-dependencies range at its fetched tip.
+        extra = _dependency_facts(
+            frappe_container,
+            bench_path=bench_path,
+            apps=apps,
+            sites_filter=sites_filter,
+            ranges=False,
+        )
+        if not extra:
+            return outcome
+        added = update_preflight.classify(extra, project=project_name, bench=bench, path=path)
+        return dataclasses.replace(
+            outcome,
+            facts=outcome.facts + extra,
+            findings=update_preflight.sort_findings(outcome.findings + added),
+        )
 
     outcome = check()
+    if with_deps and any(f.get("code") in _REQUIRED_CODES for f in outcome.facts):
+        if _install_required(
+            project_name,
+            bench_path=bench_path,
+            facts=outcome.facts,
+            dep_sources=dep_sources,
+            emit=emit,
+            warnings=warnings,
+        ):
+            outcome = check()
     if force and _reown_dubious_apps(frappe_container, bench_path, outcome.findings, warnings):
         outcome = check()
     # On a staging server (2026-10-28), two more failures the preflight now prevents:
@@ -1064,6 +1379,8 @@ def update(
     force: bool = False,
     preflight: bool = True,
     fix_branches: bool = False,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
     auto_start: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[UpdateReport]:
@@ -1075,6 +1392,15 @@ def update(
     needs can come from another app than the one updated - a frappe that gained
     ``pyarrow`` fails the migrate of a site whose update named only a custom app.
     ``skip_requirements`` opts out; the report then says ``requirements="skipped"``.
+
+    Every named app's new tip is read before anything is pulled (``preflight``; the
+    dependency tier): a newly required app the bench lacks, or a site lacks, refuses
+    the update with nothing pulled, naming ``--with-deps``. ``with_deps`` fetches and
+    installs those apps on the affected sites first (through ``core.apps``' install
+    plan, ``dep_sources`` answering an ambiguous source), then the pull and migrate
+    run as before. A non-core app's new Frappe range that no longer fits the bench is
+    ``app.frappe_dependency_unsatisfied``, as it is for the core path, and
+    ``fix_branches`` switches it the same way.
 
     ``fix_branches`` (the core path) lets the preflight SWITCH an app whose declared
     frappe-dependencies the bench cannot satisfy to the matching ``version-N`` branch
@@ -1166,12 +1492,32 @@ def update(
                 preflight=preflight,
                 force=force,
                 fix_branches=fix_branches,
+                with_deps=with_deps,
+                dep_sources=dep_sources,
+                sites_filter=sites,
                 emit=emit,
                 warnings=warnings,
             )
             if refusal is not None:
                 return refusal
             build = True  # a core update rebuilds assets, as bench's own update does
+        elif preflight:
+            findings, refusal = _app_checks(
+                frappe_container,
+                project_name=project_name,
+                bench=bench,
+                path=path_selector,
+                bench_path=bench_path,
+                apps=apps,
+                sites_filter=sites,
+                fix_branches=fix_branches,
+                with_deps=with_deps,
+                dep_sources=dep_sources,
+                emit=emit,
+                warnings=warnings,
+            )
+            if refusal is not None:
+                return refusal
 
         return _update_apps(
             frappe_container,

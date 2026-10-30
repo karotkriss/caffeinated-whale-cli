@@ -727,6 +727,8 @@ def run_app_update(
     force: bool = False,
     no_preflight: bool = False,
     fix_branches: bool = False,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
     yes: bool = False,
     sites: list[str] | None = None,
     json_output: bool = False,
@@ -787,6 +789,8 @@ def run_app_update(
             force=force,
             preflight=not no_preflight,
             fix_branches=fix_branches,
+            with_deps=with_deps,
+            dep_sources=dep_sources or None,
             auto_start=yes,
             on_event=renderer,
         )
@@ -840,6 +844,11 @@ SKIP_REQUIREMENTS_HELP = (
     "Do not run 'bench setup requirements' before migrating. By default the bench's "
     "Python requirements are reinstalled for every app first, so a package the new code "
     "needs (from any app, frappe included) is installed before the sites migrate."
+)
+UPDATE_WITH_DEPS_HELP = (
+    "When an app's new code requires an app (required_apps) the bench or a site lacks, "
+    "fetch and install it on the sites that have the app first, then update. Without it "
+    "the update refuses with nothing pulled."
 )
 FIX_BRANCHES_HELP = (
     "Updating frappe: when an app's declared frappe-dependencies do not fit this bench "
@@ -993,6 +1002,7 @@ def update(
         help=NO_PREFLIGHT_HELP,
     ),
     fix_branches: bool = typer.Option(False, "--fix-branches", help=FIX_BRANCHES_HELP),
+    with_deps: bool = typer.Option(False, "--with-deps", help=UPDATE_WITH_DEPS_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -1036,6 +1046,7 @@ def update(
         force=force,
         no_preflight=no_preflight,
         fix_branches=fix_branches,
+        with_deps=with_deps is True,
         yes=yes,
         sites=sites,
     )

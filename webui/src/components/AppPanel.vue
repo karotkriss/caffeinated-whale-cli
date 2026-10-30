@@ -35,6 +35,15 @@ function versionLine(i) {
 }
 const app = computed(() => appPanel.app)
 const installed = computed(() => app.value && app.value.state !== 'remote')
+// What the default branch declares (display only; the install checks the picked ref).
+const declaresLine = computed(() => {
+  const d = app.value?.declares
+  if (!d) return ''
+  const parts = []
+  if (d.frappe_range) parts.push(`Needs Frappe ${d.frappe_range}`)
+  if (d.required_apps?.length) parts.push(`requires ${d.required_apps.join(', ')}`)
+  return parts.join(' · ')
+})
 const canInstall = computed(() => !!app.value?.source?.url || installed.value)
 const running = (project) => !!findInstance(project)?.container_running
 const present = (i) => i.project_state === 'present'
@@ -104,6 +113,7 @@ const LOGO_SOURCE = {
               <Badge v-if="app.source?.archived" size="sm" theme="amber" variant="outline" label="archived" />
             </div>
             <div class="mt-1 font-mono text-sm text-ink-gray-5">{{ app.name }}</div>
+            <p v-if="declaresLine" class="mt-1 text-sm text-ink-gray-6" :title="`Declared on ${app.source?.default_branch || 'the default branch'}; the install checks the branch you pick.`">{{ declaresLine }}</p>
             <p class="mt-2 text-p-base text-ink-gray-7">{{ app.description || 'No description in the repository.' }}</p>
           </div>
         </div>

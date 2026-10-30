@@ -10,6 +10,8 @@ import { Alert, Button, Checkbox, Combobox, Dialog, ErrorMessage, MultiSelect, S
 import { benchRunning, ensureRunning } from '../data/start-gate'
 import { getJson } from '../data/api'
 import CommandLine from './CommandLine.vue'
+import DependencyTree from './DependencyTree.vue'
+import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { installSheet } from '../data/app-panel'
 import { localInstances, details, loadDetail, parseApp, benchName } from '../data/fleet'
 import { createJob } from '../data/jobs'
@@ -23,11 +25,19 @@ const fetchOnly = ref(false)
 const running = ref(false)
 const error = ref(null)
 
+// The dependency plan (direction B): read live as the app, bench, sites and branch
+// change. The checkbox is the consent (--with-deps); a typed name is the override.
+const withDeps = ref(false)
+const override = ref(false)
+const depSources = ref({})
 watch(() => installSheet.open, (open) => {
   if (!open) return
   error.value = null
   sites.value = []
   fetchOnly.value = false
+  withDeps.value = false
+  override.value = false
+  depSources.value = {}
   branch.value = app.value?.source?.default_branch || ''
   // Default to a running instance that already holds the app, else the first running one.
   const holders = new Set((app.value?.installs || []).map((i) => i.project))
@@ -74,7 +84,19 @@ const refOptions = computed(() => [
   { type: 'custom', key: 'typed', label: 'Use what I typed', description: 'a ref the list does not show', condition: ({ query }) => !!query && !refs.value.branches.includes(query) && !refs.value.tags.includes(query), onClick: ({ query }) => (branch.value = query) },
 ])
 const spec = computed(() => (onBench.value ? app.value?.name : app.value?.source?.url ? `${app.value.source.url}${app.value.source.url.endsWith('.git') ? '' : '.git'}` : null))
-const ready = computed(() => !!project.value && bench.value != null && !!spec.value && !running.value && (fetchOnly.value || sites.value.length > 0))
+const { plan, loading: planLoading, error: planError } = usePlan(() => (installSheet.open && project.value && bench.value != null && spec.value && instRunning.value
+  ? { project: project.value, bench: String(bench.value), target: [spec.value], ref: onBench.value ? '' : branch.value.trim(), site: fetchOnly.value ? [] : sites.value, fetch_only: fetchOnly.value || !sites.value.length, dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
+  : null))
+const needsConsent = computed(() => requiredNodes(plan.value).length > 0)
+// Start waits for a plan that does not block: a blocker it cannot pass (unless it is
+// a Frappe range and the name was typed), or required apps without the box ticked.
+const planGate = computed(() => {
+  if (!instRunning.value || planError.value || !plan.value) return null
+  if (planBlockers(plan.value).length && !(onlyOverridable(plan.value) && override.value)) return 'blocked'
+  if (needsConsent.value && !withDeps.value) return 'consent'
+  return null
+})
+const ready = computed(() => !!project.value && bench.value != null && !!spec.value && !running.value && (fetchOnly.value || sites.value.length > 0) && !planLoading.value && !planGate.value)
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const cli = computed(() => {
   if (!spec.value) return 'cwcli apps install <instance> <repo-url>'
@@ -82,6 +104,9 @@ const cli = computed(() => {
   for (const s of sites.value) line += ` --site ${q(s)}`
   if (branch.value.trim() && !onBench.value) line += ` --branch ${q(branch.value.trim())}`
   if (fetchOnly.value) line += ' --fetch-only'
+  if (withDeps.value && needsConsent.value) line += ' --with-deps'
+  for (const [a, u] of Object.entries(depSources.value)) line += ` --dep-source ${q(`${a}=${u}`)}`
+  if (override.value) line += ' --ignore-frappe-range'
   return line
 })
 
@@ -102,7 +127,15 @@ async function start() {
     const record = await createJob({
       verb: 'apps-install',
       target: { project: project.value, bench: String(bench.value) },
-      args: { apps: [spec.value], sites: fetchOnly.value ? [] : sites.value, branch: onBench.value ? null : branch.value.trim() || null, fetch_only: fetchOnly.value },
+      args: {
+        apps: [spec.value],
+        sites: fetchOnly.value ? [] : sites.value,
+        branch: onBench.value ? null : branch.value.trim() || null,
+        fetch_only: fetchOnly.value,
+        ...(withDeps.value && needsConsent.value ? { with_deps: true } : {}),
+        ...(Object.keys(depSources.value).length ? { dep_sources: depSources.value } : {}),
+        ...(override.value ? { ignore_frappe_range: true } : {}),
+      },
     })
     trackJob(record.id)
     installSheet.open = false
@@ -138,6 +171,9 @@ async function start() {
           </div>
         <Checkbox v-model="fetchOnly" label="Fetch only; do not install on sites" />
       </div>
+      <DependencyTree v-if="spec && project && bench != null && instRunning" v-model:consent="withDeps" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" ask-consent />
+      <p v-else-if="spec && project && !instRunning" class="text-p-sm text-ink-gray-5">The app's Frappe range and required apps are checked once {{ project }} is running, before anything is fetched.</p>
+      <p v-if="planGate === 'consent'" class="text-p-sm text-ink-amber-6">Tick the box to fetch and install the required apps, or the install cannot run: the app fails without them.</p>
       <Alert v-if="confirming" theme="orange" :title="`Start ${instRunning ? benchName(theBench) : project} first?`" :description="`${instRunning ? `Bench ${benchName(theBench)} of ${project}` : project} is not running. Starting it is part of this install; the job then fetches and installs as usual.`" />
       <Alert v-else-if="needsStart" theme="gray" :title="`${instRunning ? benchName(theBench) : project} is stopped`" description="Its sites are listed anyway; starting it will be confirmed before the install runs." />
       <Alert v-else-if="!spec" theme="gray" title="No repository URL for this app" description="This app has no git remote cwcli can fetch from; pick a bench that already holds it in apps/." />

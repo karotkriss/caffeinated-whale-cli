@@ -55,12 +55,20 @@ def new_bench(
     apps: list[str] | None = None,
     bench_parent: str = "/workspace",
     db_root_password: str | None = None,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
+    ignore_frappe_range: bool = False,
     after_init: Callable[[str], object] | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[NewBenchReport]:
     """Add a bench to ``project``. ``after_init(bench_path)`` runs once the bench and
     its site exist (the job runner's cache refresh), before the supervisor launch
-    and the app installs, which both resolve the bench by its path."""
+    and the app installs, which both resolve the bench by its path.
+
+    The extra ``apps`` go through ``core.apps.install_apps``' dependency plan against
+    the bench just built: ``with_deps`` consents to their required apps, and a range
+    that does not fit refuses them (the bench and its site stay; the apps are named
+    as failed)."""
     emit = on_event or (lambda _e: None)
     warnings: list[Message] = []
     bench_name = core_init.validate_bench_slug(bench_name)
@@ -155,9 +163,23 @@ def new_bench(
     if wanted:
         try:
             apps_result = core_apps.install_apps(
-                project, wanted, bench_path=bench_path, sites=[site_name], on_event=emit
+                project,
+                wanted,
+                bench_path=bench_path,
+                sites=[site_name],
+                with_deps=with_deps,
+                dep_sources=dep_sources,
+                ignore_frappe_range=ignore_frappe_range,
+                on_event=emit,
             )
             warnings.extend(apps_result.warnings)
+            if apps_result.status is Status.NEEDS_CHOICE and apps_result.choice is not None:
+                warnings.append(
+                    Message(
+                        "new_bench.apps_need_consent",
+                        f"The extra apps were not installed: {apps_result.choice.prompt}",
+                    )
+                )
             for row in getattr(apps_result.data, "results", []) or []:
                 (installed if getattr(row, "ok", False) else failed).append(
                     getattr(row, "app", "") or ""

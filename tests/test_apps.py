@@ -34,6 +34,14 @@ from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import update as core_update
 from tests.batched_probes import emulate_batched
 
+
+@pytest.fixture(autouse=True)
+def _no_dependency_tier(monkeypatch):
+    """These tests drive the update's reset, pull and migrate phases against fakes that
+    answer no declarations reader; the dependency tier has its own tests
+    (``test_update_dependencies.py``), so here it finds nothing."""
+    monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
+
 # ------------------------------------------------------------------- fake container
 
 

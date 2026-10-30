@@ -28,6 +28,14 @@ from .test_apps import (
     fail_requirements_like_uv,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_dependency_tier(monkeypatch):
+    """These tests drive the update's reset, pull and migrate phases against fakes that
+    answer no declarations reader; the dependency tier has its own tests
+    (``test_update_dependencies.py``), so here it finds nothing."""
+    monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
+
 BENCH = "/workspace/frappe-bench"
 
 
