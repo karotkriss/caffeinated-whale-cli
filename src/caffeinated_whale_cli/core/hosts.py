@@ -1444,6 +1444,7 @@ class HostManager:
         self._lock = threading.RLock()
         self._links: dict[str, HostLink] = {}
         self._off: dict[str, HostRecord] = {}  # hosts this daemon runs no link for
+        self._observed: dict[str, tuple[float | None, float | None]] = {}
         self._off_state = (TRANSPORT_OFF, TRANSPORT_OFF_REASON)
         self._instances: dict[str, list[dict]] = {}
         self._jobs: dict[str, list[dict]] = {}
@@ -1516,11 +1517,15 @@ class HostManager:
                 if rec is None or (old is not None and rec.added_at != old.added_at):
                     self._instances.pop(host_id, None)
                     self._jobs.pop(host_id, None)
+                    self._observed.pop(host_id, None)
                     self._publish("host_removed", {"host": host_id})
             for host_id, link in list(self._links.items()):
                 rec = records.get(host_id)
                 if member or rec is None or rec != link.host or rec.transport not in available:
                     del self._links[host_id]
+                    view = link.view()
+                    if rec is not None and rec.added_at == link.host.added_at:
+                        self._observed[host_id] = (view["since"], view["last_seen"])
                     link.stop()
                     try:
                         link.transport.close(link.host)
@@ -1542,6 +1547,10 @@ class HostManager:
                     on_frame=self._frame,
                     protocol=self._protocol,
                 )
+                since, last_seen = self._observed.get(host_id, (None, None))
+                if since is not None:
+                    link.status.since = since
+                link.status.last_seen = last_seen
                 link.focus = self._focus.get(host_id)
                 self._links[host_id] = link
                 link.start()
@@ -1560,6 +1569,7 @@ class HostManager:
 
     def _off_view(self, rec: HostRecord) -> dict[str, Any]:
         state, reason = self._off_state
+        since, last_seen = self._observed.get(rec.id, (None, None))
         return {
             "id": rec.id,
             "name": rec.name,
@@ -1572,8 +1582,8 @@ class HostManager:
             "added_by": rec.added_by,
             "state": state,
             "reason": reason,
-            "since": None,
-            "last_seen": None,
+            "since": since,
+            "last_seen": last_seen,
             "cap": None,
             "remote": None,
             "drops_10m": 0,
@@ -1649,6 +1659,7 @@ class HostManager:
                     "instances": _unknownify(self._instances.get(host_id, []), view),
                     "jobs": list(self._jobs.get(host_id, [])),
                     "stale": True,
+                    "since": view["since"],
                     "last_seen": view["last_seen"],
                 },
             )
