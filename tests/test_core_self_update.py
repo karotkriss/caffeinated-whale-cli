@@ -51,6 +51,8 @@ def tool_env(tmp_path, monkeypatch):
         "[tool]\nentrypoints = [\n"
         f'  {{ name = "cwcli", install-path = "{tmp_path}/usr/bin/cwcli" }},\n]\n'
     )
+    (tmp_path / "usr" / "bin").mkdir(parents=True)
+    (tmp_path / "usr" / "bin" / "cwcli").symlink_to(env / "bin" / "cwcli")
     for mod in (core_version, su):
         monkeypatch.setattr(mod, "install_root", lambda: env)
     monkeypatch.setattr(su, "_install_dir", lambda: site)
@@ -92,11 +94,13 @@ class TestUpgrade:
 
     def test_a_failed_upgrade_puts_the_env_back_and_says_why(self, tool_env, monkeypatch):
         marker = tool_env / "lib" / "site-packages" / "marker.txt"
+        executable = tool_env.parent.parent.parent / "usr" / "bin" / "cwcli"
         FakeUpgrade(
             monkeypatch,
             code=1,
             lines=("Updated\n", "error: Failed to install executable\n", "  Permission denied\n"),
-            edit=lambda: marker.write_text("new"),
+            # uv replaces the packages and removes the old executable, then fails.
+            edit=lambda: (marker.write_text("new"), executable.unlink()),
         )
         monkeypatch.setattr(su, "installed_version", lambda: "1.0.0")
         with pytest.raises(CwcliError) as e:
@@ -105,6 +109,8 @@ class TestUpgrade:
         assert "Permission denied" in e.value.message
         assert "cwcli 1.0.0 is still installed" in e.value.message
         assert marker.read_text() == "old"  # the half-done upgrade was rolled back
+        assert executable.is_symlink()  # and `cwcli` is back on PATH
+        assert executable.readlink() == tool_env / "bin" / "cwcli"
         assert not tool_env.with_name(tool_env.name + ".cwcli-rollback").exists()
 
     def test_an_upgrade_that_changed_nothing_is_not_reported_as_done(self, tool_env, monkeypatch):
