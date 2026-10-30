@@ -243,6 +243,33 @@ class TestPlan:
         plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
         assert plan.nodes[0].ref == "develop"
 
+    def test_the_ref_also_fits_the_range_the_requiring_app_declares(self):
+        world = _appointments_world()
+        world.repos[APPOINTMENTS]["master"] = Declarations(
+            app="appointments",
+            ranges={"customization": "<0.20.0"},
+            required=["customization"],
+            branch="master",
+        )
+        world.repos[CUSTOMIZATION]["version-15"] = Declarations(
+            app="customization", version="0.8.1", branch="version-15"
+        )
+        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        assert plan.nodes[0].ref == "version-15" and plan.ok  # 0.23.3 on master would not fit
+
+    def test_a_planned_dependency_that_fits_no_branch_says_so_not_on_this_bench(self):
+        world = _appointments_world()
+        world.repos[APPOINTMENTS]["master"] = Declarations(
+            app="appointments",
+            ranges={"customization": ">=5.0.0"},
+            required=["customization"],
+            branch="master",
+        )
+        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
+        assert "no branch of customization" in blocker.message
+        assert "on this bench" not in blocker.message
+
     def test_a_frappe_range_that_does_not_fit_blocks_and_is_overridable(self):
         world = _appointments_world()
         plan = world.plan(_bench(), [(APPOINTMENTS, "develop")])  # develop declares nothing

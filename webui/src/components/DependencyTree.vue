@@ -59,21 +59,23 @@ const readAt = computed(() => requested.value.map((n) => n.ref).filter(Boolean)[
         <li v-for="n in nodes" :key="n.app" class="flex gap-2 px-3 py-2" :class="!n.requested && 'pl-7'">
           <span v-if="!n.requested" class="lucide-corner-down-right mt-0.5 size-4 shrink-0 text-ink-gray-4" aria-hidden="true" />
           <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span class="font-mono text-sm text-ink-gray-9">{{ n.app }}</span>
-              <span class="text-xs text-ink-gray-5">{{ [n.on_bench && !n.requested ? 'on this bench' : n.ref, n.version].filter(Boolean).join(' · ') }}</span>
-              <span v-if="frappeRange(n)" class="inline-flex items-center gap-1 font-mono text-xs" :class="frappeRange(n).ok === false ? 'text-ink-red-6' : 'text-ink-gray-6'">
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                <span class="font-mono text-sm text-ink-gray-9">{{ n.app }}</span>
+                <span class="text-xs text-ink-gray-5">{{ [n.on_bench && !n.requested ? 'on this bench' : n.ref, n.version].filter(Boolean).join(' · ') }}</span>
+              </div>
+              <Badge class="shrink-0" size="sm" :theme="ACTION_THEME[n.action]" variant="subtle" :label="ACTION_LABEL[n.action]" />
+            </div>
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-gray-5">
+              <span v-if="frappeRange(n)" class="inline-flex items-center gap-1 font-mono" :class="frappeRange(n).ok === false ? 'text-ink-red-6' : 'text-ink-gray-6'">
                 frappe {{ frappeRange(n).spec }}
                 <span v-if="frappeRange(n).ok === true" class="lucide-check size-3.5 text-ink-green-5" aria-label="fits this bench" />
                 <span v-else-if="frappeRange(n).ok === false" class="lucide-x size-3.5" aria-label="does not fit this bench" />
               </span>
-              <span v-else-if="n.readable" class="text-xs text-ink-gray-4">no Frappe range declared</span>
-              <Badge size="sm" :theme="ACTION_THEME[n.action]" variant="subtle" :label="ACTION_LABEL[n.action]" />
+              <span v-else-if="n.readable">no Frappe range declared</span>
+              <span v-else>declarations not read</span>
             </div>
-            <p v-if="!n.requested || n.source" class="mt-0.5 break-words text-xs text-ink-gray-5">
-              <template v-if="!n.requested">required by {{ n.parent }}<template v-if="!n.on_bench"> · not on this bench</template><template v-if="n.source"> · {{ n.on_bench ? '' : 'from ' }}{{ n.source }}</template></template>
-              <template v-else>{{ n.source }}</template>
-            </p>
+            <p v-if="!n.requested || (n.source && !n.on_bench)" class="mt-0.5 break-words text-xs text-ink-gray-5">{{ [n.requested ? '' : `required by ${n.parent}`, n.source && !n.on_bench ? `from ${n.source}` : ''].filter(Boolean).join(' · ') }}</p>
             <p v-for="r in otherRanges(n)" :key="r.dep" class="mt-0.5 font-mono text-xs text-ink-red-6">needs {{ r.dep }} {{ r.spec }}, bench has {{ r.have }}</p>
           </div>
         </li>
@@ -91,7 +93,7 @@ const readAt = computed(() => requested.value.map((n) => n.ref).filter(Boolean)[
         </div>
         <p v-for="n in notices" :key="`${n.code}-${n.app}-${n.message}`" class="text-xs text-ink-gray-5">{{ n.message }}</p>
         <template v-if="required.length && !blockers.length">
-          <Checkbox v-if="askConsent" v-model="consent" :label="`Also fetch and install ${required.map((n) => n.app).join(', ')} first`" />
+          <Checkbox v-if="askConsent" v-model="consent" :label="`Also ${required.some((n) => n.action.includes('install')) ? 'fetch and install' : 'fetch'} ${required.map((n) => n.app).join(', ')} first`" />
           <p class="text-p-sm text-ink-gray-6" :class="askConsent && 'pl-6'">{{ consentNote || `Required apps are installed first.` }}<template v-if="order.length"> Order{{ sitesText ? ` on ${sitesText}` : '' }}: {{ order.join(', ') }}.</template></p>
         </template>
         <div v-if="overridable" class="space-y-1.5 rounded-4 border border-outline-red-2 p-2.5">
