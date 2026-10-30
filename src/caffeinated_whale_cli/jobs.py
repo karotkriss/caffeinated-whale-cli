@@ -40,6 +40,7 @@ from .core import backup as core_backup
 from .core import backup_drill as core_backup_drill
 from .core import backup_store as core_backup_store
 from .core import bench_ops as core_bench_ops
+from .core import db_access as core_db_access
 from .core import db_password as core_db_password
 from .core import dev_mode as core_dev_mode
 from .core import docker as core_docker
@@ -1572,6 +1573,17 @@ def _dispatch(
                 )
         fetch = [str(u) for u in (args.get("fetch") or []) if u]
         if fetch:
+            # The root password is checked before the fetch, not minutes later at new-site.
+            prologue = core_resolvers.resolve_container_and_bench(project, bench, None)
+            if isinstance(prologue, tuple):
+                unverified = core_db_access.verify_root_password(
+                    prologue[0],
+                    project,
+                    _db_root_password(secret_values),
+                    bench_path=prologue[1],
+                )
+                if unverified is not None:
+                    emit.lifecycle("db_password_unverified", unverified.text)
             # Captain note 49: a remote pick is fetched onto the bench FIRST (no site
             # install yet); a failed fetch stops the job before any site exists.
             fetched = core_apps.install_apps(
@@ -1923,8 +1935,6 @@ def _dispatch(
             on_event=emit,
         )
     if verb == "repair-db-access":
-        from .core import db_access as core_db_access
-
         container = core_docker.get_frappe_container(project)
         resolved = core_resolvers.resolve_bench(project, bench, None)
         if resolved is not None and resolved.status is Status.NEEDS_CHOICE:

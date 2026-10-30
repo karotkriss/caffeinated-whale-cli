@@ -218,7 +218,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
 | `--frappe-url TEXT` | Custom Frappe repository URL to build from (a fork), passed to `bench init --frappe-path`. Omit to use the default `frappe/frappe` repo. Pair with `--frappe-branch` to check out the fork's branch. A private fork authenticates through the same credential bridge as `apps install`/`apps update` (host `gh`/`glab`, no token in the container); sign in on the host first |
-| `--db-root-password TEXT` | MariaDB root password. On a new instance MariaDB is created with it (handed over as a compose secret, never written into `docker-compose.yml`) and cwcli remembers it in `~/.cwcli/projects/{project_name}/conf/db-root-password` for later `rm-site`, `rm-bench`, `restore`, and re-run `init` commands. Omitted, the instance's remembered password is used, else the default `123`. An instance whose MariaDB already exists keeps the password it was created with |
+| `--db-root-password TEXT` | MariaDB root password. On a new instance MariaDB is created with it (handed over as a compose secret, never written into `docker-compose.yml`) and cwcli remembers it in `~/.cwcli/projects/{project_name}/conf/db-root-password` for later `rm-site`, `rm-bench`, `restore`, and re-run `init` commands. Omitted, the instance's remembered password is used, else the default `123`. An instance whose MariaDB already exists keeps the password it was created with, and init checks the password against it with one connection before building a new site, so a wrong one fails in seconds |
 | `--admin-password TEXT` | Administrator password for the site, used verbatim. If omitted, a strong password is generated and printed once (interactive runs only); a non-interactive run must supply this flag |
 | `--install-erpnext` | Install ERPNext application after initialization |
 | `--erpnext-branch TEXT` | ERPNext branch to use (default: version-16) |
@@ -419,13 +419,15 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `--erpnext` | Install ERPNext on the first site |
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
 | `--admin-password TEXT` | Administrator password for the first site |
-| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
 | `-v`, `--verbose` | Stream bench's output |
 
 The Administrator password comes from `--admin-password`, else the `CWCLI_ADMIN_PASSWORD` environment variable, else a hidden prompt.
 A non-interactive session with neither refuses with exit 2.
 A bench name that already exists is refused, never reused.
+The new bench shares the instance's MariaDB, so cwcli checks the root password with one connection before it builds anything, and a wrong one fails in seconds with nothing changed.
+If a later step fails, cwcli removes the half-built bench (and the half-made site's database), so a retry with the same name works, and the error says so.
 The command exits 1 when an extra app fails to install or the bench's processes did not start, even though the bench was created.
 
 ```bash
@@ -454,12 +456,13 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 | `--default` | Make it the bench's default site |
 | `--dev-mode` | Turn developer mode on for the new site |
 | `--admin-password TEXT` | Administrator password |
-| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
 | `-v`, `--verbose` | Stream bench's output |
 
 The Administrator password is resolved the same way as for `new-bench`: the flag, then `CWCLI_ADMIN_PASSWORD`, then a hidden prompt, and a non-interactive session with neither refuses with exit 2.
 A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
+cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
 
 ```bash
 CWCLI_ADMIN_PASSWORD=... cwcli new-site my-project shop.localhost --app erpnext --default

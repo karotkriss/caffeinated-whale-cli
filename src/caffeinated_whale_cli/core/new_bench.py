@@ -11,14 +11,16 @@ are not a choice - cwcli picks them from the Frappe major, as init does.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..utils import config_utils
 from . import apps as core_apps
+from . import db_password, resolvers
 from . import docker as core_docker
 from . import init as core_init
-from . import resolvers
 from . import start as core_start
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -62,6 +64,7 @@ def new_bench(
     emit = on_event or (lambda _e: None)
     warnings: list[Message] = []
     bench_name = core_init.validate_bench_slug(bench_name)
+    site_name = core_init.validate_new_site_name(site_name)
     if not admin_password:
         raise CwcliError(
             ErrorKind.USAGE,
@@ -74,21 +77,55 @@ def new_bench(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
-    init_result = core_init.init_bench(
-        project,
-        bench_name=bench_name,
-        site_name=site_name,
-        bench_parent=bench_parent,
-        frappe_ref=ref,
-        frappe_url=frappe_url or None,
-        db_root_password=db_root_password,
-        admin_password=admin_password,
-        reuse_bench=False,  # an existing bench is a CONFLICT here, never silently reused
-        install_erpnext=install_erpnext,
-        erpnext_branch=erpnext_branch or ref,
-        stream_output=True,
-        on_event=emit,
-    )
+    planned_path = f"{bench_parent.rstrip('/') or '/workspace'}/{bench_name}"
+    built = False
+
+    def watch(event: Any) -> None:
+        nonlocal built
+        if isinstance(event, core_init.InitStepStart) and event.phase == "bench_init":
+            built = True
+        emit(event)
+
+    try:
+        init_result = core_init.init_bench(
+            project,
+            bench_name=bench_name,
+            site_name=site_name,
+            bench_parent=bench_parent,
+            frappe_ref=ref,
+            frappe_url=frappe_url or None,
+            db_root_password=db_root_password,
+            admin_password=admin_password,
+            reuse_bench=False,  # an existing bench is a CONFLICT here, never silently reused
+            install_erpnext=install_erpnext,
+            erpnext_branch=erpnext_branch or ref,
+            stream_output=True,
+            on_event=watch,
+        )
+    except Exception as exc:
+        # A bench this call's own `bench init` started is removed, so a retry with the
+        # same name works (anything refused before that step, such as an existing
+        # bench, was left untouched, and a lost exec may still be writing the
+        # directory, so neither is removed).
+        if not built or getattr(exc, "code", None) == "exec.stream_lost":
+            raise
+        try:
+            removed = _remove_half_built(
+                container, project, planned_path, site_name, db_root_password
+            )
+        except Exception:  # a failed cleanup must never hide why the build failed
+            removed = False
+        if removed and isinstance(exc, CwcliError):
+            raise CwcliError(
+                exc.kind,
+                exc.code,
+                f"{exc.message.rstrip().rstrip('.')}. cwcli removed the half-built bench "
+                f"{planned_path}, "
+                f"so a retry with the name '{bench_name}' works.",
+                hint=exc.hint,
+                detail=exc.detail,
+            ) from exc
+        raise
     if init_result.status is Status.NEEDS_CHOICE or init_result.data is None:
         return Result(
             status=Status.NEEDS_CHOICE, choice=init_result.choice, warnings=init_result.warnings
@@ -148,3 +185,26 @@ def new_bench(
         ),
         warnings=warnings,
     )
+
+
+def _remove_half_built(
+    container, project: str, bench_path: str, site: str, db_root_password: str | None
+) -> bool:
+    """Best effort: drop the half-made site's database, delete the bench directory,
+    and forget its search path. True when the directory is gone."""
+    config_utils.remove_custom_path(bench_path)
+    if not core_init._directory_exists(container, bench_path):
+        return False
+    # A failed `bench new-site` may already have created the site's database and user.
+    if core_init._directory_exists(container, f"{bench_path}/sites/{site}"):
+        container.exec_run(
+            [
+                "bash",
+                "-lc",
+                f"cd {shlex.quote(bench_path)} && bench drop-site {shlex.quote(site)} "
+                '--force --no-backup --db-root-password "$CWCLI_DB_ROOT_PASSWORD"',
+            ],
+            environment={"CWCLI_DB_ROOT_PASSWORD": db_password.resolve(project, db_root_password)},
+        )
+    container.exec_run(["rm", "-rf", "--", bench_path])
+    return not core_init._directory_exists(container, bench_path)

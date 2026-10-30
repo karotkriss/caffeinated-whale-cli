@@ -2,7 +2,7 @@
 // New site on an existing bench (captain note 04:51Z): instance and bench
 // (preselected from where it was opened), a validated site name with clash and
 // .localhost-vs-domain hints, the Administrator password, the MariaDB root
-// password reused from the instance's stored one unless overridden, apps to
+// password asked for only when cwcli has none saved for the instance, apps to
 // install from what the bench already holds (frappe always), default site and
 // developer mode. Runs as the `new-site` job with its card; a stopped instance
 // gets the Start prompt first.
@@ -18,7 +18,7 @@ import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
-import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
+import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
 import { onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
@@ -32,6 +32,9 @@ const bench = ref(null)
 const site = ref('')
 const adminPassword = ref('')
 const dbRootPassword = ref('')
+const rejected = ref(null) // { project, host, message }: MariaDB rejected the password a job used
+const rejection = computed(() => (rejected.value && rejected.value.project === project.value && rejected.value.host === host.value ? rejected.value.message : null))
+const askDbRootPassword = computed(() => !!project.value && (!!rejection.value || needsDbRootPassword(project.value, host.value)))
 const apps = ref([])
 const pickerOpen = ref(false)
 onMounted(() => loadCatalog())
@@ -77,6 +80,15 @@ watch(() => newSiteDialog.open, (open) => {
   bench.value = newSiteDialog.bench
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
   if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
+  const retry = newSiteDialog.retry
+  rejected.value = retry ? { project: project.value, host: host.value, message: retry.rejected } : null
+  if (!retry) return
+  const a = retry.args || {}
+  site.value = retry.site || ''
+  apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
+  makeDefault.value = !!a.default
+  devMode.value = !!a.developer_mode
+  publishing.value = !!a.publish && publishable.value
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
@@ -110,8 +122,10 @@ watch(pickerOptions, (opts) => {
   const kept = apps.value.map((v) => (ok.has(v) ? v : pickOf(v))).filter((v) => ok.has(v))
   if (kept.length !== apps.value.length || kept.some((v, i) => v !== apps.value[i])) apps.value = [...new Set(kept)]
 })
-const chipApp = (v) => remoteApp(v) || catalogApp(v)
-const appNames = computed(() => apps.value.map((v) => remoteApp(v)?.name || v))
+// A remote pick resolves by catalog key, so one that is on the bench by now is still its app name.
+const pickedRemote = (v) => (String(v).startsWith('remote:') ? catalogApps.value.find((a) => a.key === v.slice(7)) : null)
+const chipApp = (v) => pickedRemote(v) || catalogApp(v)
+const appNames = computed(() => apps.value.map((v) => pickedRemote(v)?.name || v))
 const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url).filter(Boolean))
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
@@ -213,7 +227,7 @@ async function start() {
         developer_mode: devMode.value,
         ...(publishing.value ? { publish: { address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value, access_list_id: Number(accessList.value) || 0 } } : {}),
       },
-      secrets: { admin_password: adminPassword.value, ...(dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
+      secrets: { admin_password: adminPassword.value, ...(askDbRootPassword.value && dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
     }, host.value)
     newSiteDialog.open = false
     trackJob(record.id, host.value)
@@ -252,9 +266,9 @@ async function start() {
           <p class="mt-1 text-xs" :class="nameState.ok ? (nameState.warn ? 'text-ink-amber-6' : 'text-ink-gray-5') : site.trim() ? 'text-ink-red-5' : 'text-ink-gray-5'">{{ nameState.warn || nameState.text }}</p>
         </div>
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
-        <div>
-          <FormControl v-model="dbRootPassword" label="MariaDB root password (optional)" type="password" autocomplete="off" placeholder="blank reuses the instance's saved password" />
-          <p class="mt-1 text-xs text-ink-gray-5">The password cwcli saved at init is reused and never shown here; set one only to override it.</p>
+        <div v-if="askDbRootPassword" class="sm:col-span-2">
+          <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="dbRootPasswordHelp(project, host)" />
+          <ErrorMessage class="mt-1" :message="rejection" />
         </div>
         <div class="sm:col-span-2">
           <div class="mb-1 text-xs text-ink-gray-5">Apps to install</div>
