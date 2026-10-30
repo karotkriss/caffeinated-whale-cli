@@ -479,6 +479,27 @@ class TestDetail:
         site = body["data"]["benches"][0]["sites"][0]
         assert site["installed_apps_verified"] is False, "a remembered ref must not read as fresh"
 
+    @pytest.mark.parametrize("saved", ["s3cret-root", None])
+    def test_it_says_whether_the_root_password_is_saved_never_what_it_is(
+        self, daemon, monkeypatch, saved
+    ):
+        from caffeinated_whale_cli.core import db_password
+
+        monkeypatch.setattr(db_password, "remembered", lambda project: saved)
+        monkeypatch.setattr(
+            core_inspect,
+            "inspect",
+            lambda project, **kw: Result(
+                status=Status.OK,
+                data=InspectReport(project=project, served_from="cache", degraded=False, benches=[]),
+            ),
+        )
+        status, body = _get(daemon.base + "/api/v1/instances/p")
+
+        assert status == 200
+        assert body["data"]["db_root_password_saved"] is (saved is not None)
+        assert "s3cret-root" not in json.dumps(body)
+
     def test_it_never_auto_starts_a_stopped_instance(self, daemon, monkeypatch):
         seen = {}
 

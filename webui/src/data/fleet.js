@@ -178,6 +178,13 @@ export const sitePath = (i, bench, site) => `${benchPath(i, bench)}/sites/${enc(
 export const details = reactive({})
 
 export const detailOf = (project, host = null) => details[ikey(host, project)] || null
+// Ask for the instance's MariaDB root password only once its detail has loaded and
+// says cwcli holds none (a read that failed asks too). The value never reaches the page.
+export const DB_ROOT_PASSWORD_HELP = "Must match the root password this instance's MariaDB already uses; it does not set a new one. Blank tries the default, 123."
+export const needsDbRootPassword = (project, host = null) => {
+  const d = detailOf(project, host)
+  return !!d && !d.loading && d.data?.db_root_password_saved !== true
+}
 
 export function loadDetail(project, { force = false, host = null } = {}) {
   if (!project) return null

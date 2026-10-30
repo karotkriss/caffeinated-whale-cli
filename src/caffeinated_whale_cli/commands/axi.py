@@ -865,7 +865,7 @@ def axi_new_site(
     db_root_password: str = typer.Option(
         None,
         "--db-root-password",
-        help="MariaDB root password; default: the one remembered at init (or CWCLI_DB_ROOT_PASSWORD).",
+        help="The instance's EXISTING MariaDB root password (checked before any work; it does not set a new one); default: the one saved at init, else 123.",
     ),
 ) -> None:
     """Create a site on an existing bench; emit the report as TOON.
@@ -938,7 +938,9 @@ def axi_new_bench(
         None, "--admin-password", help="Administrator password; prefer CWCLI_ADMIN_PASSWORD."
     ),
     db_root_password: str = typer.Option(
-        None, "--db-root-password", help="MariaDB root password; default: the remembered one."
+        None,
+        "--db-root-password",
+        help="The instance's EXISTING MariaDB root password (checked before any work; it does not set a new one); default: the one saved at init, else 123.",
     ),
 ) -> None:
     """Add a bench to a running instance; emit the report as TOON.

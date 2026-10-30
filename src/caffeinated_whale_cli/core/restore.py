@@ -782,6 +782,19 @@ def restore_apply(
             f"Backup file not found: {plan.database_path}",
         )
 
+    # A wrong root password is refused in seconds, before bench restore drops the site.
+    from . import db_access
+
+    unverified = db_access.verify_root_password(
+        frappe_container,
+        plan.project_name,
+        mariadb_root_password,
+        bench_path=plan.bench_path,
+        user=mariadb_root_username,
+    )
+    if unverified is not None:
+        warnings.append(unverified)
+
     # Secrets ride the environment, never the argv (M5).
     restore_env: dict[str, str] = {}
     cmd = f"bench --site {shlex.quote(plan.site)} restore {shlex.quote(plan.database_path)}"

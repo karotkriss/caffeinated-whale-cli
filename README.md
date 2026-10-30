@@ -418,13 +418,15 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `--erpnext` | Install ERPNext on the first site |
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
 | `--admin-password TEXT` | Administrator password for the first site |
-| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
 | `-v`, `--verbose` | Stream bench's output |
 
 The Administrator password comes from `--admin-password`, else the `CWCLI_ADMIN_PASSWORD` environment variable, else a hidden prompt.
 A non-interactive session with neither refuses with exit 2.
 A bench name that already exists is refused, never reused.
+The new bench shares the instance's MariaDB, so cwcli checks the root password with one connection before it builds anything, and a wrong one fails in seconds with nothing changed.
+If a later step fails, cwcli removes the half-built bench (and the half-made site's database), so a retry with the same name works, and the error says so.
 The command exits 1 when an extra app fails to install or the bench's processes did not start, even though the bench was created.
 
 ```bash
@@ -453,7 +455,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 | `--default` | Make it the bench's default site |
 | `--dev-mode` | Turn developer mode on for the new site |
 | `--admin-password TEXT` | Administrator password |
-| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
 | `-v`, `--verbose` | Stream bench's output |
 

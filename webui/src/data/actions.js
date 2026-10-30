@@ -17,13 +17,14 @@
 // and no request can express --no-backup or --force.
 
 import { can, ROLE_LABEL, session } from './session'
+import { DB_ROOT_PASSWORD_HELP, needsDbRootPassword } from './fleet'
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
-// `bench drop-site` needs the MariaDB root password; blank means the one cwcli
-// remembered at init (else the compose default, 123). It travels in the job's
-// secrets, never its spec.
-const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'Database root password', placeholder: 'blank uses the instance\'s saved password' }
+// `bench drop-site` needs the MariaDB root password; it is asked for only when cwcli
+// has none saved for the instance (blank then means the compose default, 123). It
+// travels in the job's secrets, never its spec.
+const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'The instance\'s existing MariaDB root password', description: DB_ROOT_PASSWORD_HELP, show: (c) => needsDbRootPassword(c.project, c.host) }
 const secrets = (v) => (v?.db_root_password ? { secrets: { db_root_password: v.db_root_password } } : {})
 // What a publish creates, in order, from the integrations that are on (ctx.publishVia).
 const publishParts = (c) => [c.publishVia?.dns && `an A record in ${c.publishVia.dns}`, c.publishVia?.proxy && `a proxy host and a Let's Encrypt certificate in ${c.publishVia.proxy}`].filter(Boolean).join(', then ')

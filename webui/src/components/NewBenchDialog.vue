@@ -9,7 +9,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select, TextInput } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { newBenchDialog } from '../data/new-bench-dialog'
-import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
+import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, DB_ROOT_PASSWORD_HELP } from '../data/fleet'
 import { onHost } from '../data/hosts'
 import { apps as catalogApps, loadCatalog } from '../data/catalog'
 import AppIcon from './AppIcon.vue'
@@ -30,6 +30,8 @@ const extraApp = (key) => catalogApps.value.find((a) => a.key === key)
 const siteName = ref('')
 const adminPassword = ref('')
 const dbRootPassword = ref('')
+// The new bench shares the instance's MariaDB: no field when cwcli holds its root password.
+const askDbRootPassword = computed(() => !!project.value && needsDbRootPassword(project.value, host.value))
 const running = ref(false)
 const error = ref(null)
 onMounted(() => loadCatalog())
@@ -92,7 +94,7 @@ async function start() {
       verb: 'new-bench',
       target: { project: project.value },
       args: { bench_name: name.value.trim(), site_name: siteName.value.trim(), version: version.value.trim(), frappe_url: frappeUrl.value.trim() || null, install_erpnext: erpnext.value, apps: extraUrls.value },
-      secrets: { admin_password: adminPassword.value, ...(dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
+      secrets: { admin_password: adminPassword.value, ...(askDbRootPassword.value && dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
     }, host.value)
     newBenchDialog.open = false
     trackJob(record.id, host.value)
@@ -124,8 +126,8 @@ async function start() {
         <FormControl v-model="frappeUrl" label="Frappe repository (optional)" placeholder="https://github.com/frappe/frappe" autocomplete="off" description="A fork to build from; a private GitHub or GitLab fork uses this machine's gh/glab sign-in through the credential bridge." />
         <FormControl v-model="siteName" label="First site" placeholder="bench-v15.localhost" autocomplete="off" description="bench init always creates one site; more can be added later with New site." />
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
-        <div class="sm:col-span-2">
-          <FormControl v-model="dbRootPassword" label="MariaDB root password (optional)" type="password" autocomplete="off" placeholder="blank reuses the instance's saved password" />
+        <div v-if="askDbRootPassword" class="sm:col-span-2">
+          <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
         </div>
         <Checkbox v-model="erpnext" label="Install ERPNext on the first site" />
         <div class="sm:col-span-2">

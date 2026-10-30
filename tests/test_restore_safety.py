@@ -59,7 +59,7 @@ class FakeReceiveContainer:
         self.printed: list[str] = []
         self.sendme_cwd: str | None = None
 
-    def exec_run(self, cmd, workdir=None, environment=None):
+    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
         # Every probe (``test -d`` backup dir, the restore itself) succeeds.
         return (0, b"")
@@ -608,7 +608,7 @@ class FakeNormalContainer:
         self.scan_backups: str = DB_FILENAME  # one backup file line
         self.printed: list[str] = []
 
-    def exec_run(self, cmd, workdir=None, environment=None):
+    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
         cmd_str = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
 
