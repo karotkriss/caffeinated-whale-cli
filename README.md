@@ -461,6 +461,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 
 The Administrator password is resolved the same way as for `new-bench`: the flag, then `CWCLI_ADMIN_PASSWORD`, then a hidden prompt, and a non-interactive session with neither refuses with exit 2.
 A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
+cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
 
 ```bash
 CWCLI_ADMIN_PASSWORD=... cwcli new-site my-project shop.localhost --app erpnext --default
