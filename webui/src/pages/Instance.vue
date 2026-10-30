@@ -12,7 +12,7 @@ import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { updatesFor, updatesForApp } from '../data/updates'
 import { openJob } from '../data/job-dialog'
 import { openNewBench } from '../data/new-bench-dialog'
-import AppIcon from '../components/AppIcon.vue'
+import AppNameCell from '../components/AppNameCell.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
@@ -193,7 +193,7 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
       </TabPanel>
 
       <TabPanel value="apps" class="pt-4">
-        <List class="-mx-3 list-row-px-3" :columns="{ base: ['minmax(0,1fr)', '5rem', '2.5rem'], md: ['minmax(10rem,1fr)', '6rem', 'minmax(0,2fr)', '2.5rem'] }" :row-height="44">
+        <List class="-mx-3 list-row-px-3" :columns="{ base: ['minmax(0,1fr)', '5rem', '2.5rem'], md: ['minmax(12rem,1.5fr)', '6rem', 'minmax(0,1fr)', '2.5rem'] }" :row-height="44">
           <ListHeader>
             <ListHeaderCell>App</ListHeaderCell>
             <ListHeaderCell>Benches</ListHeaderCell>
@@ -203,7 +203,7 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
           <ListRows :items="apps" row-key="name" v-slot="{ item }">
             <ListRow :on-click="appOpener(host, item.name)">
               <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
-              <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="host ? null : updatesForApp(item.name).find((u) => u.project === project) || null" /></ListCell>
+              <AppNameCell :app="catalogApp(item.name)" :name="item.name"><UpdatePill :item="host ? null : updatesForApp(item.name).find((u) => u.project === project) || null" compact /></AppNameCell>
               <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.benches }}</span></ListCell>
               <ListCell class="gap-1 overflow-hidden max-md:hidden">
                 <!-- Captain note 51: a branch is a fact, not a status - plain mono text, no pill. -->
