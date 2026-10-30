@@ -571,3 +571,26 @@ class TestInstallFingerprint:
 
         self._dist(monkeypatch, None)
         assert version.install_fingerprint().endswith(":?")
+
+
+class TestUvToolOutsideTheDefaultFolder:
+    """A shared install made with UV_TOOL_DIR=/opt/... has no "/uv/tools/" in its
+    path; the uv receipt at the env root is what identifies a uv tool."""
+
+    def test_receipt_marks_a_custom_tool_dir_as_uv(self, monkeypatch, tmp_path):
+        env = tmp_path / "opt" / "cwcli" / "tools" / "caffeinated-whale-cli"
+        site = env / "lib" / "python3.12" / "site-packages"
+        site.mkdir(parents=True)
+        (env / "uv-receipt.toml").write_text("[tool]\n")
+        monkeypatch.setattr(core_version, "install_root", lambda: env)
+        _patch_dist(monkeypatch, FakeDist(location=str(site)))
+        assert core_version.tool_env() == env
+        assert core_version._detect_method() == ("uv", None)
+
+    def test_a_plain_venv_is_still_pip(self, monkeypatch, tmp_path):
+        site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+        site.mkdir(parents=True)
+        monkeypatch.setattr(core_version, "install_root", lambda: tmp_path / "venv")
+        _patch_dist(monkeypatch, FakeDist(location=str(site)))
+        assert core_version.tool_env() is None
+        assert core_version._detect_method() == ("pip", None)

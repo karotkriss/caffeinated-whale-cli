@@ -1,24 +1,26 @@
 """``cwcli self-update`` - upgrade cwcli itself, install-method aware.
 
-Thin human-CLI frontend over :func:`core.version.check`. It owns only the flag
-parsing, the rendering, the subprocess run, and the honest exit codes; all
-detection and lookup live in the UI-pure core. Named ``self-update`` because the
+Thin human-CLI frontend over :func:`core.version.check` and :mod:`core.self_update`
+(which upgrades the install cwcli runs from, then restarts every cwcli service that
+was running). It owns only the flag parsing, the rendering and the honest exit codes. Named ``self-update`` because the
 top-level ``update`` is the (deprecated) Frappe-app updater.
 
 Exit codes (honest, per the AXI idempotency norm):
   0  already up to date (incl. the dev-ahead case), upgraded OK, or a
      dev/uvx/standalone no-op; also a ``--check`` that reached PyPI and found no
      update, or a ``--check`` whose network lookup failed open.
-  1  the upgrade subprocess failed, a network failure blocked an actual upgrade,
-     or ``--check`` found that an update IS available (so scripts/CI can gate).
+  1  the upgrade failed or left the install unchanged (nothing is restarted then),
+     a service did not come back on the new version, a network failure blocked an
+     actual upgrade, or ``--check`` found that an update IS available.
 """
-
-import subprocess
 
 import typer
 from rich.console import Console
 
+from ..core import self_update as core_self_update
 from ..core import version as core_version
+from ..core.errors import CwcliError
+from ..utils import shared_home
 
 console = Console()
 stderr_console = Console(stderr=True)
@@ -42,8 +44,11 @@ def self_update(
     Upgrade cwcli itself to the latest version published on PyPI.
 
     Detects how cwcli was installed and runs the matching upgrade
-    (``uv tool upgrade`` or ``pip install --upgrade``). A dev/editable checkout
-    is always a no-op - upgrade it with ``git pull``.
+    (``uv tool upgrade`` or ``pip install --upgrade``) against that install - in
+    shared mode run it with sudo. Then restarts every cwcli service that was
+    running (scheduler, credential bridge, auto-inspect, web UI daemons) and
+    reports which came back. A dev/editable checkout is always a no-op - upgrade
+    it with ``git pull``.
 
     Examples:
 
@@ -106,23 +111,43 @@ def self_update(
         raise typer.Exit(0)
 
     assert info.upgrade_command is not None  # uv/pip always carry a command
+    which = "the shared cwcli install" if shared_home.shared_mode() else "cwcli"
     console.print(
-        f"[cyan]Upgrading cwcli {info.current} -> {info.latest}[/cyan] "
-        f"via [dim]{' '.join(info.upgrade_command)}[/dim]"
+        f"[cyan]Upgrading {which} {info.current} -> {info.latest}[/cyan] "
+        f"in [dim]{core_version.install_root()}[/dim] "
+        f"via [dim]{' '.join(info.upgrade_command)}[/dim]",
+        soft_wrap=True,
     )
+    # Read what is running BEFORE the upgrade replaces the code under it.
+    services = core_self_update.running_services()
     try:
-        completed = subprocess.run(info.upgrade_command)
-    except FileNotFoundError as exc:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] '{info.upgrade_command[0]}' not found on PATH."
+        installed = core_self_update.upgrade(
+            info,
+            on_output=lambda line: console.print(
+                line.rstrip("\n"), markup=False, highlight=False, soft_wrap=True
+            ),
         )
-        raise typer.Exit(1) from exc
-    if completed.returncode != 0:
+    except CwcliError as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}", soft_wrap=True)
+        if e.hint:
+            stderr_console.print(f"[dim]-> {e.hint}[/dim]")
+        raise typer.Exit(1) from e
+    console.print(f"[green]Upgraded cwcli to {installed}.[/green]")
+    if not services:
+        console.print("No cwcli services were running, so none needed a restart.")
+        raise typer.Exit(0)
+    console.print(f"Restarting {len(services)} running cwcli service(s) on {installed}:")
+    results = core_self_update.restart(services, installed)
+    for r in results:
+        mark = "[green]✓[/green]" if r.ok else "[red]✗[/red]"
+        console.print(f"  {mark} {r.name}: {r.detail}", soft_wrap=True)
+    failed = [r for r in results if not r.ok]
+    if failed:
         stderr_console.print(
-            f"[bold red]Error:[/bold red] Upgrade failed (exit {completed.returncode})."
+            f"[bold red]Error:[/bold red] {len(failed)} service(s) did not come back on "
+            f"{installed}; restart them by hand (see above)."
         )
         raise typer.Exit(1)
-    console.print(f"[green]Upgraded cwcli to {info.latest}.[/green]")
     raise typer.Exit(0)
 
 
