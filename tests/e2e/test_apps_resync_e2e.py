@@ -113,7 +113,7 @@ _PROBE_PATCH = "frappe.patches.cwe2e_requirements_probe"
 
 @contextmanager
 def _frappe_gains_a_dependency(inst):
-    """Reproduce the captain's test-server failure on the shared bench: the bench's
+    """Reproduce a reported v15 bench's failure on the shared bench: the bench's
     frappe code moved to a version needing a package the venv lacks (there it was
     ``pyarrow``), and an update of ANOTHER app then migrates.
 

@@ -445,7 +445,7 @@ class TestRequirementsBeforeMigrate:
     """Every update reinstalls the bench's Python requirements for EVERY app after the
     pull and before any site migrates: a package the new code needs can come from
     another app than the one updated (a frappe that gained pyarrow failed a custom
-    app's migrate with ModuleNotFoundError on the captain's test server)."""
+    app's migrate with ModuleNotFoundError on a reported v15 bench)."""
 
     @pytest.fixture(autouse=True)
     def _fast_poll(self, monkeypatch):
