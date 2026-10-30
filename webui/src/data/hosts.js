@@ -32,13 +32,17 @@ export async function loadHosts() {
 }
 
 // The stream's first frame carries every host (with its instances and jobs, which
-// fleet.js files); later `host_link` frames carry one host's new link state.
-export function seedHost(view) {
-  const { instances, jobs, ...rest } = view
-  hosts.byId[view.id] = { ...(hosts.byId[view.id] || {}), ...rest }
+// fleet.js files), so a host it does not list is gone; later `host_link` frames
+// carry one host's new link state.
+const linkOnly = ({ instances, jobs, ...rest }) => rest
+export function replaceHosts(views) {
+  hosts.byId = Object.fromEntries(views.map((view) => [view.id, linkOnly(view)]))
   hosts.loaded = true
 }
-export const applyHostLink = seedHost
+export function applyHostLink(view) {
+  hosts.byId[view.id] = { ...(hosts.byId[view.id] || {}), ...linkOnly(view) }
+  hosts.loaded = true
+}
 export function dropHost(id) {
   delete hosts.byId[id]
 }

@@ -46,6 +46,7 @@ import re
 import select
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,7 @@ MAX_BACKOFF_S = 60.0
 DROP_WINDOW_S = 600.0
 _HEAD_LIMIT = 64 * 1024
 _BODY_LIMIT = 50 * 1024 * 1024
+_FRAME_LIMIT = 8 * 1024 * 1024  # one SSE frame from a remote; the snapshot is the largest
 
 _lock = threading.RLock()
 _change_listeners: list[Callable[[], None]] = []
@@ -117,6 +119,10 @@ _USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,31}")
 _HUB = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
+# The request line the remote's bridge reads, and the header fields it can be sent.
+_TARGET = re.compile(r"/api/v1/[\x21-\x7e]*")
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_HEADER_VALUE = re.compile(r"[^\x00-\x1f\x7f]*")
 
 
 # ----------------------------------------------------------------- validation
@@ -329,16 +335,22 @@ def _load() -> dict:
     return data
 
 
-def _save(data: dict) -> None:
-    path = store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
+def _write(path: Path, text: str) -> None:
+    """Replace ``path`` atomically, 0600 (group-shared 0660 on a shared install, where
+    the service account's daemon reads what a group member's CLI wrote)."""
+    tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, shared_home.file_mode(0o600))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1, sort_keys=True)
+        f.write(text)
     os.replace(tmp, path)
     os.chmod(path, shared_home.file_mode(0o600))
     shared_home.apply_group(path)
+
+
+def _save(data: dict) -> None:
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write(path, json.dumps(data, indent=1, sort_keys=True))
     _write_known_hosts(data)
 
 
@@ -387,11 +399,7 @@ def _write_known_hosts(data: dict) -> None:
         for host_id, rec in sorted(data["hosts"].items())
         if rec.get("host_key")
     ]
-    path = known_hosts_path()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
-    os.chmod(path, 0o600)
+    _write(known_hosts_path(), "".join(lines))
 
 
 def add_host(
@@ -504,6 +512,26 @@ def rename_host(host_id: str, name: str) -> HostRecord:
 # ------------------------------------------------------------ hub identity
 
 
+def not_service_account() -> bool:
+    """On a shared install, whether this process is someone other than the cwcli service
+    account, whose daemon holds the links (its key, its pins, its control sockets)."""
+    if not shared_home.shared_mode() or not hasattr(os, "getuid"):
+        return False
+    service_uid = shared_home.service_uid()
+    return service_uid is not None and os.getuid() != service_uid
+
+
+def shared_mode_note() -> str | None:
+    """What a hub command run by someone else on a shared install should say."""
+    if not not_service_account():
+        return None
+    return (
+        "This is a shared install: the web UI's links run as the cwcli service account, with "
+        "its key. A check from this account is not what the web UI sees; run hub commands as "
+        "the service account, or use Settings > Remote hosts."
+    )
+
+
 def default_hub_name() -> str:
     host = socket.gethostname().split(".")[0]
     return f"hub-{slugify(host)}"
@@ -533,6 +561,15 @@ def ensure_hub_key(name: str | None = None) -> str:
     existing = hub_public_key()
     if existing:
         return existing
+    if not_service_account():
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "hosts.not_service_account",
+            "This is a shared install: the hub key belongs to the cwcli service account, whose "
+            "daemon dials the remotes, and ssh refuses a key that account cannot read alone.",
+            hint="Turn on the Remote hosts over SSH integration in the web UI (it creates the "
+            "key), or run this command as the service account.",
+        )
     keygen = shutil.which("ssh-keygen")
     if keygen is None:
         raise CwcliError(
@@ -687,24 +724,35 @@ def _parse_head(head: bytes) -> tuple[int, str, list[tuple[str, str]]]:
     return int(parts[1]), parts[2] if len(parts) > 2 else "", headers
 
 
+def encode_request(
+    method: str, target: str, headers: list[tuple[str, str]], body: bytes = b""
+) -> bytes:
+    """One HTTP/1.1 request as bytes, or a USAGE error for a request the remote's bridge
+    would not read as exactly this one: a target outside the bridge's request line, or a
+    header name or value with a control character (a CR or LF would end the line early
+    and smuggle a header of its own past every check the hub made)."""
+    if method not in ("GET", "POST") or not _TARGET.fullmatch(target):
+        raise _usage("host.bad_request", "This path cannot be sent to a remote host.")
+    for name, value in headers:
+        if not _HEADER_NAME.fullmatch(name) or not _HEADER_VALUE.fullmatch(value):
+            raise _usage(
+                "host.bad_request", f"The {name!r} header cannot be sent to a remote host."
+            )
+    lines = [f"{method} {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers]
+    if body or method == "POST":
+        lines.append(f"Content-Length: {len(body)}")
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + body
+
+
 def exchange(
-    channel: Channel,
-    method: str,
-    target: str,
-    headers: list[tuple[str, str]],
-    body: bytes = b"",
-    *,
-    timeout: float = CONNECT_TIMEOUT_S,
+    channel: Channel, request: bytes, *, timeout: float = CONNECT_TIMEOUT_S
 ) -> HttpResponse:
-    """Send one HTTP/1.1 request down the channel and read the response head.
+    """Send one encoded request (``encode_request``) down the channel and read the
+    response head.
 
     A channel that ends before any head arrived (ssh could not connect, the key
     was refused, the host key mismatched) raises the channel's own ``failure``.
     """
-    lines = [f"{method} {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers]
-    if body or method == "POST":
-        lines.append(f"Content-Length: {len(body)}")
-    request = ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
     try:
         channel.write(request)
         channel.close_write()
@@ -737,6 +785,32 @@ def exchange(
     return HttpResponse(channel, status, reason, response_headers, rest)
 
 
+def _ask(
+    transport: Transport,
+    host: HostRecord,
+    method: str,
+    target: str,
+    headers: list[tuple[str, str]],
+    body: bytes = b"",
+) -> HttpResponse:
+    """One request to a host's API through its transport.
+
+    The request is encoded before anything is dialled, so one the bridge would refuse
+    is a USAGE error with no ssh started. sshd binds the bridge's command line when a
+    connection authenticates, and the bridge refuses (``bridge.revoked``) a channel whose
+    grant line is gone or changed: on that answer the connection is dropped and the
+    request asked once more on a fresh one, which authenticates against the grant as
+    it is now. The bridge refuses before it forwards anything to the daemon.
+    """
+    request = encode_request(method, target, headers, body)
+    resp = exchange(transport.open(host), request)
+    if resp.status == 403 and resp.header("x-cwcli-bridge-error") == "bridge.revoked":
+        resp.close()
+        transport.close(host)
+        resp = exchange(transport.open(host), request)
+    return resp
+
+
 # ------------------------------------------------------------ the SSH transport
 
 
@@ -748,12 +822,22 @@ def control_dir() -> Path:
         if Path("/tmp").is_dir() and os.access("/tmp", os.W_OK)
         else Path(tempfile.gettempdir())
     )
-    path = base / f"cwcli-hub-{os.getuid() if hasattr(os, 'getuid') else 'u'}"
-    path.mkdir(mode=0o700, exist_ok=True)
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    path = base / f"cwcli-hub-{uid if uid is not None else 'u'}"
     try:
-        os.chmod(path, 0o700)
-    except OSError:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
         pass
+    except OSError as e:
+        raise LinkError(UNREACHABLE, f"could not create {path}: {e}") from e
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or (uid is not None and info.st_uid != uid):
+        raise LinkError(
+            UNREACHABLE,
+            f"{path} is not a directory of this user; ssh's control sockets cannot live there",
+        )
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        os.chmod(path, 0o700)
     return path
 
 
@@ -766,7 +850,7 @@ def classify_ssh_failure(returncode: int | None, stderr: str) -> LinkError:
         return LinkError(HOST_KEY_CHANGED, "the host key does not match the pinned key")
     if "permission denied" in low:
         return LinkError(AUTH_REFUSED, "this host no longer accepts this hub's key")
-    if "bridge:" in low:
+    if "restricted to the cwcli bridge" in low:
         return LinkError(AUTH_REFUSED, last)
     return LinkError(UNREACHABLE, last or f"ssh exited {returncode}")
 
@@ -791,12 +875,12 @@ class SshChannel:
             pass
 
     def read(self, size: int, timeout: float) -> bytes | None:
-        ready, _, _ = select.select([self._stdout_fd], [], [], max(0.0, timeout))
-        if not ready:
-            return None
         try:
+            ready, _, _ = select.select([self._stdout_fd], [], [], max(0.0, timeout))
+            if not ready:
+                return None
             return os.read(self._stdout_fd, size)
-        except OSError:
+        except (OSError, ValueError):
             return b""
 
     def failure(self) -> LinkError | None:
@@ -913,7 +997,7 @@ class SshTransport:
                 timeout=10,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, LinkError):
             pass
 
 
@@ -935,7 +1019,7 @@ def probe_host(
     """One ``GET /api/v1/bridge`` through the transport: is the key still accepted,
     is the daemon up, does its protocol match. Raises ``LinkError`` when the channel
     itself fails."""
-    resp = exchange(transport.open(host), "GET", "/api/v1/bridge", [("Accept", "application/json")])
+    resp = _ask(transport, host, "GET", "/api/v1/bridge", [("Accept", "application/json")])
     try:
         body = resp.read(1024 * 1024)
     finally:
@@ -1088,9 +1172,11 @@ class HostLink:
         }
 
     def _set(self, state: str, reason: str | None = None, **more: Any) -> None:
+        """Record a state (and the probe's ``cap``/``remote``); publish when anything moved."""
         with self._lock:
-            changed = self.status.state != state or self.status.reason != reason
-            if changed:
+            moved = self.status.state != state or self.status.reason != reason
+            changed = moved or any(getattr(self.status, k) != v for k, v in more.items())
+            if moved:
                 self.status.since = self._clock()
             self.status.state = state
             self.status.reason = reason
@@ -1113,33 +1199,33 @@ class HostLink:
 
     def step(self) -> float:
         """One cycle: probe, then hold the stream until it ends. Returns how long to
-        wait before the next cycle (0 right after a drop, so one lost packet never
-        flashes a host's instances to unknown; the grace probe decides)."""
+        wait before the next cycle: 0 right after a drop, so one lost packet never
+        flashes a host's instances to unknown (the grace probe decides), but a backoff
+        when the grace probe's own stream ended again within a keepalive, so a remote
+        whose stream keeps closing as soon as it opens is not dialled in a loop."""
         if self.status.state == HOST_KEY_CHANGED and not self._wake.is_set():
             return MAX_BACKOFF_S  # never reconnects by itself; an Admin re-pins
         self._wake.clear()
+        after_drop = self._grace
         if not self._grace:
             self._set(CONNECTING, None)
         try:
             probe = probe_host(self.transport, self.host, protocol=self._protocol)
         except LinkError as e:
-            self.probe_count += 1
             self._grace = False
             self._set(e.state, e.reason)
-            return self._backoff()
-        self.probe_count += 1
-        with self._lock:
-            self.status.cap = probe.cap
-            if probe.remote is not None:
-                self.status.remote = probe.remote
-        if probe.state not in READABLE_STATES:
-            self._grace = False
-            self._set(probe.state, probe.reason)
+            self.probe_count += 1
             return self._backoff()
         self._grace = False
-        self._attempts = 0
-        self._set(probe.state, probe.reason)
+        more: dict[str, Any] = {"cap": probe.cap}
+        if probe.remote is not None:
+            more["remote"] = probe.remote
+        self._set(probe.state, probe.reason, **more)
+        self.probe_count += 1
+        if probe.state not in READABLE_STATES:
+            return self._backoff()
         self.touch()
+        opened = self._clock()
         try:
             self._hold_stream()
         except LinkError:
@@ -1147,15 +1233,15 @@ class HostLink:
                 return 0.0
             self._drops.append(self._clock())
             self._grace = True
+            if self._clock() - opened < KEEPALIVE_S:
+                return self._backoff() if after_drop else 0.0
+            self._attempts = 0
             return 0.0
         return 0.0
 
     def _hold_stream(self) -> None:
-        resp = exchange(
-            self.transport.open(self.host),
-            "GET",
-            "/api/v1/stream",
-            [("Accept", "text/event-stream")],
+        resp = _ask(
+            self.transport, self.host, "GET", "/api/v1/stream", [("Accept", "text/event-stream")]
         )
         self._current = resp
         try:
@@ -1167,6 +1253,10 @@ class HostLink:
                     return
                 self.touch()
                 frames, buffer = parse_sse(buffer + chunk)
+                if len(buffer) > _FRAME_LIMIT:
+                    raise LinkError(
+                        UNREACHABLE, "the remote sent a frame larger than the hub accepts"
+                    )
                 for event, data, _event_id in frames:
                     if event is None:
                         continue  # a keepalive comment
@@ -1434,7 +1524,15 @@ class HostManager:
 
     # -- callbacks --------------------------------------------------------
 
+    def _current_link(self, link: HostLink) -> bool:
+        """Whether ``link`` is still the one this manager runs for its host: a link that
+        was stopped (its host removed, re-pinned or turned off) may still finish a probe
+        or a frame, and must never publish the host back onto the page."""
+        return self.get(link.host.id) is link
+
     def _state_changed(self, link: HostLink) -> None:
+        if not self._current_link(link):
+            return
         view = link.view()
         self._publish("host_link", view)
         if view["state"] not in READABLE_STATES:
@@ -1453,6 +1551,8 @@ class HostManager:
             )
 
     def _frame(self, link: HostLink, event: str, data: Any) -> None:
+        if not self._current_link(link):
+            return
         host_id = link.host.id
         if event == "snapshot" and isinstance(data, dict):
             instances = [i for i in data.get("instances") or [] if isinstance(i, dict)]
@@ -1471,14 +1571,14 @@ class HostManager:
                 if not data.get("removed") and isinstance(data.get("instance"), dict):
                     rows.append(data["instance"])
                 self._instances[host_id] = rows
-            self._publish("host_delta", {"host": host_id, **data})
+            self._publish("host_delta", {**data, "host": host_id})
         elif event == "job" and isinstance(data, dict):
             with self._lock:
                 jobs = [j for j in self._jobs.get(host_id, []) if j.get("id") != data.get("id")]
                 if not data.get("removed"):
                     jobs.append(data)
                 self._jobs[host_id] = jobs
-            self._publish("host_job", {"host": host_id, **data})
+            self._publish("host_job", {**data, "host": host_id})
         else:
             self._publish("host_event", {"host": host_id, "event": event, "data": data})
 
@@ -1492,15 +1592,16 @@ class HostManager:
         headers: list[tuple[str, str]],
         body: bytes = b"",
     ) -> HttpResponse:
-        """One request to a host's API through its transport. A channel failure
-        updates the link state at once (the stream loop would notice later)."""
+        """One request to a host's API through its transport (``_ask``). A refused key or
+        a changed host key updates the link state at once (the stream loop would notice
+        later); any other failure is this request's, never the link's."""
         link = self.get(host_id)
         if link is None:
             if self.link_view(host_id) is not None:
                 raise LinkError(TRANSPORT_OFF, "the Remote hosts over SSH integration is off")
             raise CwcliError(ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'.")
         try:
-            return exchange(link.transport.open(link.host), method, target, headers, body)
+            return _ask(link.transport, link.host, method, target, headers, body)
         except LinkError as e:
             if e.state in (HOST_KEY_CHANGED, AUTH_REFUSED):
                 link._set(e.state, e.reason)
@@ -1519,11 +1620,12 @@ class HostManager:
     def check(self, host_id: str, *, timeout: float = 10.0) -> dict[str, Any] | None:
         """Check a host NOW and answer with what the check found.
 
-        A host that is not connected is woken for a fresh probe, which this waits for.
-        A connected host is probed out of band on its own channel (the held stream
-        cannot tell the page a daemon died until the stream notices); a probe that
-        disagrees with the link is applied at once and the stale stream is ended, so
-        the loop re-probes and settles. Returns the host's view.
+        A host that is not connected is woken for a fresh probe, which this waits for
+        (a stream it still holds, as a version mismatch does, is ended so the loop gets
+        to that probe). A connected host is probed out of band on its own channel (the
+        held stream cannot tell the page a daemon died until the stream notices); a
+        probe that disagrees with the link is applied at once and the stale stream is
+        ended, so the loop re-probes and settles. Returns the host's view.
         """
         link = self.get(host_id)
         if link is None:
@@ -1533,21 +1635,22 @@ class HostManager:
                 probe = probe_host(link.transport, link.host, protocol=self._protocol)
             except LinkError as e:
                 probe = Probe(e.state, e.reason)
+            more = {
+                k: v for k, v in (("cap", probe.cap), ("remote", probe.remote)) if v is not None
+            }
+            link._set(probe.state, probe.reason, **more)
             if probe.state == CONNECTED:
                 link.touch()
                 return link.view()
-            with link._lock:
-                if probe.cap is not None:
-                    link.status.cap = probe.cap
-                if probe.remote is not None:
-                    link.status.remote = probe.remote
-            link._set(probe.state, probe.reason)
             current = link._current
             if current is not None:
                 current.close()
             return link.view()
         before = link.probe_count
         link.request_check()
+        current = link._current
+        if current is not None:
+            current.close()
         deadline = time.monotonic() + timeout
         while (
             time.monotonic() < deadline and link.probe_count == before and self.get(host_id) is link

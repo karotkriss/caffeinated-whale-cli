@@ -2355,7 +2355,8 @@ cwcli remote remove <id>
 The hub's public key is parsed, never pasted (its options and comment are dropped and the blob must decode as the type it claims), so a key that arrives with `command=` of its own cannot widen the grant.
 The bridge reads exactly one HTTP request per SSH channel, drops every credential and identity header the hub sent, lowers the role the hub claims to the cap in its own command line (`--max-role`, Operator by default: a hub can run the fleet there but cannot remove instances, sites, benches or backups unless the owner grants Admin), writes the delegated user as `<user>@<hub>`, adds the remote's OWN daemon token and pipes the exchange to the loopback daemon.
 The hub never holds a remote's token, and the remote never learns the hub's private key (`~/.cwcli/keys/hub_ed25519`, 0600, returned by no API).
-The bridge also re-reads the grant on every channel, so `cwcli remote revoke` takes effect for a connection that was already open, and it ends the bridge processes that hub still has running.
+The bridge also re-reads the grant on every channel and requires the exact line the channel runs under (its command names the key's fingerprint), so `cwcli remote revoke`, or a new cap or key from `cwcli remote allow`, takes effect for a connection that was already open: the hub reconnects against the line as it is now.
+Revoking or replacing a hub's line also ends the bridge processes that hub still has running.
 
 **Pairing.** `allow` prints a pairing string that carries the SSH user, address, port and this machine's SSH host key (from `/etc/ssh/ssh_host_ed25519_key.pub`; `--host-key-file` names another).
 The hub pins that key when the host is added (`StrictHostKeyChecking=yes` against its own `known_hosts`) and refuses to add a host without one.

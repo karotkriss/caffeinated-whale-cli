@@ -362,6 +362,25 @@ class TestTheRemoteCapsTheHub:
         assert head.startswith(b"HTTP/1.1 403")
         assert json.loads(body)["errors"][0]["role"] == "operator"
 
+    def test_a_lowered_cap_reaches_the_connection_that_is_already_open(self, lab):
+        """sshd binds the forced command, and the cap in it, when a connection
+        authenticates, and the hub keeps that connection open: re-granting at a lower
+        cap must still take effect for it, not wait for the connection to drop."""
+        assert lab.ensure_connected()["cap"] == "operator"
+        start = {"verb": "start", "target": {"project": "cwe2e-no-such-instance-remote"}, "args": {}}
+
+        def cap_is(cap):
+            return lambda: (lambda v: v if v["state"] == "connected" and v["cap"] == cap else None)(lab.host_view())
+
+        try:
+            lab.allow(cap="viewer")
+            harness.wait_until(cap_is("viewer"), timeout=60, interval=0.5, desc="the hub to read the lowered cap")
+            status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", start, token=HUB_TOKEN)
+            assert status == 403 and _code(body) == "auth.role_forbidden" and body["errors"][0]["role"] == "viewer", body
+        finally:
+            lab.allow()
+        harness.wait_until(cap_is("operator"), timeout=60, interval=0.5, desc="the hub to read the restored cap")
+
     def test_a_job_started_through_the_hub_runs_on_the_remote_and_records_the_hub(self, lab):
         payload = {"verb": "start", "target": {"project": "cwe2e-no-such-instance-remote"}, "args": {}}
         status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", payload, token=HUB_TOKEN)
@@ -415,10 +434,13 @@ class TestTrustIsPinnedBothWays:
         assert json.loads(revoked.stdout)["removed"] == 1
         assert lab.cwcli(lab.remote_home, "remote", "hubs", "--json").stdout.strip() == "[]"
         # The hub's multiplexed connection is still open; the bridge re-reads the grant and
-        # answers 403 bridge.revoked, which the hub relays as data (a connection sshd has to
-        # authenticate afresh is refused one level lower, as host.auth_refused).
+        # answers 403 bridge.revoked, the hub drops that connection, and the fresh one sshd
+        # has to authenticate is refused one level lower (host.auth_refused). Once the link
+        # itself shows the refusal, a read is answered without dialling (host.not_connected).
         status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/instances", token=HUB_TOKEN)
-        assert (status, _code(body)) in ((403, "bridge.revoked"), (502, "host.auth_refused"), (502, "host.unreachable")), body
+        assert (status, _code(body)) in (
+            (403, "bridge.revoked"), (502, "host.auth_refused"), (502, "host.unreachable"), (409, "host.not_connected"),
+        ), body  # fmt: skip
         view = lab.check()
         assert view["state"] == "auth_refused", view
         # Granting it again brings the link back.

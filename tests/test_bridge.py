@@ -1,15 +1,17 @@
 """The remote-side bridge (``caffeinated_whale_cli.bridge``): the forced command a
 hub's restricted SSH key runs. Each test here guards one of the design's security
 lessons: the key reaches cwcli's typed API and nothing else, the remote caps what a
-hub may do, the remote's own token never leaves the machine, revocation reaches a
-channel opened after the grant is gone, and a stripped hop-by-hop header can never
-run a request as the proxy itself."""
+hub may do, the remote's own token never leaves the machine, revocation (and a new
+cap or key) reaches a channel opened after the grant changed, and a stripped
+hop-by-hop or folded header can never run a request as the proxy itself."""
 
 from __future__ import annotations
 
 import io
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -18,12 +20,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from caffeinated_whale_cli import bridge
+from caffeinated_whale_cli.commands import ui as ui_cmd
 from caffeinated_whale_cli.core import remote_access
 from caffeinated_whale_cli.core.protocol import PROTOCOL_VERSION
+from caffeinated_whale_cli.utils import daemon_identity
 
 HUB = "hub-test"
 TOKEN = "the-remote-daemon-token"
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm"
+OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM"
 
 
 class _Daemon:
@@ -83,26 +88,43 @@ def daemon():
         d.close()
 
 
-@pytest.fixture
-def grant(tmp_path, daemon):
-    """A granted hub: the authorized_keys line ``cwcli remote allow`` writes, a state
-    file naming the daemon, and the argv the line puts on the bridge."""
-    keys = tmp_path / "authorized_keys"
-    remote_access.allow(
-        hub=HUB,
-        key=KEY,
-        cap="operator",
-        keys_path=keys,
+def _grant(tmp_path, hub=HUB, key=KEY, cap="operator"):
+    """``cwcli remote allow`` into ``tmp_path/authorized_keys``; returns the Grant."""
+    return remote_access.allow(
+        hub=hub,
+        key=key,
+        cap=cap,
+        keys_path=tmp_path / "authorized_keys",
         python=sys.executable,
         home=tmp_path / "home",
         state_path=str(tmp_path / "ui.json"),
         host_key_file=str(tmp_path / "missing-host-key"),
+        start_daemon=False,
+        proc_root=tmp_path,
     )
+
+
+def _argv(line: str) -> list[str]:
+    """The argv sshd puts on the bridge for a grant line: its forced command, split the
+    way the shell splits it, after ``<python> -m caffeinated_whale_cli.bridge``."""
+    command = shlex.split(re.search(r'command="([^"]*)"', line).group(1))
+    assert command[1:3] == ["-m", "caffeinated_whale_cli.bridge"]
+    return command[3:]
+
+
+def _allowed(argv) -> bool:
+    return bridge.still_allowed(bridge._parser().parse_args(argv), argv)
+
+
+@pytest.fixture
+def grant(tmp_path, daemon):
+    """A granted hub: the authorized_keys line ``cwcli remote allow`` writes, a state
+    file naming the daemon with the pid file that proves it is alive (this test process
+    stands in for it), and the argv the line puts on the bridge."""
+    granted = _grant(tmp_path)
     (tmp_path / "ui.json").write_text(json.dumps({"port": daemon.port, "token": TOKEN}))
-    return [
-        "--hub", HUB, "--max-role", "operator", "--home", str(tmp_path / "home"),
-        "--state", str(tmp_path / "ui.json"), "--keys", str(keys), "--no-start",
-    ]  # fmt: skip
+    daemon_identity.write_pid_file(tmp_path / "ui.pid")
+    return _argv(granted.line)
 
 
 def _run(argv, stdin: bytes, env=None):
@@ -162,21 +184,47 @@ class TestTheGrantIsRechecked:
         remote_access.revoke(hub=HUB, keys_path=tmp_path / "authorized_keys", proc_root=tmp_path)
         code, out = _run(grant, b"GET /api/v1/meta HTTP/1.1\r\n\r\n")
         assert code == 1 and _error_code(out) == "bridge.revoked"
+        # The hub tells the bridge's own refusal from the daemon's by this header.
+        assert b"\r\nX-Cwcli-Bridge-Error: bridge.revoked\r\n" in out
         assert daemon.requests == []
 
-    def test_an_unreadable_keys_file_is_a_missing_grant(self, tmp_path):
-        assert bridge.still_allowed(str(tmp_path / "nope"), HUB) is False
+    def test_a_new_cap_refuses_the_channels_of_a_connection_made_under_the_old_line(self, grant, tmp_path, daemon):
+        """sshd binds the forced command when a connection authenticates and the hub keeps
+        that connection open, so a lowered cap reaches it only through this refusal."""
+        lowered = _grant(tmp_path, cap="viewer")
+        code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n\r\n")
+        assert code == 1 and _error_code(out) == "bridge.revoked" and daemon.requests == []
+        # The connection the hub makes next runs the new line, at the new cap.
+        request = b"GET /api/v1/instances HTTP/1.1\r\nX-Cwcli-Delegated-Role: admin\r\n\r\n"
+        code, out = _run(_argv(lowered.line), request)
+        assert code == 0 and _status_and_json(out)[1]["data"]["seen"] == "viewer"
+
+    def test_a_new_key_refuses_the_old_keys_channels(self, grant, tmp_path, daemon):
+        _grant(tmp_path, key=OTHER_KEY)
+        code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n\r\n")
+        assert code == 1 and _error_code(out) == "bridge.revoked" and daemon.requests == []
+
+    def test_a_key_swapped_into_the_line_by_hand_keeps_nothing_alive(self, grant, tmp_path):
+        keys = tmp_path / "authorized_keys"
+        keys.write_text(keys.read_text().replace(KEY.split()[1], OTHER_KEY.split()[1]))
+        assert _allowed(grant) is False
+
+    def test_granting_the_same_line_again_keeps_the_open_connection(self, grant, tmp_path):
+        _grant(tmp_path)
+        assert _allowed(grant) is True
+
+    def test_an_unreadable_keys_file_is_a_missing_grant(self, grant, tmp_path):
+        (tmp_path / "authorized_keys").unlink()
+        assert _allowed(grant) is False
 
     def test_a_different_hubs_line_does_not_keep_this_one_alive(self, tmp_path):
-        keys = tmp_path / "authorized_keys"
-        remote_access.allow(hub="other-hub", key=KEY, keys_path=keys, python=sys.executable, home=tmp_path, state_path="s", host_key_file="/nonexistent")
-        assert bridge.still_allowed(str(keys), HUB) is False
-        assert bridge.still_allowed(str(keys), "other-hub") is True
+        other = _argv(_grant(tmp_path, hub="other-hub").line)
+        assert _allowed(other) is True
+        assert _allowed([HUB if arg == "other-hub" else arg for arg in other]) is False
 
-    def test_a_key_that_merely_mentions_the_marker_is_not_a_grant(self, tmp_path):
-        keys = tmp_path / "authorized_keys"
-        keys.write_text(f"{KEY} cwcli-hub:{HUB}\n")  # no restrict, no bridge command
-        assert bridge.still_allowed(str(keys), HUB) is False
+    def test_a_key_that_merely_mentions_the_marker_is_not_a_grant(self, grant, tmp_path):
+        (tmp_path / "authorized_keys").write_text(f"{KEY} cwcli-hub:{HUB}\n")  # no restrict, no bridge command
+        assert _allowed(grant) is False
 
 
 class TestRewrite:
@@ -240,6 +288,19 @@ class TestRewrite:
         with pytest.raises(bridge.BridgeError) as e:
             self._rewrite([("Transfer-Encoding", "chunked")])
         assert e.value.status == 411
+
+    def test_a_delegation_header_sent_twice_is_refused(self):
+        with pytest.raises(bridge.BridgeError) as e:
+            self._rewrite([("X-Cwcli-Delegated-Role", "operator"), ("x-cwcli-delegated-role", "admin")])
+        assert e.value.status == 400 and e.value.code == "bridge.delegation_repeated"
+
+    def test_a_folded_header_line_is_refused_never_read_as_a_header_of_its_own(self, grant, daemon):
+        request = (
+            b"POST /api/v1/jobs HTTP/1.1\r\nContent-Type: application/json;\r\n X-Cwcli-Delegated-Role: admin\r\n"
+            b"Content-Length: 2\r\n\r\n{}"
+        )
+        code, out = _run(grant, request)
+        assert code == 1 and _error_code(out) == "bridge.bad_header" and daemon.requests == []
 
 
 class TestTheRealExchange:
@@ -308,6 +369,7 @@ class TestTheRealExchange:
         def fake_start(home, log_path):
             calls.append((home, log_path))
             state.write_text(json.dumps({"port": daemon.port, "token": TOKEN}))
+            daemon_identity.write_pid_file(tmp_path / "ui.pid")
 
         monkeypatch.setattr(bridge, "_start_daemon", fake_start)
         found, error = bridge.daemon_endpoint(str(tmp_path / "home"), str(state), start=True)
@@ -322,6 +384,27 @@ class TestTheRealExchange:
         assert found is None and "not running" in error and len(calls) == 1
 
 
+    def test_a_port_the_daemon_left_behind_is_never_trusted(self, grant, tmp_path, daemon):
+        """The daemon died and its state file kept the port; whoever binds that port next
+        (``daemon`` plays them here) must get neither the token nor the hub's request."""
+        (tmp_path / "ui.pid").write_text("999999999\n")  # a daemon that is gone
+        code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n\r\n")
+        assert code == 0 and _status_and_json(out)[0] == 503 and _error_code(out) == "bridge.daemon_down"
+        code, out = _run(grant, b"GET /api/v1/bridge HTTP/1.1\r\n\r\n")
+        assert code == 0 and _status_and_json(out)[1]["data"]["daemon"] is None
+        assert daemon.requests == []
+
+    def test_the_daemon_is_trusted_through_the_pid_file_cwcli_ui_writes_beside_its_state(self, tmp_path, monkeypatch, daemon):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path))
+        ui_cmd.run_dir().mkdir(parents=True)
+        ui_cmd.state_file().write_text(json.dumps({"port": daemon.port, "token": TOKEN}))
+        found, error = bridge.daemon_endpoint(str(tmp_path), str(ui_cmd.state_file()), start=False)
+        assert found is None and "not running" in error  # no pid file yet: nothing is trusted
+        daemon_identity.write_pid_file(ui_cmd.pid_file())
+        found, error = bridge.daemon_endpoint(str(tmp_path), str(ui_cmd.state_file()), start=False)
+        assert found == {"port": daemon.port, "token": TOKEN} and error is None
+
+
 def test_the_bridge_imports_only_the_stdlib_and_the_package_init():
     """One channel per request means one interpreter start per request: the bridge
     must never pull the command layer (typer, rich, docker) into the process."""
@@ -332,5 +415,8 @@ def test_the_bridge_imports_only_the_stdlib_and_the_package_init():
     )
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
     lines = done.stdout.strip().splitlines()
-    assert lines[0] == "['caffeinated_whale_cli', 'caffeinated_whale_cli.bridge']"
+    assert lines[0] == (
+        "['caffeinated_whale_cli', 'caffeinated_whale_cli.bridge', "
+        "'caffeinated_whale_cli.utils', 'caffeinated_whale_cli.utils.daemon_identity']"
+    )
     assert lines[1] == "[]"

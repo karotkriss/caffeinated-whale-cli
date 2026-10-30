@@ -48,6 +48,12 @@ export function dropHostJobs(host) {
   seedJobs([], host)
 }
 
+// Keep this machine's jobs and those of the listed hosts only (the stream's snapshot
+// lists every host, so a host it leaves out was removed while the stream was down).
+export function keepHostJobs(ids) {
+  jobs.records = Object.fromEntries(Object.entries(jobs.records).filter(([, job]) => !job.host || ids.has(job.host)))
+}
+
 export async function loadJobs({ force = false } = {}) {
   if ((jobs.loaded || jobs.loading) && !force) return jobList.value
   jobs.loading = true
