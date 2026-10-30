@@ -174,8 +174,18 @@ class TestGrantsAndRevocation:
         assert [(g.hub, g.cap) for g in remote_access.list_grants()] == [(HUB, "admin")]
         assert remote_access.grant_cap(HUB) == "admin" and remote_access.grant_cap("hub-home") is None
         done = remote_access.revoke(hub=HUB, proc_root=keys.parent)
-        assert done.removed == 1 and done.keys_path == str(keys)
+        assert done.removed == 1 and done.files[str(keys)] == 1
         assert remote_access.recorded_grants() == {} and remote_access.list_grants() == []
+
+    def test_a_recorded_file_that_is_gone_is_dropped_never_an_error_and_pruned_on_allow(self, keys, host_key_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "someone-else"))
+        gone = tmp_path / "gone" / "authorized_keys"
+        _allow(gone, host_key_file, home=None, cap="admin")
+        gone.unlink()
+        assert remote_access.list_grants() == [] and remote_access.grant_cap(HUB) is None
+        _allow(keys, host_key_file, home=None, hub="hub-home", key=OTHER_KEY)
+        assert remote_access.recorded_grants() == {"hub-home": str(keys)}
 
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
