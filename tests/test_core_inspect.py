@@ -430,7 +430,9 @@ class TestHardenings:
                     return (1, b"")
                 return super().exec_run(cmd, workdir=workdir)
 
-        install(BrokenSiteContainer(apps=["frappe"], sites={"dev.local": [], "ok.local": ["frappe"]}))
+        install(
+            BrokenSiteContainer(apps=["frappe"], sites={"dev.local": [], "ok.local": ["frappe"]})
+        )
 
         result = core_inspect.inspect("proj", refresh="full")
 
@@ -777,7 +779,9 @@ class TestAppCopiesFlags:
                     app=a,
                     entry=f"{bench}/apps/{a}",
                     is_symlink=is_symlink,
-                    resolved_path=("/workspace/.hdsrc/frappe" if is_symlink else f"{bench}/apps/{a}"),
+                    resolved_path=(
+                        "/workspace/.hdsrc/frappe" if is_symlink else f"{bench}/apps/{a}"
+                    ),
                     imported_path=("/workspace/.hdsrc/frappe" if diverged else None),
                     diverged=diverged,
                     checked=True,
@@ -824,3 +828,66 @@ class TestAppCopiesFlags:
         result = core_inspect.inspect("proj", refresh="cache_only")
 
         assert result.data.benches[0].app_copies == []
+
+
+class _RemotesContainer(FakeFrappeContainer):
+    """Also answers the app-remotes read: one ``apps/<dir>/.git/config<TAB>url`` line
+    per ``[remote ...]`` url, here carrying a credential and a ``.git`` suffix."""
+
+    def exec_run(self, cmd, workdir=None):
+        if isinstance(cmd, list) and "/.git/config" in cmd[-1]:
+            self.calls.append(cmd)
+            url = "https://oauth2:tok@dev.egov.gy/Ministry/chpa/single-window.git"
+            return (0, f"apps/single_window/.git/config\t{url}\n".encode())
+        return super().exec_run(cmd, workdir)
+
+    def read_remotes(self) -> bool:
+        return any(isinstance(c, list) and "/.git/config" in c[-1] for c in self.calls)
+
+
+class TestAppRemotes:
+    def test_a_live_read_carries_each_apps_remote_without_its_credentials(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", app_remotes=True)
+
+        assert result.data.served_from == "partial"
+        assert result.data.benches[0].app_remotes == {
+            "single_window": ["https://dev.egov.gy/ministry/chpa/single-window"]
+        }
+
+    def test_it_is_read_only_when_asked(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj")
+
+        assert result.data.benches[0].app_remotes is None
+        assert not container.read_remotes()
+
+    def test_a_cache_served_read_has_none(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", refresh="cache_only", app_remotes=True)
+
+        assert result.data.benches[0].app_remotes is None
+        assert not container.read_remotes()
+
+    def test_a_failed_read_is_none_not_an_empty_map(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = FakeFrappeContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", app_remotes=True)
+
+        assert result.data.served_from == "partial"
+        assert result.data.benches[0].app_remotes is None

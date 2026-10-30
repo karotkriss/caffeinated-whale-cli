@@ -2140,7 +2140,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(400, ErrorKind.USAGE.value, "project.required", "no project")
             return
         try:
-            report = core_inspect.inspect(project, refresh="auto", offer_choice=False).data
+            report = core_inspect.inspect(
+                project, refresh="auto", offer_choice=False, app_remotes=True
+            ).data
         except CwcliError as e:
             self._send_core_error(e)
             return
