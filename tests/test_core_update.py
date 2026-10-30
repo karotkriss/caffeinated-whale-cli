@@ -438,6 +438,81 @@ class TestSiteFilter:
         assert result.data.migrated_sites == []
 
 
+# ------------------------------------------------------------ the requirements step
+
+
+class TestRequirementsBeforeMigrate:
+    """Every update reinstalls the bench's Python requirements for EVERY app after the
+    pull and before any site migrates: a package the new code needs can come from
+    another app than the one updated (a frappe that gained pyarrow failed a custom
+    app's migrate with ModuleNotFoundError on the captain's test server)."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_poll(self, monkeypatch):
+        monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
+
+    def test_a_plain_app_update_reinstalls_every_app_s_requirements_before_migrating(
+        self, wired
+    ):
+        report = _update().data
+
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        step = calls.index("bench setup requirements --python")
+        assert wired.workdirs[step] == BENCH  # the whole bench, not --app <name>
+        assert calls.index("git pull") < step
+        assert step < next(i for i, c in enumerate(calls) if "migrate" in c)
+        assert report.requirements == "ok" and report.ok is True
+        assert report.migrated_sites == ["a.localhost"]
+
+    def test_failed_requirements_migrate_no_site(self, wired):
+        wired.fail_on = ["bench setup requirements"]
+
+        result = _update()
+        report = result.data
+
+        assert report.requirements == "failed" and report.migrated_sites == []
+        assert report.failed_apps == []  # the pull worked; the stage is named
+        assert report.ok is False
+        assert not any("migrate" in str(c) for c in wired.calls)
+        assert any(w.code == "requirements.failed" for w in result.warnings)
+
+    def test_an_unknown_requirements_outcome_migrates_no_site(self, wired):
+        _lose_stream_on(wired, "bench setup requirements")
+
+        report = _update().data
+
+        assert report.requirements == "unknown" and report.migrated_sites == []
+        assert report.ok is False
+
+    def test_skip_requirements_runs_no_step_and_says_so(self, wired):
+        events = []
+
+        result = _update(skip_requirements=True, on_event=events.append)
+        report = result.data
+
+        assert not any("setup requirements" in str(c) for c in wired.calls)
+        assert report.requirements == "skipped"
+        assert report.ok is True and report.migrated_sites == ["a.localhost"]
+        assert any(w.code == "requirements.skipped" for w in result.warnings)
+        ends = [e for e in events if isinstance(e, UpdateStepEnd)]
+        skipped = [e for e in ends if e.phase == "requirements_skipped"]
+        assert skipped and skipped[0].status == "ok" and "Skipped" in skipped[0].message
+
+    def test_skip_requirements_applies_to_the_core_update_too(self, wired):
+        report = _update(apps=["frappe"], skip_requirements=True).data
+
+        assert not any("setup requirements" in str(c) for c in wired.calls)
+        assert report.requirements == "skipped" and report.ok is True
+
+    def test_no_requirements_step_when_no_app_was_updated(self, wired):
+        wired.fail_on = ["git pull"]
+
+        report = _update().data
+
+        assert report.requirements is None
+        assert not any("setup requirements" in str(c) for c in wired.calls)
+
+
 # ------------------------------------------------------------------ the frappe fork
 
 
