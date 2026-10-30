@@ -10,7 +10,7 @@ import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select, Tex
 import CommandLine from './CommandLine.vue'
 import { newBenchDialog } from '../data/new-bench-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
-import { hostName } from '../data/hosts'
+import { onHost } from '../data/hosts'
 import { apps as catalogApps, loadCatalog } from '../data/catalog'
 import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
@@ -57,7 +57,7 @@ const pick = computed({
 })
 watch(name, (n) => { if (!siteName.value || siteName.value === `${prevName}.localhost`) siteName.value = n ? `${n}.localhost` : ''; prevName = n })
 let prevName = ''
-const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${i.host ? ` on ${hostName(i.host)}` : ''}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
+const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
 const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 const nameState = computed(() => {
@@ -142,7 +142,7 @@ async function start() {
         </div>
       </div>
       <Alert v-if="project && !findInstance(project, host)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then add the bench, the same as in a terminal.`" />
-      <Alert v-if="host" theme="gray" :title="`Runs on ${hostName(host)}`" description="The bench is built there, by that machine's own cwcli, through this hub." />
+      <Alert v-if="host" theme="gray" :title="`Runs${onHost(host)}`" description="The bench is built there, by that machine's own cwcli, through this hub." />
       <div class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running</div>
         <CommandLine :command="cli" />

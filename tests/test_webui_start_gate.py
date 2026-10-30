@@ -7,9 +7,10 @@ multi-bench instance by itself. Every verb launched from a bench, site or app ro
 now hands its bench to the gate, so the start the gate runs is
 ``cwcli start <p> --bench <n>`` and no choice is ever needed.
 
-The real ``dialog.js``, ``job-dialog.js`` and ``start-gate.js`` run here; only their
-browser-side imports are stubbed, and the stubbed job store answers a bench-less
-start on a multi-bench instance with ``needs_choice``, the way ``core.start`` does.
+The real ``dialog.js``, ``job-dialog.js``, ``start-gate.js``, ``hosts.js`` and
+``publish.js`` run here; only their browser-side imports are stubbed, and the stubbed
+job store answers a bench-less start on a multi-bench instance with ``needs_choice``,
+the way ``core.start`` does.
 """
 
 import json
@@ -28,7 +29,7 @@ DATA = Path(__file__).resolve().parents[1] / "webui" / "src" / "data"
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 STUBS = {
-    "vue": "export const reactive = (o) => o",
+    "vue": "export const reactive = (o) => o\nexport const computed = (fn) => ({ get value() { return fn() } })",
     "frappe-ui": (
         "const record = (kind) => (title, options) => globalThis.__t.toasts.push({ kind, title, options })\n"
         "export const toast = { error: record('error'), success: record('success'), warning: record('warning') }"
@@ -40,14 +41,13 @@ STUBS = {
         "export const session = { user: { role: 'admin' } }"
     ),
     "./job-toasts": "export const trackJob = () => {}",
-    "./publish": (
-        "export const publicationAt = (site, project, benchPath) =>\n"
-        "  (globalThis.__t.published || []).some((p) => p.join('|') === [site, project, benchPath].join('|')) ? {} : null\n"
-        "export const publications = { dns: { name: 'Cloudflare DNS' }, proxy: null }"
-    ),
-    "../router": "export const router = { push() {} }",
+    # This machine's acme, and a same-named instance on the remote host `box`.
     "./fleet": (
-        "export const details = { acme: { data: { benches: [{ index: 0, path: '/workspace/bench-a' }, { index: 1, path: '/workspace/bench-b' }] } } }\n"
+        "export const details = {\n"
+        "  acme: { data: { benches: [{ index: 0, path: '/workspace/bench-a' }, { index: 1, path: '/workspace/bench-b' }] } },\n"
+        "  'box/acme': { data: { benches: [{ index: 1, path: '/srv/bench-b' }] } },\n"
+        "}\n"
+        "export const detailOf = (project, host = null) => details[host ? `${host}/${project}` : project] || null\n"
         "export const instance = (p) => globalThis.__t.instances[p]\n"
         "export const loadDetail = () => {}\n"
         "export async function getJsonUrl(project, query) {\n"
@@ -57,25 +57,24 @@ STUBS = {
     ),
     "./api": (
         "export const apiBase = (host) => (host ? `/api/v1/hosts/${host}` : '/api/v1')\n"
+        "export async function getJson(url) {\n"
+        "  globalThis.__t.reads.push(url)\n"
+        "  if (!(url in globalThis.__t.answers)) throw new Error(`${url} is not readable`)\n"
+        "  return globalThis.__t.answers[url]\n"
+        "}\n"
         "export async function postJson(url, payload) {\n"
         "  globalThis.__t.calls.push({ post: payload })\n"
         "  return { outcome: {} }\n"
         "}"
-    ),
-    # Remote hosts (hosts.js): every instance here is this machine's, so nothing is refused.
-    "./hosts": (
-        "export const actionsAllowed = () => true\n"
-        "export const host = () => null\n"
-        "export const hostName = (id) => id || 'this machine'"
     ),
     # core.start's rule: without a bench, a multi-bench instance is a select_bench choice.
     # core.rm_bench's rule: a bench that a start brought up is refused as running.
     "./jobs": (
         "export const ACTIVE_STATES = new Set(['queued', 'running'])\n"
         "export const JOB_LABEL = new Proxy({}, { get: (_, verb) => String(verb) })\n"
-        "export async function createJob(spec) {\n"
+        "export async function createJob(spec, host) {\n"
         "  const t = globalThis.__t\n"
-        "  t.calls.push({ job: spec })\n"
+        "  t.calls.push(host ? { job: spec, host } : { job: spec })\n"
         "  const inst = t.instances[spec.target.project]\n"
         "  const id = `job${t.calls.length}`\n"
         "  t.states[id] = 'succeeded'\n"
@@ -129,11 +128,16 @@ def run(tmp_path):
 
     def _run(body, instances=STOPPED_TWO_BENCHES, restart_state="needs_choice"):
         script = (
-            f"globalThis.__t = {{ instances: {json.dumps(instances)}, restartState: {json.dumps(restart_state)}, calls: [], states: {{}}, started: [], toasts: [] }}\n"
+            f"globalThis.__t = {{ instances: {json.dumps(instances)}, restartState: {json.dumps(restart_state)}, calls: [], states: {{}}, started: [], toasts: [], reads: [], answers: {{}} }}\n"
             "globalThis.window = { open(url) { globalThis.__t.calls.push({ open: url }) } }\n"
             f"const dialog = await import({json.dumps((DATA / 'dialog.js').as_uri())})\n"
             f"const jobDialog = await import({json.dumps((DATA / 'job-dialog.js').as_uri())})\n"
             f"const gate = await import({json.dumps((DATA / 'start-gate.js').as_uri())})\n"
+            f"const hosts = await import({json.dumps((DATA / 'hosts.js').as_uri())})\n"
+            f"const publish = await import({json.dumps((DATA / 'publish.js').as_uri())})\n"
+            f"const {{ ACTIONS }} = await import({json.dumps((DATA / 'actions.js').as_uri())})\n"
+            # The remote host `box`, connected on a matching protocol.
+            "hosts.replaceHosts([{ id: 'box', name: 'Build box', state: 'connected', actions_allowed: true, readable: true }])\n"
             # The page's own Start button, then let the verb that waited on it finish.
             "async function startThen(pending) {\n"
             "  const opened = gate.startGate.open\n"
@@ -142,7 +146,7 @@ def run(tmp_path):
             "  return { opened, done: done !== 'pending', error: gate.startGate.error }\n"
             "}\n"
             f"const out = await (async () => {{ {body} }})()\n"
-            "console.log(JSON.stringify({ ...out, calls: globalThis.__t.calls, states: globalThis.__t.states, toasts: globalThis.__t.toasts }))\n"
+            "console.log(JSON.stringify({ ...out, calls: globalThis.__t.calls, states: globalThis.__t.states, toasts: globalThis.__t.toasts, reads: globalThis.__t.reads }))\n"
             "process.exit(0)\n"
         )
         result = subprocess.run(
@@ -355,24 +359,83 @@ def test_a_running_instance_asks_about_a_stopped_bench_only_when_the_verb_needs_
     assert out["calls"] == []
 
 
-@pytest.mark.parametrize(
-    ("publication", "published"),
-    [
-        (["b.localhost", "acme", "/workspace/bench-b"], True),
-        (["b.localhost", "acme", "/workspace/bench-a"], False),
-        (None, False),
-    ],
+RUNNING = {"acme": {**STOPPED_TWO_BENCHES["acme"], "container_running": True}}
+# What the drop dialog shows for a ctx: its shown fields' notes, as ActionDialog renders them.
+DROP = (
+    "const { ctx, values: dialogValues } = dialog.dialogState\n"
+    "const values = { ...dialogValues }\n"
+    "const shown = ACTIONS['site.remove'].fields.filter((f) => !f.show || f.show(ctx))\n"
+    "const notes = shown.map((f) => f.note?.(ctx)).filter(Boolean)\n"
+    "const ticked = ACTIONS['site.remove'].request(ctx, { unpublish: true }).args\n"
+    "await dialog.runAction('site.remove', ctx, values)\n"
+    "return { values, notes, ticked, shown: shown.map((f) => f.name), published: ctx.published }"
 )
-def test_dropping_a_published_site_offers_also_unpublish_ticked(run, publication, published):
-    running = {"acme": {**STOPPED_TWO_BENCHES["acme"], "container_running": True}}
+
+
+@pytest.mark.parametrize(
+    ("bench_path", "published"),
+    [("/workspace/bench-b", True), ("/workspace/bench-a", False), (None, False)],
+)
+def test_dropping_a_published_site_offers_also_unpublish_ticked(run, bench_path, published):
+    sites = {"b.localhost": {"project": "acme", "bench_path": bench_path}} if bench_path else {}
     out = run(
-        f"globalThis.__t.published = {json.dumps([publication] if publication else [])}\n"
-        f"dialog.openAction('site.remove', {json.dumps(SITE)})\n"
-        "const values = { ...dialog.dialogState.values }\n"
-        "await dialog.runAction('site.remove', dialog.dialogState.ctx, values)\n"
-        "return { values, published: dialog.dialogState.ctx.published }",
-        instances=running,
+        f"publish.publicationsLanded({{ sites: {json.dumps(sites)}, dns: {{ name: 'Cloudflare DNS' }} }})\n"
+        f"dialog.openAction('site.remove', {json.dumps(SITE)})\n" + DROP,
+        instances=RUNNING,
     )
     assert out["published"] is published
     assert out["values"] == ({"unpublish": True} if published else {})
-    assert out["calls"][-1]["job"]["args"] == ({"unpublish": True} if published else {})
+    assert out["notes"] == []
+    assert out["calls"][-1] == {"job": {"verb": "rm-site", "target": {"project": "acme", "bench": "1", "site": "b.localhost"}, "args": {"unpublish": True} if published else {}, "consent": True}}
+    assert out["reads"] == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "published"),
+    [
+        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/srv/bench-b"}}, "dns": {"name": "Box DNS"}}, True),
+        # The same name published on that host from a different bench is not this site.
+        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/workspace/bench-b"}}}, False),
+        (None, None),  # the host could not be read
+    ],
+)
+def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, answer, published):
+    """Publishing is each machine's own: a remote site's drop dialog reads that host's
+    publications once, through the hub's forward, and sends the job's unpublish to the
+    daemon that made them. This machine's store (which here names the same site) is never
+    consulted, and a host that cannot be read leaves the box offered, unticked, with a note."""
+    remote = {**SITE, "host": "box"}
+    out = run(
+        "publish.publicationsLanded({ sites: { 'b.localhost': { project: 'acme', bench_path: '/srv/bench-b' } } })\n"
+        + (f"globalThis.__t.answers['/api/v1/hosts/box/publications'] = {json.dumps(answer)}\n" if answer else "")
+        + f"await dialog.openAction('site.remove', {json.dumps(remote)})\n"
+        + DROP,
+        instances=RUNNING,
+    )
+    assert out["reads"] == ["/api/v1/hosts/box/publications"]
+    assert out["published"] is published
+    assert ("unpublish" in out["shown"]) is (published is not False)
+    assert out["values"] == {True: {"unpublish": True}, False: {}, None: {"unpublish": False}}[published]
+    assert out["notes"] == ([] if published is not None else ["Whether b.localhost is published could not be read from its machine; tick this if it is."])
+    assert out["ticked"] == ({} if published is False else {"unpublish": True})
+    job = out["calls"][-1]
+    assert job["host"] == "box" and job["job"]["verb"] == "rm-site"
+    assert job["job"]["args"] == ({"unpublish": True} if published else {})
+
+
+@pytest.mark.parametrize(
+    ("verb", "ctx", "title"),
+    [
+        ("init", {"host": "box"}, "Create an instance on Build box"),
+        ("init", {}, "Create an instance"),
+        ("migrate", {**SITE, "host": "box"}, "Migrate site on Build box"),
+        ("migrate", SITE, "Migrate site"),
+        ("apps-update", {**BENCH, "host": "box"}, "Update apps on Build box"),
+    ],
+)
+def test_the_job_dialog_names_the_machine_a_remote_job_runs_on(run, verb, ctx, title):
+    out = run(
+        f"jobDialog.openJob({json.dumps(verb)}, {json.dumps(ctx)})\n"
+        "return { open: jobDialog.jobDialog.open, title: jobDialog.jobDialogTitle() }"
+    )
+    assert out["open"] and out["title"] == title

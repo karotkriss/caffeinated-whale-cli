@@ -18,7 +18,7 @@ import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
-import { hostName } from '../data/hosts'
+import { onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
@@ -80,7 +80,7 @@ const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
   set: (k) => { const i = fleet.instances[k]; project.value = i?.project || null; host.value = i?.host || null },
 })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${i.host ? ` on ${hostName(i.host)}` : ''}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
+const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
 const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${benchName(b)} · ${b.sites.length} ${b.sites.length === 1 ? 'site' : 'sites'}`, value: String(b.index) })))
 watch(benchOptions, (opts) => { if (opts.length && (bench.value == null || !opts.some((o) => o.value === bench.value))) bench.value = opts[0].value }, { immediate: true })
@@ -307,7 +307,7 @@ async function start() {
         </div>
       </div>
       <Alert v-if="project && !findInstance(project, host)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then create the site, the same as in a terminal.`" />
-      <Alert v-if="host" theme="gray" :title="`Runs on ${hostName(host)}`" description="The site is created there, by that machine's own cwcli, through this hub." />
+      <Alert v-if="host" theme="gray" :title="`Runs${onHost(host)}`" description="The site is created there, by that machine's own cwcli, through this hub." />
       <div class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running{{ publishing ? ', then Publish site from the web UI (no terminal command)' : '' }}</div>
         <CommandLine :command="cli" />

@@ -1,8 +1,8 @@
 import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
 import { ACTIONS, availability } from './actions'
-import { details, instance, loadDetail, getJsonUrl } from './fleet'
-import { apiBase, postJson } from './api'
+import { detailOf, instance, loadDetail, getJsonUrl } from './fleet'
+import { apiBase, getJson, postJson } from './api'
 import { createJob } from './jobs'
 import { trackJob } from './job-toasts'
 import { ensureRunning } from './start-gate'
@@ -37,32 +37,36 @@ export function hostRefusal(hostId) {
 }
 
 // Run `id` for `ctx`: straight away for confirm:'none', otherwise through the dialog.
-export function openAction(id, ctx = {}) {
+export async function openAction(id, ctx = {}) {
   const a = ACTIONS[id]
   if (!a) throw new Error(`unknown action ${id}`)
-  // Publications are this machine's store, so a remote host's site is never `published`
-  // here; this machine's instances are keyed in `details` by the bare project.
-  const full = {
-    benchName: ctx.bench,
-    host: null,
-    published: !!(!ctx.host && ctx.site && publicationAt(ctx.site, ctx.project, details[ctx.project]?.data?.benches?.find((b) => String(b.index) === String(ctx.bench))?.path)),
-    publishVia: { dns: publications.dns?.name, proxy: publications.proxy?.name },
-    ...ctx,
-  }
   const allowed = availability(id, null, null, {})
   if (allowed.role) {
     toast.error(allowed.reason, { description: allowed.detail })
     return null
   }
-  const refused = a.read ? null : hostRefusal(full.host)
+  const refused = a.read ? null : hostRefusal(ctx.host)
   if (refused) {
     toast.error(refused.reason, { description: refused.detail })
     return null
   }
+  // Publications are each machine's own store. A remote site's drop dialog reads its
+  // host's once, through the hub's forward, as it opens (the hub never keeps it); a read
+  // that fails leaves `published` null, and the dialog says it could not tell.
+  let store = ctx.host ? {} : publications
+  if (ctx.host && id === 'site.remove') store = await getJson(`${apiBase(ctx.host)}/publications`).catch(() => null)
+  const bench = detailOf(ctx.project, ctx.host)?.data?.benches?.find((b) => String(b.index) === String(ctx.bench))
+  const full = {
+    benchName: ctx.bench,
+    host: null,
+    published: store ? !!(ctx.site && publicationAt(ctx.site, ctx.project, bench?.path, store)) : null,
+    publishVia: { dns: store?.dns?.name, proxy: store?.proxy?.name },
+    ...ctx,
+  }
   if (a.confirm === 'none' && !a.fields) return runAction(id, full, {})
   dialogState.id = id
   dialogState.ctx = full
-  dialogState.values = Object.fromEntries((a.fields || []).filter((f) => 'default' in f && (!f.show || f.show(full))).map((f) => [f.name, f.default]))
+  dialogState.values = Object.fromEntries((a.fields || []).filter((f) => 'default' in f && (!f.show || f.show(full))).map((f) => [f.name, typeof f.default === 'function' ? f.default(full) : f.default]))
   dialogState.error = null
   dialogState.open = true
   return null

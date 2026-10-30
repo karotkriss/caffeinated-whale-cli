@@ -1,21 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
-import { jobDialog, submitJob } from '../data/job-dialog'
+import { jobDialog, jobDialogTitle, submitJob } from '../data/job-dialog'
 import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
+import { onHost } from '../data/hosts'
 import { can } from '../data/session'
-
-const titles = {
-  init: 'Create an instance',
-  'apps-install': 'Install apps',
-  'apps-update': 'Update apps',
-  backup: 'Back up site',
-  migrate: 'Migrate site',
-  'run-tests': 'Run tests',
-  build: 'Build assets',
-  'setup-wizard': 'Complete setup wizard',
-  'self-update': 'Update cwcli',
-}
 
 const descriptions = {
   'apps-install': 'Fetches each app, installs it on the selected sites, then verifies the serving bench.',
@@ -30,7 +19,7 @@ const descriptions = {
 
 const v = computed(() => jobDialog.values)
 const isInit = computed(() => jobDialog.verb === 'init')
-const title = computed(() => titles[jobDialog.verb] || 'Start job')
+const title = computed(jobDialogTitle)
 const typed = ref('')
 watch(() => jobDialog.open, () => (typed.value = ''))
 const forceTarget = computed(() => (jobDialog.verb === 'apps-update' ? forceConfirmTarget(v.value, jobDialog.context) : ''))
@@ -148,6 +137,7 @@ function next() {
         <Checkbox v-else-if="jobDialog.verb === 'self-update'" v-model="v.no_cache" label="Check the package index now" />
       </template>
 
+      <Alert v-if="jobDialog.context.host" theme="gray" :title="`Runs${onHost(jobDialog.context.host)}`" description="The job runs there, by that machine's own cwcli, through this hub." />
       <ErrorMessage :message="error" />
       <p class="text-p-sm text-ink-gray-5">The job continues if you close this tab. You can return to it from Jobs.</p>
     </div>
