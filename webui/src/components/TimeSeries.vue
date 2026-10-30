@@ -6,7 +6,8 @@
 // value is not connected, so a stopped instance shows nothing for the time it was
 // down instead of a flat invented line.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Button, Checkbox, Popover, Select, TabButtons, Tooltip, useColorScheme } from 'frappe-ui'
+import { Button, Checkbox, Popover, Select, TabButtons, Tooltip } from 'frappe-ui'
+import { resolvedScheme } from '../premium/effects'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
@@ -139,8 +140,8 @@ onBeforeUnmount(() => {
   chart?.dispose()
   chart = null
 })
-const { resolvedColorScheme } = useColorScheme()
-watch([visible, yMax, stacked, fmt, resolvedColorScheme], render)
+// Re-render on the scheme the page is painted in (the transition's swap), so the chart changes with the page, not a frame early.
+watch([visible, yMax, stacked, fmt, resolvedScheme], render)
 </script>
 
 <template>
