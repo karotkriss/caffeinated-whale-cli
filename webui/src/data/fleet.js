@@ -26,10 +26,12 @@ import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
 import { loadPublications, publicationsLanded } from './publish'
 import { replaceHosts, applyHostLink, dropHost, hostName } from './hosts'
+import { dockerCameBack } from './docker'
 
 export const fleet = reactive({
   instances: {},
   connection: 'connecting', // connecting | live | reconnecting
+  docker: null, // this machine's Docker reachability, see ./docker
   lastEventAt: null,
   focus: null,
 })
@@ -86,6 +88,7 @@ function openStream() {
       seedJobs(h.jobs || [], h.id)
     }
     fleet.instances = next
+    dockerLanded(body.docker)
     seedJobs(body.jobs || [])
     fleet.connection = 'live'
     fleet.lastEventAt = Date.now()
@@ -128,6 +131,7 @@ function openStream() {
     else if (event === 'site_icons') siteIconsLanded(data, host)
     else if (event === 'backups') backupsLanded(data, host)
   })
+  source.addEventListener('docker', (e) => dockerLanded(JSON.parse(e.data)))
   source.addEventListener('job', (e) => applyJob(JSON.parse(e.data)))
   source.addEventListener('catalog', (e) => catalogLanded(JSON.parse(e.data)))
   source.addEventListener('metrics', (e) => applyMetricsFrame(JSON.parse(e.data)))
@@ -146,6 +150,15 @@ function openStream() {
     // surfaces it (api.js flips session.signedOut on a 401).
     if (source?.readyState === EventSource.CLOSED) getJson('/api/v1/instances').catch(() => {})
   }
+}
+
+// Docker back after an outage: the instance rows come back on their own (the daemon
+// re-reads Docker and sends deltas), but each detail read during or before the
+// outage is stale or an error, so read them again without waiting for a reload.
+function dockerLanded(docker) {
+  const back = dockerCameBack(fleet.docker, docker)
+  fleet.docker = docker || null
+  if (back) for (const i of Object.values(fleet.instances)) if (!i.host) loadDetail(i.project, { force: true })
 }
 
 // --- instances ------------------------------------------------------------------
