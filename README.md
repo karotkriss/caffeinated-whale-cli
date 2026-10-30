@@ -2312,6 +2312,9 @@ Publishing at this machine's address is an Operator's job; another address for o
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
 port - a site whose host port cannot be resolved reads "not serving".
+When this machine's Docker stops answering (it refuses the connection, or three health checks in a row time out), the daemon keeps running and retries about every 2 seconds: every instance reads `unknown`, the instance, bench and site pages show "Docker is not reachable" in place of their content (the instance and site lists do too when no remote host is linked), and other pages show a strip saying so.
+A single slow answer from an overloaded Docker is not treated as an outage.
+Everything recovers by itself once Docker answers again, with no daemon restart.
 
 **Under WSL:** a Windows browser reaches `http://localhost:8765` through WSL's
 localhost forwarding; the address `cwcli ui` prints already works from there.

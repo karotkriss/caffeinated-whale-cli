@@ -568,8 +568,8 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             if lost:
                 raise lost[0]
         except Exception as e:  # every failure is a reconnect, never a dead thread
-            # A _Resubscribe means Docker answered again: a quiet fresh stream.
-            resubscribe = bool(lost) and isinstance(lost[0], _Resubscribe)
+            # A _ResubscribeError means Docker answered again: a quiet fresh stream.
+            resubscribe = bool(lost) and isinstance(lost[0], _ResubscribeError)
             if not resubscribe:
                 timeouts = timeouts + 1 if not lost and _timed_out(e) else _PING_TIMEOUTS
             if (
@@ -587,7 +587,7 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             delay = min(delay * 2, _RECONNECT_MAX_S)
 
 
-class _Resubscribe(Exception):
+class _ResubscribeError(Exception):
     """A late ping was followed by an answer; the stream is replaced, quietly."""
 
 
@@ -595,7 +595,7 @@ def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
     """Ping Docker every :data:`_LIVENESS_S` while ``stream`` is open; on a failed
     ping, or :data:`_PING_TIMEOUTS` late ones in a row, record why in ``lost`` and
     close the stream, which unblocks its reader. A late ping followed by an answer
-    closes it too, recording :class:`_Resubscribe`: a short silent outage can leave
+    closes it too, recording :class:`_ResubscribeError`: a short silent outage can leave
     the stream half-open with no error while the next ping already reaches a
     returned Docker, and only a fresh stream (and re-bootstrap) sees events again."""
     timeouts = 0
@@ -611,7 +611,7 @@ def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
             _close_quietly(stream)
             return
         if timeouts:
-            lost.append(_Resubscribe())
+            lost.append(_ResubscribeError())
             _close_quietly(stream)
             return
 
