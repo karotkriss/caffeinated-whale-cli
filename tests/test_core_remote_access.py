@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import shutil
 import signal
 import stat
 import sys
@@ -404,7 +405,7 @@ class TestGrantsAndRevocation:
         self._proc(proc, 11, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB + "-2"])
         self._proc(proc, 12, ["python3", "-m", "caffeinated_whale_cli.bridgework", "--hub", HUB])
         self._proc(proc, 13, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB])
-        assert remote_access.bridge_pids(HUB, proc_root=proc) == [13]
+        assert remote_access.bridge_pids(HUB, uids={os.getuid()}, proc_root=proc) == [13]
 
     def test_the_ps_fallback_skips_rows_shlex_would_choke_on(self, tmp_path, monkeypatch):
         # No /proc (macOS): ``ps`` output is argv joined by spaces, never shell-quoted, so a
@@ -420,31 +421,48 @@ class TestGrantsAndRevocation:
             "run",
             lambda *a, **k: types.SimpleNamespace(stdout=listing),
         )
-        assert remote_access.bridge_pids(HUB, proc_root=tmp_path / "no-proc") == [13]
+        assert remote_access.bridge_pids(HUB, uids={uid}, proc_root=tmp_path / "no-proc") == [13]
 
     def test_another_users_process_is_never_touched(self, tmp_path, monkeypatch):
         proc = tmp_path / "proc"
         self._proc(proc, 21, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB])
         real_stat = os.stat
-        monkeypatch.setattr(os, "getuid", lambda: 4242)
-
-        class _Stat:
-            st_uid = os.getuid() + 1
-
-        monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name == "21" else real_stat(self))
-        assert remote_access.bridge_pids(HUB, proc_root=proc) == []
-
-    def test_root_reaches_the_bridge_another_users_grant_still_runs(self, tmp_path, monkeypatch):
-        """Root may rewrite another user's grant, so its revoke ends that user's bridge for
-        the hub as well, and still never another hub's."""
-        proc = tmp_path / "proc"
-        self._proc(proc, 21, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB])
-        self._proc(proc, 22, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", "hub-home"])
-        real_stat = os.stat
 
         class _Stat:
             st_uid = 4243
 
-        monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name in ("21", "22") else real_stat(self))
+        monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name == "21" else real_stat(self))
+        assert remote_access.bridge_pids(HUB, uids={4242}, proc_root=proc) == []
+
+    def test_a_revoke_ends_only_the_bridges_of_the_accounts_whose_grant_it_rewrote(self, keys, host_key_file, tmp_path, monkeypatch):
+        """Two bridges of one hub run under two accounts. Root's revoke that rewrote only
+        alice's file ends only alice's bridge; a non-root revoke ends only its own account's,
+        whatever it removed."""
+        alice, bob = os.getuid(), 4243  # alice owns the grant file this test writes
+        _allow(keys, host_key_file)
+        proc = tmp_path / "proc"
+        bridge = ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB]
+        owners = {31: alice, 32: bob}
+        for pid in owners:
+            self._proc(proc, pid, bridge)
+        real_stat = os.stat
+
+        class _Stat:
+            def __init__(self, uid):
+                self.st_uid = uid
+
+        monkeypatch.setattr(type(proc), "stat", lambda self, *a, **k: _Stat(owners[int(self.name)]) if self.parent == proc else real_stat(self, *a, **k))
+        sent: list[int] = []
+
+        def fake_kill(pid, sig):
+            sent.append(pid)
+            shutil.rmtree(proc / str(pid))
+
+        monkeypatch.setattr(os, "kill", fake_kill)
         monkeypatch.setattr(os, "getuid", lambda: 0)
-        assert remote_access.bridge_pids(HUB, proc_root=proc) == [21]
+        done = remote_access.revoke(hub=HUB, keys_path=keys, proc_root=proc)
+        assert done.removed == 1 and done.ended_pids == [31] and sent == [31] and (proc / "32").exists()
+        self._proc(proc, 31, bridge)
+        monkeypatch.setattr(os, "getuid", lambda: bob)
+        done = remote_access.revoke(hub=HUB, keys_path=tmp_path / "bobs-keys", proc_root=proc)
+        assert done.removed == 0 and done.ended_pids == [32] and sent == [31, 32] and (proc / "31").exists()
