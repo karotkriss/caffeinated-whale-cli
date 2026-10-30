@@ -15,6 +15,8 @@ import JobSteps from '../components/JobSteps.vue'
 import JobState from '../components/JobState.vue'
 import { backups, loadBackups } from '../data/backups'
 import { openRestoreWizard } from '../data/restore-wizard'
+import { openNewBench } from '../data/new-bench-dialog'
+import { openNewSite } from '../data/new-site-dialog'
 import { TabButtons } from 'frappe-ui'
 import { feed, openLine } from '../data/follow'
 
@@ -110,6 +112,15 @@ const failure = computed(() => {
   }
   return { title: cause.title, description: !message ? cause.text : message.includes(cause.text) ? message : `${cause.text} ${message}` }
 })
+// MariaDB rejected the root password a New bench or New site used: reopen its dialog
+// with the same inputs and the password field, whether or not cwcli saved one.
+const passwordRejected = computed(() => record.value?.state === 'failed' && record.value.error?.code === 'db.root_password_wrong' && ['new-bench', 'new-site'].includes(record.value.verb))
+function enterRootPassword() {
+  const r = record.value
+  const retry = { args: r.args || {}, site: r.target?.site, rejected: [r.error.message, r.error.hint].filter(Boolean).join(' ') }
+  if (r.verb === 'new-bench') openNewBench({ project: r.target.project, host, retry })
+  else openNewSite({ project: r.target.project, bench: r.target.bench, host, retry })
+}
 const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : ''
 const eventTitle = (event) => {
   if (event.message) return event.message
@@ -313,7 +324,7 @@ async function continueChoice(value) {
           <Button variant="solid" label="Continue" :disabled="!consentTyped" @click="continueChoice()" />
         </div>
       </template>
-      <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" />
+      <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" :primary-action="passwordRejected ? { label: 'Enter the root password', onClick: enterRootPassword } : undefined" />
       <div v-if="benchState" class="rounded-6 border border-outline-red-2 bg-surface-red-1 px-4 py-3 text-sm">
         <div class="font-medium text-ink-red-6">Bench state after this run</div>
         <dl class="mt-1 grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-ink-gray-8">

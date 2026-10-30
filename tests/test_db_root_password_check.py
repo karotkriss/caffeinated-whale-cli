@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from caffeinated_whale_cli.core import db_access, new_bench, new_site, rm_site
+from caffeinated_whale_cli.core import db_access, new_bench, new_site
 from caffeinated_whale_cli.core.init import InitStepStart
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
@@ -188,20 +188,3 @@ class TestOtherFlowsCheckFirst:
             new_site.new_site("acme", site="shop.localhost", admin_password="a")
         assert exc.value.code == "db.root_password_wrong"
         assert not [c for c, _env in db.calls if "new-site" in " ".join(c)]
-
-    def test_drop_site_refuses_before_the_backup(self, monkeypatch):
-        db = Db(DENIED)
-        monkeypatch.setattr(
-            rm_site.resolvers,
-            "resolve_container_and_bench",
-            lambda *a, **k: (db, "/workspace/frappe-bench", []),
-        )
-        for name in ("require_bench_dir", "require_site_dir"):
-            monkeypatch.setattr(rm_site.resolvers, name, lambda *a: None)
-        monkeypatch.setattr(db_access.supervision, "common_site_config", lambda c, b: {})
-        backups: list[str] = []
-        monkeypatch.setattr(rm_site, "backup_before_drop", lambda *a, **k: backups.append(1))
-        with pytest.raises(CwcliError) as exc:
-            rm_site.drop_site("acme", "shop.localhost", consent=True)
-        assert exc.value.code == "db.root_password_wrong"
-        assert backups == []

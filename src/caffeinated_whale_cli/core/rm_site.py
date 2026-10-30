@@ -61,7 +61,7 @@ from pathlib import Path, PurePosixPath
 
 from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
-from . import db_access, db_password, failure_causes, resolvers
+from . import db_password, failure_causes, resolvers
 from . import rm as core_rm
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -537,13 +537,6 @@ def drop_site(
                 ),
             ),
         )
-
-    # The drop needs the root password; a wrong one is refused before the backup runs.
-    unverified = db_access.verify_root_password(
-        container, project_name, db_root_password, bench_path=path
-    )
-    if unverified is not None:
-        warnings.append(unverified)
 
     drop_dir = backup_before_drop(container, project_name, path, site, on_event=emit)
     dropped = drop_backed_up_site(

@@ -45,7 +45,7 @@ class FakeContainer:
     def _s(cmd):
         return " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
 
-    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+    def exec_run(self, cmd, workdir=None, environment=None):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
         s = self._s(cmd)
         if "restore" in s and "--force" in s:
@@ -434,7 +434,7 @@ class TestRestoreApply:
 
     def test_missing_dump_raises_not_found(self, monkeypatch):
         class NoDump(FakeContainer):
-            def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+            def exec_run(self, cmd, workdir=None, environment=None):
                 s = self._s(cmd)
                 if "test" in s and "-f" in s:
                     return (1, b"")
@@ -741,7 +741,7 @@ def test_the_merged_site_config_keeps_its_secrets_off_the_exec_argv(monkeypatch)
         def __init__(self):
             self.calls = []
 
-        def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+        def exec_run(self, cmd, workdir=None, environment=None):
             self.calls.append((cmd, environment))
             s = " ".join(cmd)
             if CONFIG_FILENAME in s:
