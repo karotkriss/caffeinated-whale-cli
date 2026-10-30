@@ -219,12 +219,14 @@ def _app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
     """``apps/<dir> -> {normalized remote, ...}`` for every git checkout on the bench.
 
     Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
-    would refuse as "dubious ownership" still answers. One exec for the whole bench;
+    would refuse as "dubious ownership" still answers. Only ``[remote ...]`` sections
+    count: a ``[submodule ...]`` url is another repository, not this checkout. One exec for the whole bench;
     a failed read is an empty map (the caller falls back to the directory name).
     """
     script = (
         'for f in apps/*/.git/config; do [ -f "$f" ] && '
-        'awk -v f="$f" \'$1 == "url" && $2 == "=" { print f "\\t" $3 }\' "$f"; done; true'
+        'awk -v f="$f" \'/^[ \t]*\\[/ { inr = ($0 ~ /^[ \t]*\\[remote /) } '
+        'inr && $1 == "url" && $2 == "=" { print f "\\t" $3 }\' "$f"; done; true'
     )
     exit_code, output = frappe_container.exec_run(["sh", "-c", script], workdir=bench_path)
     remotes: dict[str, set[str]] = {}
