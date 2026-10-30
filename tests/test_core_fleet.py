@@ -1068,6 +1068,44 @@ class TestDockerOutage:
         assert lost == [refused]
         assert f.docker_state()["error"] == "Connection refused"
 
+    def test_a_slow_reconnect_is_an_outage_only_after_three_in_a_row(self, monkeypatch, listing):
+        listing(("p", "running", ["8000"]))
+        attempts = {"n": 0}
+
+        class _Client:
+            def events(self, **kwargs):
+                return iter(())
+
+            def ping(self):
+                return True
+
+            def close(self):
+                pass
+
+        def _from_env(**kw):
+            attempts["n"] += 1
+            if attempts["n"] == 1 or attempts["n"] == 4:
+                return _Client()
+            try:
+                raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=5.0)")
+            except requests.exceptions.ReadTimeout as e:
+                raise core_fleet.DockerException(
+                    f"Error while fetching server API version: {e}"
+                ) from e
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", _from_env)
+        f = core_fleet.Fleet()
+        published, lost = [], []
+        f.set_publish(lambda *a: None, docker=published.append)
+        stop = threading.Event()
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 7))
+
+        core_fleet.event_loop(f, stop, on_error=lost.append)
+
+        assert attempts["n"] == 7
+        assert len(lost) == 1, "only the third late connect in a row is an outage"
+        assert [d["reachable"] for d in published] == [True, False]
+
     def test_a_torn_stream_never_ends_the_thread(self, monkeypatch, listing):
         """urllib3's ProtocolError is neither a DockerException nor an OSError."""
         import urllib3

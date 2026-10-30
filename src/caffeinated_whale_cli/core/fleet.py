@@ -84,9 +84,9 @@ _RECONNECT_MAX_S = 2.0
 # (and the stream client's connect) may take. Docker's event stream has no
 # heartbeat and is read with no timeout, so a connection left half-open - what a
 # Docker Desktop restart does to the socket bridge - blocks the reader forever
-# with no error at all. The ping is the only way to notice. A ping that fails to
-# connect ends the stream at once; a ping that only answers late does so after
-# _PING_TIMEOUTS in a row, because an overloaded daemon is slow, not gone.
+# with no error at all. The ping is the only way to notice. A ping or connect that
+# fails to reach Docker is an outage at once; one that only answers late is an
+# outage after _PING_TIMEOUTS in a row, because an overloaded daemon is slow, not gone.
 _LIVENESS_S = 3.0
 _PING_TIMEOUT_S = 5.0
 _PING_TIMEOUTS = 3
@@ -534,6 +534,7 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
     thread and freeze the model for the daemon's whole life.
     """
     delay = _RECONNECT_DELAY_S
+    timeouts = 0
     while not stop.is_set():
         client = stream = None
         lost: list[BaseException] = []
@@ -552,6 +553,7 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             if fleet.set_docker(True) and was_down and on_recover is not None:
                 on_recover()
             delay = _RECONNECT_DELAY_S
+            timeouts = 0
             done = threading.Event()
             threading.Thread(
                 target=_watch_stream, args=(client, stream, done, lost), daemon=True
@@ -566,7 +568,12 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             if lost:
                 raise lost[0]
         except Exception as e:  # every failure is a reconnect, never a dead thread
-            if fleet.set_docker(False, _reason(e)) and on_error is not None:
+            timeouts = timeouts + 1 if not lost and _timed_out(e) else _PING_TIMEOUTS
+            if (
+                timeouts >= _PING_TIMEOUTS
+                and fleet.set_docker(False, _reason(e))
+                and on_error is not None
+            ):
                 on_error(e)
         finally:
             _close_quietly(stream)
@@ -585,7 +592,7 @@ def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
         try:
             client.ping()
         except Exception as e:
-            if isinstance(e, requests.exceptions.Timeout):
+            if _timed_out(e):
                 timeouts += 1
                 if timeouts < _PING_TIMEOUTS:
                     continue
@@ -601,6 +608,15 @@ def _close_quietly(thing) -> None:
             thing.close()
     except Exception:
         pass
+
+
+def _timed_out(e: BaseException | None) -> bool:
+    """Whether ``e`` is, or was raised from, a late answer rather than a refusal."""
+    while e is not None:
+        if isinstance(e, requests.exceptions.Timeout):
+            return True
+        e = e.__cause__
+    return False
 
 
 def _reason(e: BaseException) -> str:
