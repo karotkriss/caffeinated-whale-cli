@@ -5,6 +5,7 @@ absence of an ``axi`` twin."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 
 import pytest
@@ -13,6 +14,7 @@ from typer.testing import CliRunner
 from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.core import hosts, remote_access
 from caffeinated_whale_cli.main import app
+from caffeinated_whale_cli.utils import shared_home
 
 runner = CliRunner()
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm hub"
@@ -67,6 +69,44 @@ class TestRemoteSide:
         assert revoked["removed"] == 1 and revoked["files"] == {str(default): 1}
         assert "cwcli-hub:hub-x" not in default.read_text()
         assert _json(runner.invoke(app, ["remote", "hubs", "--json"])) == []
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_a_grant_file_this_account_cannot_read_is_named_and_revoke_exits_1(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: [])
+        theirs = tmp_path / "alice" / ".ssh" / "authorized_keys"
+        host_key = tmp_path / "hk.pub"
+        host_key.write_text(HOST_KEY + "\n")
+        _json(runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--authorized-keys", str(theirs), "--address", "10.0.0.2", "--json"]))
+        os.chmod(theirs.parent, 0)
+        try:
+            listed = runner.invoke(app, ["remote", "hubs"])
+            rows = _json(runner.invoke(app, ["remote", "hubs", "--json"]))
+            revoked = runner.invoke(app, ["remote", "revoke", "--hub", "hub-x"])
+        finally:
+            os.chmod(theirs.parent, 0o700)
+        assert listed.exit_code == 0 and f"hub-x  not readable from this account  {theirs}" in listed.stdout
+        assert [(r["hub"], r["keys_path"], bool(r["unreadable"])) for r in rows] == [("hub-x", str(theirs), True)]
+        assert revoked.exit_code == 1 and f"could not read {theirs}" in revoked.stderr
+        assert "cwcli-hub:hub-x" in theirs.read_text()
+
+    def test_on_a_shared_install_a_member_grants_under_their_own_login(self, tmp_path, monkeypatch):
+        """The service account cannot be logged into over SSH, so a group member's grant is
+        their own: the line goes into their authorized_keys and names the shared home, and the
+        note says so and that only this account's revoke removes it."""
+        shared = tmp_path / "state"
+        marker = tmp_path / "shared.toml"
+        marker.write_text(f'enabled = true\nstate_dir = "{shared}"\n')
+        monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+        monkeypatch.delenv("CWCLI_HOME", raising=False)
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid() + 1)
+        host_key = tmp_path / "hk.pub"
+        host_key.write_text(HOST_KEY + "\n")
+        grant = _json(runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--address", "10.0.0.2", "--json"]))
+        mine = tmp_path / "userhome" / ".ssh" / "authorized_keys"
+        (line,) = mine.read_text().splitlines()
+        assert f" --home {shared} --state {shared / 'run' / f'ui-{os.getuid()}.json'} " in line
+        assert grant["keys_path"] == str(mine) and remote_access.recorded_grants() == {"hub-x": str(mine)}
+        assert str(shared) in grant["note"] and "revoke` as this same account" in grant["note"]
 
     def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):
         keys = tmp_path / "ak"

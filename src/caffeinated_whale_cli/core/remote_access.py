@@ -32,7 +32,10 @@ closes the window for a channel opened after the line is gone or changed.
 home the bridge reaches). ``revoke``, ``hubs`` and the schedule owner check read every
 grant the bridge would honour: the default ``authorized_keys`` and each recorded file,
 so a line written with ``--authorized-keys`` or by another account is found, and a line
-this home never recorded still counts.
+this home never recorded still counts. A recorded file this account cannot read (another
+account's ``.ssh``) is named as unreadable, never skipped in silence: ``hubs`` lists the
+hubs the record puts there, ``revoke`` reports it, and the schedule owner check cannot
+confirm a cap. The schedule owner check counts only lines whose bridge serves this home.
 """
 
 from __future__ import annotations
@@ -99,6 +102,8 @@ class HubGrant:
     key_type: str
     fingerprint: str
     keys_path: str
+    home: str = ""  # the cwcli home the line's bridge serves
+    unreadable: str = ""  # why keys_path could not be read; then only the recorded hub is known
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +112,7 @@ class Revocation:
     removed: int
     ended_pids: list[int]
     files: dict[str, int]  # each authorized_keys file searched: the lines removed from it
+    unreadable: dict[str, str] = field(default_factory=dict)  # each file it could not read: why
 
 
 def authorized_keys_path() -> Path:
@@ -138,7 +144,7 @@ def _record_grant(home: Path, hub: str, keys: Path | None) -> None:
     file no longer exists."""
     path = grants_record(home)
     with StoreLock(path):
-        grants = {h: p for h, p in recorded_grants(home).items() if Path(p).exists()}
+        grants = {h: p for h, p in recorded_grants(home).items() if not _gone(p)}
         if keys is None:
             grants.pop(hub, None)
         else:
@@ -146,21 +152,37 @@ def _record_grant(home: Path, hub: str, keys: Path | None) -> None:
         write_state(path, json.dumps({"version": 1, "grants": grants}, indent=1, sort_keys=True))
 
 
+def _gone(path: str) -> bool:
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def _grant_files(recorded: dict[str, str]) -> list[Path]:
     """Every file a grant the bridge honours may live in: the default ``authorized_keys``
-    and each recorded file that still exists, once each."""
+    and each recorded file, once each (a missing one reads as empty)."""
     out = [authorized_keys_path().absolute()]
     for path in map(Path, recorded.values()):
-        if path not in out and path.exists():
+        if path not in out:
             out.append(path)
     return out
 
 
 def grant_cap(hub: str) -> str | None:
-    """The lowest cap any grant line the bridge would honour gives ``hub`` now (it cannot
-    tell which line a connection came through), or None when there is none. Raises
-    ``CwcliError`` naming a file it cannot read."""
-    caps = [g.cap for g in list_grants() if g.hub == hub]
+    """The lowest cap any grant line for ``hub`` whose bridge serves this cwcli home gives it
+    now (it cannot tell which line a connection came through), or None when there is none.
+    Raises ``CwcliError`` naming a grant file it cannot read."""
+    home = config_utils.cwcli_home().resolve()
+    caps = []
+    for g in list_grants():
+        if g.unreadable:
+            raise CwcliError(ErrorKind.PRECONDITION, "remote.keys_unreadable", g.unreadable)
+        if g.hub == hub and g.home and Path(g.home).resolve() == home:
+            caps.append(g.cap)
     return min(caps, key=lambda c: ROLES.index(c) if c in ROLES else -1) if caps else None
 
 
@@ -387,14 +409,31 @@ def allow(
 
 
 def list_grants(keys_path: Path | None = None) -> list[HubGrant]:
-    """The hubs this machine lets in, with each one's cap and file: from ``keys_path``,
+    """The hubs this machine lets in, with each one's cap, home and file: from ``keys_path``,
     else from every file a grant the bridge honours may live in (``_grant_files``), one
-    entry per file and hub."""
+    entry per file and hub. A file this account cannot read gives an ``unreadable`` entry
+    for each hub the record puts there (hub "" when it records none)."""
     if keys_path is not None:
         return _grants_in(keys_path)
+    recorded = recorded_grants()
     found: dict[tuple[str, str], HubGrant] = {}
-    for path in _grant_files(recorded_grants()):
-        for g in _grants_in(path):
+    for path in _grant_files(recorded):
+        try:
+            grants = _grants_in(path)
+        except CwcliError as e:
+            hubs = [h for h, p in recorded.items() if Path(p) == path] or [""]
+            grants = [
+                HubGrant(
+                    hub=h,
+                    cap="",
+                    key_type="",
+                    fingerprint="",
+                    keys_path=str(path),
+                    unreadable=e.message,
+                )
+                for h in hubs
+            ]
+        for g in grants:
             found.setdefault((g.keys_path, g.hub), g)
     return list(found.values())
 
@@ -411,7 +450,12 @@ def _grants_in(keys_path: Path) -> list[HubGrant]:
         ):
             continue
         hub = stripped.rsplit(_MARKER, 1)[1].strip()
-        cap_match = re.search(r"--max-role (\w+)", stripped)
+        command = re.search(r'command="([^"]*)"', stripped)
+        try:
+            argv = shlex.split(command.group(1)) if command else []
+        except ValueError:
+            argv = []
+        opts = dict(zip(argv, argv[1:], strict=False))
         # The key sits right before the comment: "... <type> <blob> cwcli-hub:<hub>".
         parts = stripped.rsplit(" ", 3)
         key_type, blob = (parts[-3], parts[-2]) if len(parts) >= 3 else ("", "")
@@ -422,10 +466,11 @@ def _grants_in(keys_path: Path) -> list[HubGrant]:
         out.append(
             HubGrant(
                 hub=hub,
-                cap=cap_match.group(1) if cap_match else "",
+                cap=opts.get("--max-role", ""),
                 key_type=key_type,
                 fingerprint=fp,
                 keys_path=str(keys_path),
+                home=opts.get("--home", ""),
             )
         )
     return out
@@ -504,7 +549,8 @@ def revoke(
     from every file a grant the bridge honours may live in (``_grant_files``). Removing a
     hub that was never granted is a no-op that says so (``removed == 0``), never an
     error. A record that cannot be read never blocks a revoke: the default file is then
-    searched."""
+    searched. A file this account cannot read is reported in ``unreadable`` (its lines
+    stay, and so does its record), and the hub's bridges are ended whatever happens."""
     hub = check_hub_name(hub)
     home = config_utils.cwcli_home()
     try:
@@ -513,24 +559,40 @@ def revoke(
         recorded = None
     paths = [keys_path.absolute()] if keys_path is not None else _grant_files(recorded or {})
     files: dict[str, int] = {}
-    for path in paths:
-        lines = _read_lines(path)
-        kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
-        if len(kept) != len(lines):
-            _write_lines(path, kept)
-        files[str(path)] = len(lines) - len(kept)
-    if recorded and (keys_path is None or recorded.get(hub) == str(paths[0])):
-        _record_grant(home, hub, None)
-    ended = end_bridges(hub, proc_root=proc_root)
-    return Revocation(hub=hub, removed=sum(files.values()), ended_pids=ended, files=files)
+    unreadable: dict[str, str] = {}
+    try:
+        for path in paths:
+            try:
+                lines = _read_lines(path)
+            except CwcliError as e:
+                unreadable[str(path)] = e.message
+                continue
+            kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
+            if len(kept) != len(lines):
+                _write_lines(path, kept)
+            files[str(path)] = len(lines) - len(kept)
+        if (
+            recorded
+            and (keys_path is None or recorded.get(hub) == str(paths[0]))
+            and recorded.get(hub) not in unreadable
+        ):
+            _record_grant(home, hub, None)
+    finally:
+        ended = end_bridges(hub, proc_root=proc_root)
+    return Revocation(
+        hub=hub, removed=sum(files.values()), ended_pids=ended, files=files, unreadable=unreadable
+    )
 
 
 def shared_mode_note() -> str | None:
-    """On a shared install the bridge must run as the service account (the daemon's
-    state lives in its home); say so when someone else runs ``allow``."""
+    """On a shared install a group member's grant is that member's own: the hub logs in as
+    them and their bridge reaches their daemon on the shared home. Say so, and that only
+    that account can revoke it."""
     if not not_service_account():
         return None
     return (
-        "This is a shared install: run `cwcli remote allow` as the cwcli service account "
-        "(the user whose cwcli ui daemon the hub should reach), not as yourself."
+        "This is a shared install: the hub will log in as you, and the bridge reaches your "
+        f"cwcli ui daemon on the shared home ({config_utils.cwcli_home()}). The line is in "
+        "your authorized_keys, so run `cwcli remote revoke` as this same account to remove "
+        "it; `cwcli remote hubs` lists it from any account, because the shared home records it."
     )
