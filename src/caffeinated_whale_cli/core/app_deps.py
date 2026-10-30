@@ -919,9 +919,9 @@ class _Planner:
         my_ref = ref or decl.branch
         for entry in decl.required:
             dep, pin = entry_module(entry)
-            if dep == "frappe" or dep == module:
-                continue
-            if dep in self.bench_apps:
+            if dep == "frappe" or dep == module or dep in self.nodes:
+                continue  # planned already (each app once)
+            if dep in self.bench_apps or dep in stack:  # a dep in the stack is a cycle
                 self.visit(
                     dep,
                     target=dep,
@@ -932,8 +932,6 @@ class _Planner:
                     source=None,
                     stack=stack,
                 )
-                continue
-            if self.state.planned_bench and dep in self.nodes:
                 continue
             resolved = self.resolve_source(dep, pin, module, my_ref)
             if resolved is None:
