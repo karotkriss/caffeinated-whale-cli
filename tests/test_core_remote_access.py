@@ -255,19 +255,76 @@ class TestGrantsAndRevocation:
         assert (bob.cap, bob.keys_path, bob.recorded_by) == ("admin", str(bobs / "authorized_keys"), f"bob (uid {os.getuid()})")
         assert bob.unreadable and bob.home == str(tmp_path / "state")
 
-    def test_a_comment_that_is_not_utf8_on_another_key_is_kept_byte_for_byte(self, keys, host_key_file, tmp_path, monkeypatch):
-        """OpenSSH treats a key's comment as opaque bytes: a Latin-1 one on the owner's own
-        key neither stops a scan nor changes when a grant is written and revoked."""
+    def test_a_rewrite_keeps_the_modes_and_every_other_key_byte_for_byte(self, keys, host_key_file, tmp_path, monkeypatch):
+        """sshd reads the file as its owner and treats a key's comment as opaque bytes: a
+        rewrite of this account's own file keeps its mode and its directory's, and a Latin-1
+        comment on another key neither stops a scan nor changes when a grant is written and
+        revoked."""
         monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         theirs = b"ssh-rsa AAAAB3NzaC1yc2E= Jos\xe9's laptop\r\n"
         keys.parent.mkdir(parents=True)
+        keys.parent.chmod(0o755)
         keys.write_bytes(theirs)
+        keys.chmod(0o640)
         _allow(keys, host_key_file, home=None, cap="admin")
+        assert (stat.S_IMODE(keys.stat().st_mode), stat.S_IMODE(keys.parent.stat().st_mode)) == (0o640, 0o755)
         assert [(g.hub, g.cap) for g in remote_access.list_grants()] == [(HUB, "admin")]
         assert remote_access.grant_cap(HUB) == "admin"
         assert remote_access.revoke(hub=HUB, proc_root=keys.parent).removed == 1
         assert keys.read_bytes() == theirs
+        assert (stat.S_IMODE(keys.stat().st_mode), stat.S_IMODE(keys.parent.stat().st_mode)) == (0o640, 0o755)
+
+    def test_a_file_another_account_owns_is_refused_unless_root_which_keeps_its_owner(self, keys, host_key_file, monkeypatch):
+        """sshd opens authorized_keys as its owner, so a rewrite from another account (a new
+        owner, a new mode) would lock that owner out: allow and revoke refuse it alike,
+        naming the owner to run them as, with nothing written. Root rewrites it and hands it
+        back to its owner and group, with its mode."""
+        _allow(keys, host_key_file)
+        before = keys.read_bytes()
+        real_stat = os.stat
+
+        class _Stat:
+            st_uid, st_gid, st_mode = 2_147_483_641, 2_147_483_642, 0o100640
+
+        monkeypatch.setattr(type(keys), "stat", lambda self, *a, **k: _Stat() if self == keys else real_stat(self, *a, **k))
+        monkeypatch.setattr(os, "getuid", lambda: 4242)
+        with pytest.raises(CwcliError) as refused_allow:
+            _allow(keys, host_key_file, cap="admin")
+        with pytest.raises(CwcliError) as refused_revoke:
+            remote_access.revoke(hub=HUB, keys_path=keys, proc_root=keys.parent)
+        assert refused_allow.value.code == refused_revoke.value.code == "remote.keys_not_owned"
+        assert (refused_allow.value.message, refused_allow.value.hint) == (refused_revoke.value.message, refused_revoke.value.hint)
+        assert refused_allow.value.hint == "Run this as uid 2147483641."
+        assert keys.read_bytes() == before and os.listdir(keys.parent) == ["authorized_keys"]
+        chowned = []
+        monkeypatch.setattr(os, "getuid", lambda: 0)
+        monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: chowned.append((uid, gid)))
+        _allow(keys, host_key_file, cap="admin")
+        assert chowned == [(2_147_483_641, 2_147_483_642)] and stat.S_IMODE(real_stat(keys).st_mode) == 0o640
+        assert "--max-role admin" in keys.read_text()
+
+    def test_the_rewrite_never_follows_a_planted_link_and_leaves_nothing_behind(self, keys, host_key_file, tmp_path, monkeypatch):
+        """The new content goes through a uniquely named file of its own: a link planted at a
+        predictable name is never followed, and a write that fails leaves the file as it was
+        and no temporary file behind."""
+        _allow(keys, host_key_file)
+        victim = tmp_path / "victim"
+        victim.write_text("untouched\n")
+        (keys.parent / "authorized_keys.cwcli-tmp").symlink_to(victim)
+        _allow(keys, host_key_file, cap="viewer")
+        assert victim.read_text() == "untouched\n" and "--max-role viewer" in keys.read_text()
+        before = keys.read_bytes()
+
+        def no_space(*a, **k):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "replace", no_space)
+        with pytest.raises(CwcliError) as e:
+            _allow(keys, host_key_file, cap="admin")
+        assert e.value.code == "remote.keys_unwritable" and str(keys) in e.value.message
+        assert keys.read_bytes() == before
+        assert sorted(os.listdir(keys.parent)) == ["authorized_keys", "authorized_keys.cwcli-tmp"]
 
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
@@ -369,9 +426,25 @@ class TestGrantsAndRevocation:
         proc = tmp_path / "proc"
         self._proc(proc, 21, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB])
         real_stat = os.stat
+        monkeypatch.setattr(os, "getuid", lambda: 4242)
 
         class _Stat:
             st_uid = os.getuid() + 1
 
         monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name == "21" else real_stat(self))
         assert remote_access.bridge_pids(HUB, proc_root=proc) == []
+
+    def test_root_reaches_the_bridge_another_users_grant_still_runs(self, tmp_path, monkeypatch):
+        """Root may rewrite another user's grant, so its revoke ends that user's bridge for
+        the hub as well, and still never another hub's."""
+        proc = tmp_path / "proc"
+        self._proc(proc, 21, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB])
+        self._proc(proc, 22, ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", "hub-home"])
+        real_stat = os.stat
+
+        class _Stat:
+            st_uid = 4243
+
+        monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name in ("21", "22") else real_stat(self))
+        monkeypatch.setattr(os, "getuid", lambda: 0)
+        assert remote_access.bridge_pids(HUB, proc_root=proc) == [21]
