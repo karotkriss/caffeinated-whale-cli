@@ -247,15 +247,10 @@ class TestSharedModeServiceOwnedDirectory:
         monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
         failures = []
 
-        assert (
-            core_rm._delete_project_directory(
-                "proj", _render_event, failures=failures, helper_images=["img"]
-            )
-            is True
-        )
+        assert core_rm._delete_project_directory("proj", _render_event, failures=failures) is True
         assert not project_dir.exists()
         assert failures == []
-        assert helper.call_args.args[:2] == (project_dir, ["img"])
+        assert helper.call_args.args[0] == project_dir
 
     def test_shared_mode_helper_failure_names_what_is_left(
         self, cwcli_home, monkeypatch, capsys
@@ -309,28 +304,19 @@ class TestSharedModeServiceOwnedDirectory:
         self, tmp_path, monkeypatch
     ):
         client = MagicMock()
-        client.images.list.return_value = [MagicMock(id="bench-img")]
+        client.images.list.return_value = [MagicMock(id="bench-a"), MagicMock(id="bench-b")]
         client.containers.run.side_effect = [RuntimeError("no sh"), None]
         monkeypatch.setattr(core_rm.docker, "from_env", lambda: client)
 
-        assert core_rm._empty_dir_as_root(tmp_path, ["frappe-img"], _render_event) is True
+        assert core_rm._empty_dir_as_root(tmp_path, _render_event) is True
+        client.images.list.assert_called_once_with(name="frappe/bench")
         images = [c.args[0] for c in client.containers.run.call_args_list]
-        assert images == ["frappe-img", "bench-img"]
+        assert images == ["bench-a", "bench-b"]
         kwargs = client.containers.run.call_args.kwargs
         assert kwargs["volumes"] == {str(tmp_path): {"bind": "/target", "mode": "rw"}}
         assert kwargs["user"] == "0:0"
         assert kwargs["network_mode"] == "none"
         assert kwargs["remove"] is True
-
-    def test_project_images_put_frappe_first(self):
-        def container(service, image):
-            c = MagicMock()
-            c.labels = {"com.docker.compose.service": service}
-            c.image.id = image
-            return c
-
-        containers = [container("mariadb", "db-img"), container("frappe", "frappe-img")]
-        assert core_rm._project_image_ids(containers) == ["frappe-img", "db-img"]
 
 
 class TestRemoveProjectEndToEnd:
