@@ -1350,8 +1350,8 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             # New code wants its new pins before any site migrates on it (bench's own
             # update reinstalls requirements at this point too). For EVERY app on the
             # bench, not only the updated ones: the new package can come from another
-            # app (a frappe that gained pyarrow failed a custom app's migrate on the
-            # captain's test server). A failure here migrates no site: migrating
+            # app (a frappe that gained pyarrow failed a custom app's migrate on a
+            # reported v15 bench). A failure here migrates no site: migrating
             # against half-installed dependencies is worse than not migrating.
             if skip_requirements:
                 requirements = "skipped"
