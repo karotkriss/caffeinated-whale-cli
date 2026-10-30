@@ -392,30 +392,34 @@ class TestAdminOnlySchedules:
         assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
 
     @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
-    def test_on_a_shared_install_the_tick_reads_a_members_grant_or_names_the_file(self, tmp_path, monkeypatch):
-        """A group member ran `cwcli remote allow` (their own ~/.ssh/authorized_keys, naming the
-        shared home); the shared scheduler, another account, reads that grant through the
-        record, and when that member's 0700 .ssh keeps it out it names the file, never a
-        traceback and never that the hub lost its Admin cap."""
+    def test_on_a_shared_install_a_members_grant_is_confirmed_by_them_and_named_elsewhere(self, tmp_path, monkeypatch):
+        """A group member ran `cwcli remote allow` (their own 0700 ~/.ssh/authorized_keys,
+        naming the shared home). Their own daemon's tick reads that grant and runs the
+        schedule; the shared scheduler, another account, cannot read the file, so it skips
+        the run naming the file and that member, never a traceback and never that the hub
+        lost its Admin cap."""
+        from caffeinated_whale_cli.core import remote_access
+
         marker = tmp_path / "shared.toml"
         marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "shared"}"\n')
         monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
         monkeypatch.delenv("CWCLI_HOME", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "member"))
+        monkeypatch.setenv("HOME", str(tmp_path / "carol"))
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "carol")
         self._grant(tmp_path, "admin")
-        member_keys = tmp_path / "member" / ".ssh" / "authorized_keys"
-        monkeypatch.setenv("HOME", str(tmp_path / "shared"))  # the service account's home
+        carols = tmp_path / "carol" / ".ssh" / "authorized_keys"
         fleet = Fleet()
         self._prune("alice@hub-x", "hub")
         (made,) = run_tick(fleet, now=T0.replace(hour=2))
         fleet.finish(made)
-        os.chmod(member_keys.parent, 0)
+        monkeypatch.setenv("HOME", str(tmp_path / "shared"))  # the service account's home
+        os.chmod(carols.parent, 0)
         try:
             assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
         finally:
-            os.chmod(member_keys.parent, 0o700)
+            os.chmod(carols.parent, 0o700)
         reason = self._last_run(1)["reason"]
-        assert str(member_keys) in reason and "could not be confirmed" in reason
+        assert str(carols) in reason and "written by carol" in reason and "could not be confirmed" in reason
         assert "no longer lets act as an Admin" not in reason
 
     def test_an_owner_saved_before_roles_keeps_running(self):
