@@ -2115,3 +2115,21 @@ def test_update_summary_names_a_symlink_target_on_a_clean_run(capsys):
     out = capsys.readouterr().out
     assert "/workspace/.hdsrc/payments" in out
     assert "symlink" in out
+
+
+def test_update_failed_requirements_shows_the_cause_without_verbose(monkeypatch, capsys):
+    # The spinner swallows the step's output on the default path, so the summary
+    # must fold in its last lines or the user is told it failed but never why.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    container.fail_on = ["bench setup requirements"]
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod.run_app_update("proj", ["payments"], verbose=False)
+    assert exc.value.exit_code == 1
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "bench setup requirements failed, so no site was migrated" in out
+    assert "error running: bench setup requirements --python" in out
+    assert not any("migrate" in c for c in container.calls)
