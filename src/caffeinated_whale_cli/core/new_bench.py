@@ -100,7 +100,12 @@ def new_bench(
         # writing the directory, so neither is removed).
         if existed or getattr(exc, "code", None) == "exec.stream_lost":
             raise
-        removed = _remove_half_built(container, project, planned_path, site_name, db_root_password)
+        try:
+            removed = _remove_half_built(
+                container, project, planned_path, site_name, db_root_password
+            )
+        except Exception:  # a failed cleanup must never hide why the build failed
+            removed = False
         if removed and isinstance(exc, CwcliError):
             raise CwcliError(
                 exc.kind,

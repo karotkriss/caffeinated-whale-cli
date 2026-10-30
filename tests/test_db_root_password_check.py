@@ -129,6 +129,22 @@ class TestNewBenchCleanup:
             _new_bench(monkeypatch, Db(), init_bench)()
         assert exc.value.message == "Wrong."
 
+    def test_a_cleanup_that_fails_never_hides_the_build_failure(self, monkeypatch):
+        db = Db()
+
+        def init_bench(project, **kw):
+            db.dirs.add("/workspace/b2")
+            raise CwcliError(ErrorKind.DOCKER, "init.exec_failed", "bench init failed.")
+
+        def broken(*a, **k):
+            raise ConnectionError("Docker went away")
+
+        run = _new_bench(monkeypatch, db, init_bench)
+        monkeypatch.setattr(new_bench, "_remove_half_built", broken)
+        with pytest.raises(CwcliError) as exc:
+            run()
+        assert exc.value.message == "bench init failed."
+
 
 class TestOtherFlowsCheckFirst:
     def test_new_site_refuses_before_bench_new_site(self, monkeypatch):
