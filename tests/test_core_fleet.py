@@ -773,7 +773,7 @@ class TestEventLoop:
                 seen.append(kwargs)
                 return iter(())  # an immediately-ended stream = a dropped connection
 
-        monkeypatch.setattr(core_fleet.docker, "from_env", lambda: _Client())
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: _Client())
         f = core_fleet.Fleet()
         stop = threading.Event()
 
@@ -805,7 +805,7 @@ class TestEventLoop:
             def events(self, **kwargs):
                 return iter(())
 
-        monkeypatch.setattr(core_fleet.docker, "from_env", lambda: _Client())
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: _Client())
         f = core_fleet.Fleet()
         real = f.bootstrap
 
@@ -832,7 +832,7 @@ class TestEventLoop:
         listing(("p", "running", ["8000"]))
         errors = []
 
-        def _boom():
+        def _boom(**kw):
             raise core_fleet.DockerException("daemon gone")
 
         monkeypatch.setattr(core_fleet.docker, "from_env", _boom)
@@ -847,6 +847,223 @@ class TestEventLoop:
         core_fleet.event_loop(f, stop, on_error=errors.append)
 
         assert len(errors) == 1
+
+
+class TestDockerOutage:
+    """Docker going away and coming back: the daemon must follow it without a restart.
+
+    Reproduced against a live daemon: a Docker Desktop restart left the event
+    stream blocked on a half-open connection forever, so a container started after
+    Docker returned never reached the model and only a daemon restart recovered it.
+    """
+
+    @staticmethod
+    def _stop_after(stop, rounds, waits=None):
+        count = {"n": 0}
+
+        def _wait(timeout=None):
+            if waits is not None:
+                waits.append(timeout)
+            count["n"] += 1
+            if count["n"] >= rounds:
+                stop.set()
+            return stop.is_set()
+
+        return _wait
+
+    def test_every_attempt_builds_a_new_client_and_closes_the_old_one(self, monkeypatch, listing):
+        """Nothing from before an outage is reused: drop the client, build a fresh one."""
+        listing(("p", "running", ["8000"]))
+        made = []
+
+        class _Client:
+            closed = False
+
+            def events(self, **kwargs):
+                return iter(())
+
+            def ping(self):
+                return True
+
+            def close(self):
+                self.closed = True
+
+        def _from_env(**kw):
+            assert kw.get("timeout"), "a connect that can hang forever never notices a return"
+            made.append(_Client())
+            return made[-1]
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", _from_env)
+        f = core_fleet.Fleet()
+        stop = threading.Event()
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 3))
+
+        core_fleet.event_loop(f, stop)
+
+        assert len(made) == 3 and len({id(c) for c in made}) == 3
+        assert all(c.closed for c in made)
+
+    def test_an_outage_is_reported_once_and_its_end_once(self, monkeypatch, listing):
+        listing(("p", "running", ["8000"]))
+        attempts = {"n": 0}
+        lost, back, published = [], [], []
+
+        class _Client:
+            def events(self, **kwargs):
+                return iter(())
+
+            def ping(self):
+                return True
+
+            def close(self):
+                pass
+
+        def _from_env(**kw):
+            attempts["n"] += 1
+            # up, down for three attempts, then up again
+            if 2 <= attempts["n"] <= 4:
+                raise core_fleet.DockerException("Error while fetching server API version")
+            return _Client()
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", _from_env)
+        f = core_fleet.Fleet()
+        f.set_publish(lambda *a: None, docker=published.append)
+        stop = threading.Event()
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 6))
+
+        core_fleet.event_loop(f, stop, on_error=lost.append, on_recover=lambda: back.append(1))
+
+        assert len(lost) == 1, "one line when Docker goes away, not one per retry"
+        assert back == [1], "one line when it comes back, and none at startup"
+        assert [d["reachable"] for d in published] == [True, False, True]
+        assert published[1]["error"] == "Error while fetching server API version"
+        assert f.docker_state()["reachable"] is True
+
+    def test_a_down_docker_is_retried_on_a_bounded_backoff(self, monkeypatch, listing):
+        listing(("p", "running", ["8000"]))
+
+        def _boom(**kw):
+            raise core_fleet.DockerException("refused")
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", _boom)
+        f = core_fleet.Fleet()
+        stop = threading.Event()
+        waits: list = []
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 6, waits))
+
+        core_fleet.event_loop(f, stop)
+
+        assert waits == [1.0, 2.0, 4.0, 5.0, 5.0, 5.0]
+        assert f.docker_down()
+
+    def test_a_half_open_stream_is_closed_when_docker_stops_answering(self, monkeypatch, listing):
+        """The stream is read with no timeout and Docker sends no heartbeat, so a
+        connection whose far end vanished blocks forever; the ping must end it."""
+        listing(("p", "running", ["8000"]))
+        monkeypatch.setattr(core_fleet, "_LIVENESS_S", 0.01)
+        released = threading.Event()
+
+        class _HungStream:
+            def __iter__(self):
+                assert released.wait(5), "the watchdog never closed the hung stream"
+                return iter(())
+
+            def close(self):
+                released.set()
+
+        class _Client:
+            def events(self, **kwargs):
+                return _HungStream()
+
+            def ping(self):
+                raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=5.0)")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: _Client())
+        f = core_fleet.Fleet()
+        stop = threading.Event()
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 1))
+        lost = []
+
+        core_fleet.event_loop(f, stop, on_error=lost.append)
+
+        assert released.is_set()
+        assert f.docker_state() == {
+            "reachable": False,
+            "error": "Read timed out. (read timeout=5.0)",
+            "since": f.docker_state()["since"],
+        }
+        assert len(lost) == 1
+
+    def test_a_torn_stream_never_ends_the_thread(self, monkeypatch, listing):
+        """urllib3's ProtocolError is neither a DockerException nor an OSError."""
+        import urllib3
+
+        listing(("p", "running", ["8000"]))
+        attempts = {"n": 0}
+
+        class _Client:
+            def events(self, **kwargs):
+                attempts["n"] += 1
+
+                def _torn():
+                    raise urllib3.exceptions.ProtocolError("Connection broken: IncompleteRead")
+                    yield  # pragma: no cover
+
+                return _torn()
+
+            def ping(self):
+                return True
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: _Client())
+        f = core_fleet.Fleet()
+        stop = threading.Event()
+        monkeypatch.setattr(stop, "wait", self._stop_after(stop, 3))
+
+        core_fleet.event_loop(f, stop)
+
+        assert attempts["n"] == 3, "every torn stream is a reconnect"
+
+    def test_going_down_turns_every_row_unknown_and_coming_back_restores_it(self, listing, probing):
+        """A green row while Docker is away is a verdict nothing measured."""
+        listing(("up", "running", ["8000"]), ("idle", "exited", []))
+        probing(lambda project, **kw: _report())
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.probe("up")
+        assert f.get("up").overall == "running"
+        rec.deltas.clear()
+
+        f.set_docker(False, "Connection refused")
+
+        assert {p: f.get(p).overall for p in ("up", "idle")} == {"up": "unknown", "idle": "unknown"}
+        assert f.get("up").probe_error == "docker.unreachable: Connection refused"
+        assert f.get("up").docker_status == "running", "container facts stay as last stated"
+        assert sorted(d[1] for d in rec.deltas) == ["idle", "up"]
+
+        f.set_docker(True)
+        f.bootstrap()
+        f.probe("up")
+        assert {p: f.get(p).overall for p in ("up", "idle")} == {"up": "running", "idle": "offline"}
+
+    def test_no_probe_runs_while_docker_is_down(self, listing, probing):
+        listing(("up", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        f.set_docker(False, "refused")
+        stop = threading.Event()
+        stop.wait = self._stop_after(stop, 1)  # type: ignore[method-assign]
+
+        core_fleet.probe_loop(f, stop, 0.01)
+
+        assert probing.calls == []
 
 
 class TestProbeLoop:

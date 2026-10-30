@@ -72,7 +72,20 @@ WEB_PROBE_WINDOW_S = 30.0
 # daemon's own probes emit three exec events per cycle and would wake themselves.
 EVENT_ACTIONS = ["start", "stop", "die", "kill", "restart", "destroy"]
 
-_RECONNECT_DELAY_S = 2.0
+# The event stream's reconnect backoff: doubles from the first value to the cap,
+# and resets on every successful connect. The cap bounds how late a returning
+# Docker is noticed; it is also why a down Docker costs one attempt per few
+# seconds rather than a spin.
+_RECONNECT_DELAY_S = 1.0
+_RECONNECT_MAX_S = 5.0
+
+# How often the daemon behind an OPEN event stream is pinged, and how long a ping
+# (and the stream client's connect) may take. Docker's event stream has no
+# heartbeat and is read with no timeout, so a connection left half-open - what a
+# Docker Desktop restart does to the socket bridge - blocks the reader forever
+# with no error at all. The ping is the only way to notice.
+_LIVENESS_S = 3.0
+_PING_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -180,11 +193,68 @@ class Fleet:
         self._web_until: dict[str, float] = {}
         self._window = web_probe_window_s
         self._publish = publish or (lambda tier, project, state, cause: None)
+        self._publish_docker = lambda docker_state: None
+        # None until the event loop has connected or failed once: "not asked yet".
+        self._docker: dict = {"reachable": None, "error": None, "since": None}
 
-    def set_publish(self, publish) -> None:
-        """Bind the delta sink after construction (the fan-out needs the fleet first)."""
+    def set_publish(self, publish, *, docker=None) -> None:
+        """Bind the delta sinks after construction (the fan-out needs the fleet first).
+
+        ``docker`` receives :meth:`docker_state` on every reachability change.
+        """
         with self._mutation_lock:
             self._publish = publish
+            if docker is not None:
+                self._publish_docker = docker
+
+    # ------------------------------------------------- docker reachability
+
+    def docker_state(self) -> dict:
+        """``{reachable, error, since}``: whether this daemon can reach Docker now.
+
+        While ``reachable`` is False every instance row is the last thing Docker
+        said before it went away, so a reader must not present them as live.
+        """
+        with self._lock:
+            return dict(self._docker)
+
+    def docker_down(self) -> bool:
+        with self._lock:
+            return self._docker["reachable"] is False
+
+    def set_docker(self, reachable: bool, error: str | None = None) -> bool:
+        """Record reachability, publishing and returning True only on a CHANGE.
+
+        Going down also turns every instance's health to :data:`UNKNOWN`: nothing can
+        be read while Docker is away, so a green row would be the stale verdict this
+        model refuses. The container facts stay as Docker last stated them, and the
+        reconnect's bootstrap plus the next probe restore real health.
+        """
+        deltas: list[InstanceState] = []
+        with self._mutation_lock:
+            with self._lock:
+                if self._docker["reachable"] is reachable:
+                    return False
+                self._docker = {
+                    "reachable": reachable,
+                    "error": None if reachable else error,
+                    "since": time.time(),
+                }
+                state = dict(self._docker)
+                if not reachable:
+                    for project, prev in list(self._instances.items()):
+                        new = replace(
+                            prev,
+                            overall=UNKNOWN,
+                            probe_error=f"docker.unreachable: {error}",
+                            probe_failed_at=time.time(),
+                        )
+                        if self._store(new):
+                            deltas.append(new)
+            self._publish_docker(state)
+            for new in deltas:
+                self._publish("instant", new.project, new, None)
+        return True
 
     # ---------------------------------------------------------------- reads
 
@@ -435,7 +505,7 @@ class Fleet:
 # ------------------------------------------------------------------- threads
 
 
-def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None) -> None:
+def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover=None) -> None:
     """Subscribe to Docker's event stream, re-bootstrapping on every (re)connect.
 
     Server-side filtering delivers exactly the lifecycle events and none of the
@@ -446,10 +516,24 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None) -> None:
     buffer is a fixed 256-entry ring, and this daemon's own exec traffic flushes
     it in about 51 seconds, so any gap worth replaying is already gone. Reconnect
     means re-bootstrap, always.
+
+    This loop also OWNS the fleet's Docker reachability (:meth:`Fleet.set_docker`).
+    Every attempt builds a NEW client, so nothing from before an outage is reused;
+    a watchdog pings Docker while the stream is open and closes the stream when the
+    ping fails, because a half-open connection never ends a blocked read on its
+    own. ``on_error`` hears the failure that took Docker away and ``on_recover``
+    hears its return, once each per outage - a down Docker retries on a bounded
+    backoff without writing a line per attempt. ANY exception is a reconnect: a
+    stream torn mid-chunk raises urllib3's ``ProtocolError``, which is neither a
+    ``DockerException`` nor an ``OSError``, and letting it escape would end this
+    thread and freeze the model for the daemon's whole life.
     """
+    delay = _RECONNECT_DELAY_S
     while not stop.is_set():
+        client = stream = None
+        lost: list[BaseException] = []
         try:
-            client = docker.from_env()
+            client = docker.from_env(timeout=_PING_TIMEOUT_S)
             stream = client.events(
                 decode=True,
                 filters={
@@ -459,14 +543,56 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None) -> None:
                 },
             )
             fleet.bootstrap()
-            for event in stream:
-                if stop.is_set():
-                    return
-                fleet.apply_event(event)
-        except (DockerException, CwcliError, OSError) as e:
-            if on_error is not None:
+            was_down = fleet.docker_down()
+            if fleet.set_docker(True) and was_down and on_recover is not None:
+                on_recover()
+            delay = _RECONNECT_DELAY_S
+            done = threading.Event()
+            threading.Thread(
+                target=_watch_stream, args=(client, stream, done, lost), daemon=True
+            ).start()
+            try:
+                for event in stream:
+                    if stop.is_set():
+                        return
+                    fleet.apply_event(event)
+            finally:
+                done.set()
+            if lost:
+                raise lost[0]
+        except Exception as e:  # every failure is a reconnect, never a dead thread
+            if fleet.set_docker(False, _reason(e)) and on_error is not None:
                 on_error(e)
-        stop.wait(_RECONNECT_DELAY_S)
+        finally:
+            _close_quietly(stream)
+            _close_quietly(client)
+        stop.wait(delay)
+        if fleet.docker_down():
+            delay = min(delay * 2, _RECONNECT_MAX_S)
+
+
+def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
+    """Ping Docker every :data:`_LIVENESS_S` while ``stream`` is open; on a failed
+    ping record why in ``lost`` and close the stream, which unblocks its reader."""
+    while not done.wait(_LIVENESS_S):
+        try:
+            client.ping()
+        except Exception as e:
+            lost.append(e)
+            _close_quietly(stream)
+            return
+
+
+def _close_quietly(thing) -> None:
+    try:
+        if thing is not None:
+            thing.close()
+    except Exception:
+        pass
+
+
+def _reason(e: BaseException) -> str:
+    return e.message if isinstance(e, CwcliError) else str(e) or type(e).__name__
 
 
 def probe_loop(fleet: Fleet, stop: threading.Event, interval: float, *, on_error=None) -> None:
@@ -478,7 +604,9 @@ def probe_loop(fleet: Fleet, stop: threading.Event, interval: float, *, on_error
     outgrows the interval (the symptom is ticks running late, not wrong data).
     """
     while not stop.is_set():
-        for project in fleet.running_projects():
+        # Docker unreachable: the event loop owns noticing its return, and a probe
+        # per instance per tick would only add failures (and log lines) to it.
+        for project in [] if fleet.docker_down() else fleet.running_projects():
             if stop.is_set():
                 return
             try:

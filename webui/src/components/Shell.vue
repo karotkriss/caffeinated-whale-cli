@@ -43,7 +43,9 @@ function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
 import AddHostDialog from './AddHostDialog.vue'
 import { fleet, instances, localInstances, doctor, details, countSites, instancePath } from '../data/fleet'
-import { hostList, linkLook, loadHosts } from '../data/hosts'
+import { hostList, hasHosts, linkLook, loadHosts } from '../data/hosts'
+import { dockerDown, dockerGates } from '../data/docker'
+import EmptyState from './EmptyState.vue'
 import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
 import { openPalette } from '../data/palette'
 import { activeJobs, jobList } from '../data/jobs'
@@ -69,6 +71,12 @@ const tick = ref(Date.now())
 useIntervalFn(() => (tick.value = Date.now()), 2000)
 watch(() => fleet.connection, (c) => { reconnectingSince.value = c === 'reconnecting' ? Date.now() : null }, { immediate: true })
 const daemonDown = computed(() => reconnectingSince.value != null && tick.value - reconnectingSince.value > DOWN_AFTER_MS)
+// This machine's Docker is down (the daemon itself is fine): the pages that read it
+// show one "not reachable" state in place of their content; every other page keeps
+// working under a strip. Both clear by themselves when the daemon reaches Docker.
+const dockerOut = computed(() => live.value && dockerDown(fleet.docker))
+const dockerGate = computed(() => live.value && dockerGates(fleet.docker, route.name, { hasHosts: hasHosts.value }))
+const DOCKER_HELP = 'Start Docker (Docker Desktop, or systemctl start docker); this page recovers by itself when it answers.'
 // Ctrl+Enter (Cmd+Enter) invokes the topmost open dialog's primary action (captain
 // note 02:20Z). Primaries carry data-primary; a disabled one (typed confirmation
 // not yet matching, nothing selected) stays untouched.
@@ -218,7 +226,15 @@ watch(() => route.name, (name) => {
       <div v-else-if="fleet.connection === 'reconnecting'" class="flex items-center gap-2 border-b border-outline-amber-1 bg-surface-amber-1 px-4 py-1.5 text-sm text-ink-amber-6">
         <span class="lucide-loader-circle size-3.5 animate-spin" aria-hidden="true" />Reconnecting to the cwcli daemon
       </div>
-      <router-view v-slot="{ Component }">
+      <div v-else-if="dockerOut && !dockerGate" class="flex items-center gap-2 border-b border-outline-red-1 bg-surface-red-1 px-4 py-1.5 text-sm text-ink-red-6" role="status">
+        <span class="lucide-unplug size-3.5" aria-hidden="true" />Docker is not reachable on this machine. {{ DOCKER_HELP }}
+      </div>
+      <div v-if="dockerGate" class="p-3 sm:p-5" role="status">
+        <EmptyState icon="lucide-unplug" title="Docker is not reachable" :description="`cwcli cannot read this machine's instances while Docker is down. ${DOCKER_HELP}`">
+          <p v-if="fleet.docker.error" class="max-w-xl break-words font-mono text-xs text-ink-gray-4">{{ fleet.docker.error }}</p>
+        </EmptyState>
+      </div>
+      <router-view v-else v-slot="{ Component }">
         <Transition :name="motion ? 'cw-fade' : ''" mode="out-in" appear><div :key="route.fullPath"><component :is="Component" /></div></Transition>
       </router-view>
     </DesktopShell>

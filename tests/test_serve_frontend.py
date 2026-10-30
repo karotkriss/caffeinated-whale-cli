@@ -274,6 +274,32 @@ class TestEventStream:
         finally:
             stream.close()
 
+    def test_docker_reachability_rides_the_snapshot_and_every_change(self, daemon):
+        """The page shows "Docker is not reachable" from these, and clears it from them."""
+        daemon.fleet.set_publish(
+            daemon.hub.publish, docker=lambda state: daemon.hub.publish_event("docker", state)
+        )
+        daemon.fleet.set_docker(True)
+        stream = _Stream(daemon.base + "/api/v1/stream")
+        try:
+            event, data = stream.next_frame()
+            assert event == "snapshot" and data["docker"]["reachable"] is True
+            _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
+
+            daemon.fleet.set_docker(False, "Connection refused")
+            daemon.fleet.set_docker(False, "Connection refused")  # no change, no frame
+            daemon.fleet.set_docker(True)
+
+            event, data = stream.next_frame()
+            assert event == "docker"
+            assert (data["reachable"], data["error"]) == (False, "Connection refused")
+            event, data = stream.next_frame()
+            assert event == "delta" and data["instance"]["overall"] == "unknown"
+            event, data = stream.next_frame()
+            assert event == "docker" and data["reachable"] is True and data["error"] is None
+        finally:
+            stream.close()
+
     def test_a_fast_delta_reaches_the_client_tagged_with_its_tier(self, daemon):
         stream = _Stream(daemon.base + "/api/v1/stream")
         try:

@@ -213,7 +213,9 @@ def metrics_loop(
         started = time.monotonic()
         try:
             frame: dict[str, Any] = {"host": store.sample_host(), "projects": {}}
-            for project in fleet.running_projects():
+            # Docker unreachable: the rows are what it said before it went away, and
+            # sampling them would only fail once per instance per tick.
+            for project in [] if fleet.docker_down() else fleet.running_projects():
                 state = fleet.get(project)
                 if state is None or not state.container_running:
                     continue
