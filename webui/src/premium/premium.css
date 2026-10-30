@@ -32,12 +32,14 @@
 /* The switch between light and dark (direction C from the theme-transition board): the browser blends two whole-page
    snapshots, see premium/scheme-transition.js. `fade` is the 200 ms cross-fade (reduced motion, effects off, an
    OS-driven change); `wipe` holds the old snapshot still and sweeps the new one in under a 105deg gradient mask with a
-   20 percent feathered edge, its position animated from JS over 560 ms on --ease-out. The mask is 2.5 viewport widths
-   plus 45vh wide: the 15deg tilt needs the extra 45vh for the feathered edge to start and end wholly off screen at any
-   aspect ratio. The mask names no colour: black and transparent are alpha only. */
+   20 percent feathered edge, its position animated over --cw-wipe-duration on --ease-out. The mask is 2.5 viewport
+   widths plus 45vh wide: the 15deg tilt needs the extra 45vh for the feathered edge to start and end wholly off screen
+   at any aspect ratio. The mask names no colour: black and transparent are alpha only. */
+:root { --cw-wipe-duration: 560ms; }
+@keyframes cw-wipe { from { -webkit-mask-position: 100% 0; mask-position: 100% 0; } to { -webkit-mask-position: 0 0; mask-position: 0 0; } }
 [data-vt='fade']::view-transition-old(root), [data-vt='fade']::view-transition-new(root) { animation-duration: 200ms; animation-timing-function: var(--ease-out); }
 [data-vt='wipe']::view-transition-old(root) { animation: none; }
-[data-vt='wipe']::view-transition-new(root) { animation: none; mix-blend-mode: normal; -webkit-mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); -webkit-mask-size: calc(250% + 45vh) 100%; mask-size: calc(250% + 45vh) 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
+[data-vt='wipe']::view-transition-new(root) { animation: cw-wipe var(--cw-wipe-duration) var(--ease-out); mix-blend-mode: normal; -webkit-mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); -webkit-mask-size: calc(250% + 45vh) 100%; mask-size: calc(250% + 45vh) 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
 [data-vt='wipe']::view-transition-image-pair(root) { isolation: auto; }
 
 /* The light/dark/system toggle at the right end of the Appearance row. State indication: the three icons sit stacked;
