@@ -139,6 +139,15 @@ def new_site(
                 hint=f"Fetch it first: cwcli apps install {project} <repo-url> --bench <bench> --fetch-only",
             )
 
+    # A wrong root password fails here in seconds, not at bench new-site.
+    from . import db_access
+
+    unverified = db_access.verify_root_password(
+        container, project, db_root_password, bench_path=bench_path
+    )
+    if unverified is not None:
+        warnings.append(unverified)
+
     major = frappe_major(container, bench_path)
     mariadb_flag = _select_mariadb_flag(f"version-{major}" if major else "version-16")
     env = {
@@ -167,8 +176,6 @@ def new_site(
     # Steering 041: Frappe scopes the new database user to the container's CURRENT
     # address; widen it to '%' now, so a restart that changes the IP cannot lock
     # the site out. A failure here is a warning, never a failed creation.
-    from . import db_access
-
     widened, widen_warning = db_access.widen_after_create(
         container, bench_path, project=project, site=site, root_password=db_root_password
     )

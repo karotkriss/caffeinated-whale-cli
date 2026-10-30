@@ -17,7 +17,9 @@ environment (``MYSQL_PWD``), never on an argv.
 from __future__ import annotations
 
 import json
+import re
 import shlex
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -91,6 +93,79 @@ def root_sql(container, bench_path: str, sql: str, root_password: str) -> str:
             hint="cwcli remembers the root password it set at init; pass --mariadb-root-password otherwise.",
         )
     return text
+
+
+# Client errors that mean "MariaDB is not answering yet" (a fresh instance's MariaDB
+# initializes its volume after the container is up): wait, never a wrong password.
+_UNREACHABLE = re.compile(r"\b(2002|2003|2005|2013)\b")
+
+
+def verify_root_password(
+    container,
+    project: str,
+    root_password: str | None = None,
+    *,
+    bench_path: str | None = None,
+    wait_s: float = 60.0,
+) -> Message | None:
+    """One connection test as the MariaDB root user, before work that needs it.
+
+    A new bench or site shares the instance's existing MariaDB, so a wrong root
+    password used to surface only at ``bench new-site``, minutes into the build.
+    Raises ``PRECONDITION``/``db.root_password_wrong`` on error 1045, in seconds.
+    A MariaDB that is not answering yet is waited for up to ``wait_s``; when it
+    still cannot be checked (no client, unreachable, another error) this returns a
+    warning and the caller proceeds, so the check never blocks work it cannot judge.
+    The password rides in the exec's environment, never an argv or a message.
+    """
+    cfg = (supervision.common_site_config(container, bench_path) or {}) if bench_path else {}
+    host = cfg.get("db_host") or "mariadb"
+    port = cfg.get("db_port") or 3306
+    script = (
+        f"{_CLIENT}; $C -h {shlex.quote(str(host))} -P {shlex.quote(str(port))} "
+        "-u root --connect-timeout=5 -e 'SELECT 1'"
+    )
+    tried = db_password.resolve(project, root_password)
+    deadline = time.monotonic() + wait_s
+    while True:
+        code, out = container.exec_run(
+            ["sh", "-c", script],
+            environment={"MYSQL_PWD": tried},
+            demux=True,
+        )
+        if code == 0:
+            return None
+        stdout, stderr = out if isinstance(out, tuple) else (out, b"")
+        text = _decode(stderr) + _decode(stdout)
+        if re.search(r"\b1045\b", text):
+            saved = db_password.remembered(project)
+            if saved and tried == saved:
+                hint = (
+                    "The password cwcli saved for this instance was rejected, so it is out "
+                    "of date; pass MariaDB's current root password with --db-root-password."
+                )
+            elif saved:
+                hint = "Leave the password out to use the one cwcli saved for this instance."
+            else:
+                hint = (
+                    "cwcli has no saved password for this instance; give the one its MariaDB "
+                    f"was created with (left out, cwcli tries the default, {db_password.DEFAULT})."
+                )
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "db.root_password_wrong",
+                f"MariaDB rejected the root password for '{project}' (error 1045, access "
+                "denied); nothing was changed. The instance's MariaDB already has a root "
+                "password, and this must be that password: it does not set a new one.",
+                hint=hint,
+            )
+        if not _UNREACHABLE.search(text) or time.monotonic() >= deadline:
+            return Message(
+                "db.root_password_unverified",
+                f"Could not check the MariaDB root password for '{project}' before starting "
+                f"({text.strip().splitlines()[-1][:200] if text.strip() else f'exit {code}'}).",
+            )
+        time.sleep(2)
 
 
 def site_db_users(container, bench_path: str) -> dict[str, str]:
