@@ -47,39 +47,18 @@ def _split(**args):
 
 
 def test_an_app_on_the_bench_by_name_is_not_a_remote_pick():
-    on_bench, remote = _split(
-        catalog=[SW, CUSTOM], benchApps=["frappe", "single_window"], project="p", bench="0"
-    )
+    on_bench, remote = _split(catalog=[SW, CUSTOM], benchApps=["frappe", "single_window"])
     assert on_bench == ["single_window"]
     assert remote == ["customization"]
 
 
-def test_an_app_on_the_bench_by_repository_is_not_a_remote_pick_even_when_the_list_is_stale():
-    """The bench's app list missed it (a detail read before the fetch), but the catalog
-    entry for that repository records a checkout on this very bench."""
+def test_only_the_benchs_own_app_list_decides_what_it_holds():
+    """The catalog's remembered installs are not a second answer: an app the freshly
+    read bench does not list stays a remote pick (the fetch matches it by repository)."""
     sw = {**SW, "installs": [{"project": "p", "bench_index": 0, "remote": SW["key"]}]}
-    on_bench, remote = _split(catalog=[sw, CUSTOM], benchApps=["frappe"], project="p", bench="0")
-    assert on_bench == ["single_window"]
-    assert remote == ["customization"]
-
-
-def test_a_checkout_on_another_bench_or_instance_still_leaves_it_a_remote_pick():
-    sw = {
-        **SW,
-        "installs": [
-            {"project": "p", "bench_index": 1},
-            {"project": "other", "bench_index": 0},
-        ],
-    }
-    on_bench, remote = _split(catalog=[sw], benchApps=["frappe"], project="p", bench="0")
+    on_bench, remote = _split(catalog=[sw, CUSTOM], benchApps=["frappe"])
     assert on_bench == []
-    assert remote == ["single_window"]
-
-
-def test_a_remote_hosts_bench_ignores_this_machines_installs():
-    sw = {**SW, "installs": [{"project": "p", "bench_index": 0}]}
-    on_bench, remote = _split(catalog=[sw], benchApps=[], project="p", bench="0", host="h1")
-    assert (on_bench, remote) == ([], ["single_window"])
+    assert remote == ["single_window", "customization"]
 
 
 @pytest.mark.parametrize(

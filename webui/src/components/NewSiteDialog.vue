@@ -77,7 +77,6 @@ watch(() => newSiteDialog.open, (open) => {
   bench.value = newSiteDialog.bench
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
   if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
-  loadCatalog({ fresh: true })
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
@@ -93,8 +92,8 @@ const theBench = computed(() => benches.value.find((b) => String(b.index) === St
 // Captain note 49: the picker lists the bench's apps AND the catalog's remote apps; a
 // remote pick is fetched onto the bench first (`cwcli apps install --fetch-only`), then
 // installed on the new site like any other. Remote picks are keyed `remote:<catalog key>`.
-// An app the bench already holds (by name or by repository) is never a remote pick.
-const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [], project: project.value, bench: bench.value, host: host.value }))
+// An app the bench already holds is never a remote pick.
+const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [] }))
 const benchApps = computed(() => split.value.onBench)
 const remoteApps = computed(() => split.value.remote)
 const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
