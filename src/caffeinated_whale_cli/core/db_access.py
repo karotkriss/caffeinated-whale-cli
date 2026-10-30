@@ -126,11 +126,12 @@ def verify_root_password(
         f"{_CLIENT}; $C -h {shlex.quote(str(host))} -P {shlex.quote(str(port))} "
         f"-u {shlex.quote(user)} --connect-timeout=5 -e 'SELECT 1'"
     )
+    tried = db_password.resolve(project, root_password)
     deadline = time.monotonic() + wait_s
     while True:
         code, out = container.exec_run(
             ["sh", "-c", script],
-            environment={"MYSQL_PWD": db_password.resolve(project, root_password)},
+            environment={"MYSQL_PWD": tried},
             demux=True,
         )
         if code == 0:
@@ -138,18 +139,27 @@ def verify_root_password(
         stdout, stderr = out if isinstance(out, tuple) else (out, b"")
         text = _decode(stderr) + _decode(stdout)
         if re.search(r"\b1045\b", text):
+            saved = db_password.remembered(project)
+            if saved and tried == saved:
+                hint = (
+                    "The password cwcli saved for this instance was rejected, so it is out "
+                    "of date; pass MariaDB's current root password with --db-root-password "
+                    "(--mariadb-root-password on restore)."
+                )
+            elif saved:
+                hint = "Leave the password out to use the one cwcli saved for this instance."
+            else:
+                hint = (
+                    "cwcli has no saved password for this instance; give the one its MariaDB "
+                    f"was created with (left out, cwcli tries the default, {db_password.DEFAULT})."
+                )
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "db.root_password_wrong",
                 f"MariaDB rejected the root password for '{project}' (error 1045, access "
                 "denied); nothing was changed. The instance's MariaDB already has a root "
                 "password, and this must be that password: it does not set a new one.",
-                hint=(
-                    "Leave the password out to use the one cwcli saved for this instance."
-                    if db_password.remembered(project)
-                    else "cwcli has no saved password for this instance; give the one its "
-                    f"MariaDB was created with (left out, cwcli tries the default, {db_password.DEFAULT})."
-                ),
+                hint=hint,
             )
         if not _UNREACHABLE.search(text) or time.monotonic() >= deadline:
             return Message(
