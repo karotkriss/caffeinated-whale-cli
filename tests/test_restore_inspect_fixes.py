@@ -90,7 +90,7 @@ class RecordingContainer:
         self.status = "running"
         self.exec_calls: list[dict] = []
 
-    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+    def exec_run(self, cmd, workdir=None, environment=None):
         batched = emulate_batched(self, cmd)
         if batched is not None:
             return batched
@@ -384,14 +384,14 @@ class TestSiteDetectionExcludesStrayFiles:
 
     def test_ls_failure_returns_none(self):
         class Boom:
-            def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+            def exec_run(self, cmd, workdir=None, environment=None):
                 return (1, b"")
 
         assert bench_sites.list_sites(Boom(), BENCH_PATH) is None
 
     def test_ambiguous_entry_is_failsafe_included(self):
         class Ambiguous:
-            def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+            def exec_run(self, cmd, workdir=None, environment=None):
                 batched = emulate_batched(self, cmd)
                 if batched is not None:
                     return batched
@@ -499,7 +499,7 @@ class _AppsContainer:
         self.available = list(available)
         self.dump_apps = dump_apps
 
-    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+    def exec_run(self, cmd, workdir=None, environment=None):
         s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
         if f"ls -1 {BENCH_PATH}/apps" in s:
             return (0, "\n".join(self.available).encode())
@@ -624,7 +624,7 @@ class TestPostRestoreMigrateAndRestart:
         # A Docker/API EXCEPTION from exec_run (not just a non-zero exit) must be
         # treated as a failed-but-reported migrate and MUST still restart.
         class RaisingMigrate(RecordingContainer):
-            def exec_run(self, cmd, workdir=None, environment=None, demux=False):
+            def exec_run(self, cmd, workdir=None, environment=None):
                 s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
                 if "migrate" in s:
                     raise RuntimeError("docker exec boom")

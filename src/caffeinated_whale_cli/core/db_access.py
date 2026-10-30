@@ -106,7 +106,6 @@ def verify_root_password(
     root_password: str | None = None,
     *,
     bench_path: str | None = None,
-    user: str = "root",
     wait_s: float = 60.0,
 ) -> Message | None:
     """One connection test as the MariaDB root user, before work that needs it.
@@ -124,7 +123,7 @@ def verify_root_password(
     port = cfg.get("db_port") or 3306
     script = (
         f"{_CLIENT}; $C -h {shlex.quote(str(host))} -P {shlex.quote(str(port))} "
-        f"-u {shlex.quote(user)} --connect-timeout=5 -e 'SELECT 1'"
+        "-u root --connect-timeout=5 -e 'SELECT 1'"
     )
     tried = db_password.resolve(project, root_password)
     deadline = time.monotonic() + wait_s
@@ -143,8 +142,7 @@ def verify_root_password(
             if saved and tried == saved:
                 hint = (
                     "The password cwcli saved for this instance was rejected, so it is out "
-                    "of date; pass MariaDB's current root password with --db-root-password "
-                    "(--mariadb-root-password on restore)."
+                    "of date; pass MariaDB's current root password with --db-root-password."
                 )
             elif saved:
                 hint = "Leave the password out to use the one cwcli saved for this instance."

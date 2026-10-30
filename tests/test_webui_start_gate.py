@@ -50,8 +50,6 @@ STUBS = {
         "export const detailOf = (project, host = null) => details[host ? `${host}/${project}` : project] || null\n"
         "export const instance = (p) => globalThis.__t.instances[p]\n"
         "export const loadDetail = () => {}\n"
-        "export const DB_ROOT_PASSWORD_HELP = ''\n"
-        "export const needsDbRootPassword = () => true\n"
         "export async function getJsonUrl(project, query) {\n"
         "  globalThis.__t.calls.push({ url: project, query: Object.fromEntries(query) })\n"
         "  return { url: globalThis.__t.probeUrl ?? 'http://b.localhost:12101', reachable: true }\n"

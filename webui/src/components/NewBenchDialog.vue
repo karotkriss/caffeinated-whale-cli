@@ -30,8 +30,11 @@ const extraApp = (key) => catalogApps.value.find((a) => a.key === key)
 const siteName = ref('')
 const adminPassword = ref('')
 const dbRootPassword = ref('')
-// The new bench shares the instance's MariaDB: no field when cwcli holds its root password.
-const askDbRootPassword = computed(() => !!project.value && needsDbRootPassword(project.value, host.value))
+// The new bench shares the instance's MariaDB: no field when cwcli holds its root password,
+// unless MariaDB rejected the one a job used on this same instance.
+const rejected = ref(null) // { project, host, message }
+const rejection = computed(() => (rejected.value && rejected.value.project === project.value && rejected.value.host === host.value ? rejected.value.message : null))
+const askDbRootPassword = computed(() => !!project.value && (!!rejection.value || needsDbRootPassword(project.value, host.value)))
 const running = ref(false)
 const error = ref(null)
 onMounted(() => loadCatalog())
@@ -50,6 +53,17 @@ watch(() => newBenchDialog.open, (open) => {
   const first = newBenchDialog.project ? findInstance(newBenchDialog.project, newBenchDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
   project.value = first?.project || newBenchDialog.project || null
   host.value = first?.host || newBenchDialog.host || null
+  const retry = newBenchDialog.retry
+  rejected.value = retry ? { project: project.value, host: host.value, message: retry.rejected } : null
+  if (!retry) return
+  const a = retry.args || {}
+  name.value = a.bench_name || ''
+  prevName = name.value
+  siteName.value = a.site_name || ''
+  version.value = a.version || '16'
+  frappeUrl.value = a.frappe_url || ''
+  erpnext.value = !!a.install_erpnext
+  extra.value = (a.apps || []).map((u) => extraOptions.value.find((o) => o.url === u)?.value).filter(Boolean)
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h }) })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
@@ -128,6 +142,7 @@ async function start() {
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
         <div v-if="askDbRootPassword" class="sm:col-span-2">
           <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
+          <ErrorMessage class="mt-1" :message="rejection" />
         </div>
         <Checkbox v-model="erpnext" label="Install ERPNext on the first site" />
         <div class="sm:col-span-2">

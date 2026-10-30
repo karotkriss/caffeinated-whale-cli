@@ -32,7 +32,9 @@ const bench = ref(null)
 const site = ref('')
 const adminPassword = ref('')
 const dbRootPassword = ref('')
-const askDbRootPassword = computed(() => !!project.value && needsDbRootPassword(project.value, host.value))
+const rejected = ref(null) // { project, host, message }: MariaDB rejected the password a job used
+const rejection = computed(() => (rejected.value && rejected.value.project === project.value && rejected.value.host === host.value ? rejected.value.message : null))
+const askDbRootPassword = computed(() => !!project.value && (!!rejection.value || needsDbRootPassword(project.value, host.value)))
 const apps = ref([])
 const pickerOpen = ref(false)
 onMounted(() => loadCatalog())
@@ -78,6 +80,15 @@ watch(() => newSiteDialog.open, (open) => {
   bench.value = newSiteDialog.bench
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
   if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
+  const retry = newSiteDialog.retry
+  rejected.value = retry ? { project: project.value, host: host.value, message: retry.rejected } : null
+  if (!retry) return
+  const a = retry.args || {}
+  site.value = retry.site || ''
+  apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
+  makeDefault.value = !!a.default
+  devMode.value = !!a.developer_mode
+  publishing.value = !!a.publish && publishable.value
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
@@ -253,7 +264,10 @@ async function start() {
           <p class="mt-1 text-xs" :class="nameState.ok ? (nameState.warn ? 'text-ink-amber-6' : 'text-ink-gray-5') : site.trim() ? 'text-ink-red-5' : 'text-ink-gray-5'">{{ nameState.warn || nameState.text }}</p>
         </div>
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
-        <FormControl v-if="askDbRootPassword" v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
+        <div v-if="askDbRootPassword">
+          <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
+          <ErrorMessage class="mt-1" :message="rejection" />
+        </div>
         <div class="sm:col-span-2">
           <div class="mb-1 text-xs text-ink-gray-5">Apps to install</div>
           <div v-if="!theBench" class="text-sm text-ink-gray-5">Pick a bench first.</div>
