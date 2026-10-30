@@ -49,6 +49,15 @@ Three pieces (do not elaborate them):
    ``--unset <exact value>``, so two concurrent installs/updates against the same
    bench never clobber each other's bridge or credential-helper entry.
 
+In shared mode the per-invocation bridge is the FALLBACK, not the default.
+Before standing it up, :func:`credential_bridge` wires the instance into the
+machine-wide persistent bridge (``utils/cred_daemon.ensure_bridge``), whose helper
+lives in the container's SYSTEM git config. git tries ``credential.helper`` entries
+in config order (system, then global), so the shared service-account credential
+answers first and no member has to sign in personally; the member's own gh/glab is
+asked only when the shared one answers nothing, and that is announced in one
+stderr line. Per-user mode is unchanged.
+
 git only invokes a credential helper on an HTTP 401, so the bridge is inert for
 public repos - which is why :func:`credential_bridge` can safely wrap EVERY
 git-URL install and every update without pre-detecting a private repo. It is a
@@ -66,6 +75,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
@@ -482,6 +492,60 @@ def _require_writable_workspace(host_dir: Path) -> None:
     )
 
 
+# How long a shared-mode fetch waits for the service-account daemon to bind a
+# freshly registered workspace's socket (it reconciles its registry every
+# ``_ACCEPT_TIMEOUT``). Bounded so a stopped daemon costs a few seconds, then the
+# member's own sign-in takes over.
+_SHARED_SOCKET_WAIT = 5.0
+
+
+def _wire_shared_bridge(container, bench_path: str) -> bool:
+    """Shared mode: put the shared service-account credential ahead of the member's.
+
+    Wires the instance into the machine-wide persistent bridge (the system-level
+    helper git asks first) and waits briefly for the daemon to serve it. Returns
+    True when the shared bridge is configured for this instance - the per-invocation
+    bridge is then only the fallback. Never raises (``ensure_bridge`` does not).
+    """
+    if not shared_home.shared_mode():
+        return False
+    project = (getattr(container, "labels", None) or {}).get("com.docker.compose.project")
+    if not project:
+        return False
+    from ..utils import cred_daemon
+
+    outcome = cred_daemon.ensure_bridge(container, bench_path, project)
+    if outcome is None:
+        return False
+    if not _prefer_tcp():
+        sock = Path(outcome.workspace) / PERSISTENT_SOCK_NAME
+        deadline = time.monotonic() + _SHARED_SOCKET_WAIT
+        while not sock.is_socket() and time.monotonic() < deadline:
+            time.sleep(0.1)
+    return True
+
+
+def _fallback_notice() -> Callable[[str, bool], None]:
+    """An audit hook that says, once, that the member's own sign-in was asked.
+
+    The per-invocation listener is only reached after the system-level shared
+    helper answered nothing, so its first request IS the fallback.
+    """
+    said = threading.Event()
+
+    def notice(host: str, answered: bool) -> None:
+        if said.is_set():
+            return
+        said.set()
+        if answered:
+            line = f"the shared credential did not answer for {host}; used your own gh/glab sign-in"
+        else:
+            line = f"neither the shared credential nor your own gh/glab sign-in answered for {host}"
+        sys.stderr.write(f"cwcli: {line}\n")
+
+    return notice
+
+
 @contextlib.contextmanager
 def credential_bridge(container, bench_path: str) -> Iterator[None]:
     """Stand up the git credential bridge for the duration of a fetch/update op.
@@ -491,6 +555,9 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
     shim. Tears all of it down on exit (socket, shim, listener, git config) whether
     the wrapped op succeeds or raises. A no-op (still yields) when no bind mount can
     be resolved - public fetches keep working, private ones fail as they did before.
+
+    In shared mode the instance is first wired into the shared bridge, so the
+    shared credential answers first and this bridge is the announced fallback.
     """
     resolved = _resolve_workspace_mount(container, bench_path)
     if resolved is None:
@@ -498,6 +565,7 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         return
     host_dir, container_dir = resolved
     _require_writable_workspace(host_dir)
+    notice = _fallback_notice() if _wire_shared_bridge(container, bench_path) else None
 
     uid = uuid.uuid4().hex[:12]
     helper_name = _HELPER_NAME_FMT.format(uid)
@@ -560,7 +628,9 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         srv.listen(8)
 
         stop = threading.Event()
-        thread = threading.Thread(target=_serve, args=(srv, stop, auth), daemon=True)
+        thread = threading.Thread(
+            target=_serve, args=(srv, stop, auth), kwargs={"audit": notice}, daemon=True
+        )
         thread.start()
 
         container.exec_run(

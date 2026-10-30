@@ -655,3 +655,87 @@ def test_teardown_does_not_mask_the_original_error(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="docker exec blew up"):
         with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
             pytest.fail("setup should have raised before yield")
+
+
+# ------------------------------------------------- shared mode: shared credential first
+
+
+class LabelledContainer(FakeContainer):
+    labels = {"com.docker.compose.project": "demo"}
+
+
+def _ask(sock_path, host=b"gitlab.example.com"):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(str(sock_path))
+    client.sendall(b"protocol=https\nhost=" + host + b"\n\n")
+    client.shutdown(socket.SHUT_WR)
+    resp = _drain(client)
+    client.close()
+    return resp
+
+
+def _shared_wiring(monkeypatch, tmp_path, *, shared, outcome):
+    """Patch shared mode and record ``ensure_bridge`` calls; returns the call list."""
+    from caffeinated_whale_cli.utils import cred_daemon
+
+    calls = []
+
+    def fake_ensure(container, bench_path, project):
+        calls.append((bench_path, project))
+        if outcome:
+            # The shared daemon's socket is already bound, so there is no wait.
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(str(tmp_path / credbridge.PERSISTENT_SOCK_NAME))
+            return cred_daemon.EnsureOutcome("demo", str(tmp_path), "!x", True, False)
+        return None
+
+    monkeypatch.setattr(credbridge.shared_home, "shared_mode", lambda: shared)
+    monkeypatch.setattr(credbridge.shared_home, "gid", lambda: None)
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", fake_ensure)
+    return calls
+
+
+@unix_only
+@pytest.mark.parametrize("answer", [b"username=u\npassword=p\n", b""])
+def test_shared_mode_wires_the_shared_bridge_first_and_announces_the_fallback_once(
+    tmp_path, monkeypatch, capsys, answer
+):
+    """In shared mode the instance is wired into the shared bridge (the system
+    helper git asks first) before the per-invocation bridge stands up; a request
+    reaching the per-invocation listener IS the fallback, so it is said once."""
+    calls = _shared_wiring(monkeypatch, tmp_path, shared=True, outcome=True)
+
+    class Done:
+        stdout = answer
+
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: Done())
+    container = LabelledContainer(tmp_path)
+    with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+        assert calls == [("/workspace/frappe-bench", "demo")]
+        assert capsys.readouterr().err == ""  # nothing said until the fallback is used
+        sock = _only(tmp_path.glob(".git-cred-*.sock"))
+        assert _ask(sock) == answer
+        assert _ask(sock) == answer
+
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "shared credential" in err and "gitlab.example.com" in err
+    assert ("used your own gh/glab sign-in" in err) == bool(answer)
+
+
+@unix_only
+@pytest.mark.parametrize("shared, outcome", [(False, True), (True, False)])
+def test_no_fallback_notice_without_a_shared_bridge(tmp_path, monkeypatch, capsys, shared, outcome):
+    """Per-user mode never touches the shared bridge, and a shared install whose
+    shared bridge is not enabled has no shared credential to fall back from."""
+    calls = _shared_wiring(monkeypatch, tmp_path, shared=shared, outcome=outcome)
+
+    class Done:
+        stdout = b"username=u\npassword=p\n"
+
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: Done())
+    with credbridge.credential_bridge(LabelledContainer(tmp_path), "/workspace/frappe-bench"):
+        _ask(_only(tmp_path.glob(".git-cred-*.sock")))
+
+    assert calls == ([] if not shared else [("/workspace/frappe-bench", "demo")])
+    assert capsys.readouterr().err == ""
