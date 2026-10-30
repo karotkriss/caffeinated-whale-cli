@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import docker
+
 from ..utils import bench_sites, db_utils, shared_home
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from .docker import (
@@ -663,10 +665,68 @@ def _archive_project_directory(
         return False
 
 
+def _project_image_ids(containers) -> list[str]:
+    """The project's container images, frappe first, for :func:`_empty_dir_as_root`.
+
+    Read BEFORE the containers are removed: the images outlive them, so the root
+    helper needs no pull. An unreadable container is skipped.
+    """
+    ids: list[str] = []
+    for c in sorted(
+        containers, key=lambda c: c.labels.get("com.docker.compose.service") != "frappe"
+    ):
+        try:
+            ids.append(c.image.id)
+        except Exception:
+            continue
+    return ids
+
+
+def _empty_dir_as_root(project_dir: Path, images: list[str], emit: OnEvent) -> bool:
+    """Shared mode: empty ``project_dir`` through a short-lived root container.
+
+    In shared mode the container ``frappe`` user is aligned to the cwcli SERVICE
+    uid, so the bench under ``data/`` is service-owned and a member's ``rmtree``
+    fails with EACCES. The Docker daemon, which wrote those files, deletes them
+    instead: only ``project_dir`` is mounted, with no network, and the empty dir
+    itself is then removed host-side by the caller. Permissions are never loosened.
+
+    Tries the project's own images (captured before its containers were removed),
+    then any local ``frappe/bench`` image (an orphan has no containers left).
+    Returns True once one helper run succeeds.
+    """
+    try:
+        client = docker.from_env()
+        candidates = list(images)
+        try:
+            candidates += [i.id for i in client.images.list(name="frappe/bench")]
+        except Exception:
+            pass
+    except Exception as e:
+        emit(RmTrace(text=f"Docker unavailable for the root removal helper: {e}"))
+        return False
+    for image in dict.fromkeys(candidates):
+        try:
+            client.containers.run(
+                image,
+                entrypoint=["sh", "-c", "rm -rf -- /target/* /target/.[!.]* /target/..?*"],
+                user="0:0",
+                network_mode="none",
+                volumes={str(project_dir): {"bind": "/target", "mode": "rw"}},
+                remove=True,
+            )
+            emit(RmTrace(text=f"Removed service-owned files in {project_dir} as root"))
+            return True
+        except Exception as e:
+            emit(RmTrace(text=f"Root removal helper with image {image} failed: {e}"))
+    return False
+
+
 def _delete_project_directory(
     project_name: str,
     emit: OnEvent,
     failures: list[str] | None = None,
+    helper_images: list[str] | None = None,
 ) -> bool:
     """Delete the project's local directory at ``PROJECTS_DIR/{project_name}/``.
 
@@ -674,6 +734,10 @@ def _delete_project_directory(
     Without this step ``cwcli rm`` leaves the project lingering on disk (issue
     #19). Returns True if a directory was removed, False if there was nothing to
     remove or removal failed; ``failures`` collects a real ``rmtree`` failure.
+
+    In shared mode a permission failure (service-owned bench files) is retried
+    through :func:`_empty_dir_as_root`; if that also fails, the failure names the
+    directory left on disk and the command that finishes the removal.
     """
     project_dir = PROJECTS_DIR / project_name
 
@@ -699,14 +763,34 @@ def _delete_project_directory(
         emit(RmTrace(text=f"No project directory to remove at {project_dir}"))
         return False
 
+    shared = shared_home.shared_mode()
     try:
-        shutil.rmtree(project_dir)
+        try:
+            shutil.rmtree(project_dir)
+        except PermissionError:
+            if not shared or not _empty_dir_as_root(project_dir, helper_images or [], emit):
+                raise
+            shutil.rmtree(project_dir)
         emit(RmNotice(text=f"Removed project directory {project_dir}"))
         return True
     except Exception as e:
-        emit(RmWarning(text=f"Could not remove project directory '{project_dir}': {e}"))
+        finish = f"sudo rm -rf '{project_dir}'"
+        emit(
+            RmWarning(
+                text=f"Could not remove project directory '{project_dir}': {e}",
+                hint=(
+                    f"Its remaining files belong to the cwcli service account; finish with {finish}."
+                    if shared
+                    else None
+                ),
+            )
+        )
         if failures is not None:
-            failures.append(f"could not remove project directory for '{project_name}'")
+            failures.append(
+                f"project directory '{project_dir}' was left on disk; remove it with {finish}"
+                if shared
+                else f"could not remove project directory for '{project_name}'"
+            )
         emit(RmTrace(text=f"Exception: {e}"))
         return False
 
@@ -1101,6 +1185,9 @@ def remove(
         failures.append(f"a verified database backup could not be created for '{project_name}'")
         return _result()
 
+    # Captured now: the shared-mode root removal helper reuses these images.
+    helper_images = _project_image_ids(containers)
+
     # Stop and remove each container.
     container_removal_failed = False
     for container in containers:
@@ -1224,7 +1311,9 @@ def remove(
         # Remove the local project directory (deleted regardless of --no-volumes:
         # it is config, not data, and leaving it behind is the issue #19 bug).
         emit(RmStep(label=f"Removing project directory for '{project_name}'...", style="red"))
-        dir_removed = _delete_project_directory(project_name, emit, failures=failures)
+        dir_removed = _delete_project_directory(
+            project_name, emit, failures=failures, helper_images=helper_images
+        )
 
     # Clear the cache only when NO step failed. This covers the gate-blocked case
     # AND a post-gate failure - any of those may leave a data-bearing volume or

@@ -218,6 +218,102 @@ class TestRemoveProjectDirectory:
         assert (core_rm.PROJECTS_DIR / "proj").exists()
 
 
+class TestSharedModeServiceOwnedDirectory:
+    """Shared mode: a member's rmtree hits service-owned bench files (EACCES).
+
+    The root helper container empties the dir instead; if it cannot, the failure
+    names the directory left on disk and the command that finishes the removal.
+    Per-user mode never reaches for the helper.
+    """
+
+    @staticmethod
+    def _denied_once(monkeypatch):
+        real = core_rm.shutil.rmtree
+        calls = []
+
+        def rmtree(path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "Permission denied", str(path))
+            real(path)
+
+        monkeypatch.setattr(core_rm.shutil, "rmtree", rmtree)
+
+    def test_shared_mode_finishes_through_the_root_helper(self, cwcli_home, monkeypatch):
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: True)
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert (
+            core_rm._delete_project_directory(
+                "proj", _render_event, failures=failures, helper_images=["img"]
+            )
+            is True
+        )
+        assert not project_dir.exists()
+        assert failures == []
+        assert helper.call_args.args[:2] == (project_dir, ["img"])
+
+    def test_shared_mode_helper_failure_names_what_is_left(
+        self, cwcli_home, monkeypatch, capsys
+    ):
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", lambda *a: False)
+        failures = []
+
+        assert _delete_project_directory("proj", failures=failures) is False
+        assert project_dir.exists()
+        assert failures == [
+            f"project directory '{project_dir}' was left on disk; "
+            f"remove it with sudo rm -rf '{project_dir}'"
+        ]
+        assert f"sudo rm -rf '{project_dir}'" in capsys.readouterr().err
+
+    def test_per_user_mode_never_uses_the_helper(self, cwcli_home, monkeypatch):
+        _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        helper = MagicMock()
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert _delete_project_directory("proj", failures=failures) is False
+        helper.assert_not_called()
+        assert failures == ["could not remove project directory for 'proj'"]
+
+    def test_helper_mounts_only_the_project_dir_as_root_and_falls_through(
+        self, tmp_path, monkeypatch
+    ):
+        client = MagicMock()
+        client.images.list.return_value = [MagicMock(id="bench-img")]
+        client.containers.run.side_effect = [RuntimeError("no sh"), None]
+        monkeypatch.setattr(core_rm.docker, "from_env", lambda: client)
+
+        assert core_rm._empty_dir_as_root(tmp_path, ["frappe-img"], _render_event) is True
+        images = [c.args[0] for c in client.containers.run.call_args_list]
+        assert images == ["frappe-img", "bench-img"]
+        kwargs = client.containers.run.call_args.kwargs
+        assert kwargs["volumes"] == {str(tmp_path): {"bind": "/target", "mode": "rw"}}
+        assert kwargs["user"] == "0:0"
+        assert kwargs["network_mode"] == "none"
+        assert kwargs["remove"] is True
+
+    def test_project_images_put_frappe_first(self):
+        def container(service, image):
+            c = MagicMock()
+            c.labels = {"com.docker.compose.service": service}
+            c.image.id = image
+            return c
+
+        containers = [container("mariadb", "db-img"), container("frappe", "frappe-img")]
+        assert core_rm._project_image_ids(containers) == ["frappe-img", "db-img"]
+
+
 class TestRemoveProjectEndToEnd:
     """Integration: ``_remove_project`` ties volumes + directory together."""
 
