@@ -233,9 +233,11 @@ def _ensure_container_config(container, container_dir: str) -> tuple[str, bool]:
 
     Written at ``--system`` (``/etc/gitconfig``, via ``exec_run(user="root")``),
     not ``--global``: the persistent bridge must serve ANY shell/editor user
-    (VS Code attached-container sessions may run as a different user), and the
-    system config is git's lowest-priority helper source, so a user's own helpers
-    still run first. Idempotent: grep the existing values before adding, so a
+    (VS Code attached-container sessions may run as a different user). git tries
+    ``credential.helper`` entries in config order (system, then global), so this
+    helper is asked FIRST and a user's own helpers only when it answers nothing -
+    which is what makes the shared credential the default in shared mode (see
+    ``core.credbridge.credential_bridge``). Idempotent: grep the existing values before adding, so a
     double-ensure adds exactly one line. Returns ``(config_value, added)``.
     """
     from ..core import credbridge
