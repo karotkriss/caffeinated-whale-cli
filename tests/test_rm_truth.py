@@ -252,9 +252,7 @@ class TestSharedModeServiceOwnedDirectory:
         assert failures == []
         assert helper.call_args.args[0] == project_dir
 
-    def test_shared_mode_helper_failure_names_what_is_left(
-        self, cwcli_home, monkeypatch, capsys
-    ):
+    def test_shared_mode_helper_failure_names_what_is_left(self, cwcli_home, monkeypatch, capsys):
         project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
         self._denied_once(monkeypatch)
         monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: True)
