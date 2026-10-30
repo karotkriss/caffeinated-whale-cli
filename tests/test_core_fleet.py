@@ -953,7 +953,7 @@ class TestDockerOutage:
 
         core_fleet.event_loop(f, stop)
 
-        assert waits == [1.0, 2.0, 4.0, 5.0, 5.0, 5.0]
+        assert waits == [1.0, 2.0, 2.0, 2.0, 2.0, 2.0]
         assert f.docker_down()
 
     def test_a_half_open_stream_is_closed_when_docker_stops_answering(self, monkeypatch, listing):
@@ -976,11 +976,13 @@ class TestDockerOutage:
                 return _HungStream()
 
             def ping(self):
+                pings.append(1)
                 raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=5.0)")
 
             def close(self):
                 pass
 
+        pings: list = []
         monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: _Client())
         f = core_fleet.Fleet()
         stop = threading.Event()
@@ -990,12 +992,81 @@ class TestDockerOutage:
         core_fleet.event_loop(f, stop, on_error=lost.append)
 
         assert released.is_set()
+        assert len(pings) == 3, "three late answers in a row are an outage"
         assert f.docker_state() == {
             "reachable": False,
             "error": "Read timed out. (read timeout=5.0)",
             "since": f.docker_state()["since"],
         }
         assert len(lost) == 1
+
+    @staticmethod
+    def _watched(pings, released, stop):
+        """A client whose event stream stays open until ``released``, and whose
+        ``ping`` answers from ``pings`` (an exception is raised, anything else
+        returned), stopping the loop once they run out and answering after."""
+        answers = list(pings)
+
+        class _HungStream:
+            def __iter__(self):
+                assert released.wait(5), "the stream was never released"
+                return iter(())
+
+            def close(self):
+                released.set()
+
+        class _Client:
+            def events(self, **kwargs):
+                return _HungStream()
+
+            def ping(self):
+                if not answers:
+                    return True
+                answer = answers.pop(0)
+                if not answers:
+                    stop.set()
+                    released.set()
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+
+            def close(self):
+                pass
+
+        return _Client
+
+    def test_one_slow_ping_is_not_an_outage(self, monkeypatch, listing):
+        """An overloaded daemon answers late; that must not blank every page."""
+        listing(("p", "running", ["8000"]))
+        monkeypatch.setattr(core_fleet, "_LIVENESS_S", 0.01)
+        late = requests.exceptions.ReadTimeout("Read timed out. (read timeout=5.0)")
+        released, stop = threading.Event(), threading.Event()
+        client = self._watched([late, True, late, late, True], released, stop)
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: client())
+        f = core_fleet.Fleet()
+        published, lost = [], []
+        f.set_publish(lambda *a: None, docker=published.append)
+
+        core_fleet.event_loop(f, stop, on_error=lost.append)
+
+        assert lost == []
+        assert [d["reachable"] for d in published] == [True]
+        assert f.docker_down() is False
+
+    def test_a_refused_ping_is_an_outage_at_once(self, monkeypatch, listing):
+        listing(("p", "running", ["8000"]))
+        monkeypatch.setattr(core_fleet, "_LIVENESS_S", 0.01)
+        refused = requests.exceptions.ConnectionError("Connection refused")
+        released, stop = threading.Event(), threading.Event()
+        client = self._watched([refused], released, stop)
+        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: client())
+        f = core_fleet.Fleet()
+        lost = []
+
+        core_fleet.event_loop(f, stop, on_error=lost.append)
+
+        assert lost == [refused]
+        assert f.docker_state()["error"] == "Connection refused"
 
     def test_a_torn_stream_never_ends_the_thread(self, monkeypatch, listing):
         """urllib3's ProtocolError is neither a DockerException nor an OSError."""
