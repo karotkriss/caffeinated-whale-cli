@@ -844,7 +844,7 @@ class TestGitHostingCli:
         assert "gitlab.com: not signed in (`glab auth login --hostname gitlab.com`)" in detail
         assert "not authenticated" not in detail
         assert fix is None
-        assert sorted(c[-1] for c in calls) == ["gitlab.example.com", "gitlab.com"]
+        assert sorted(c[-1] for c in calls) == ["gitlab.com", "gitlab.example.com"]
 
     def test_warn_when_signed_in_to_no_judged_host(self, monkeypatch):
         self._signed_in(monkeypatch, "/usr/bin/glab", set(), {"a.example", "b.example"})

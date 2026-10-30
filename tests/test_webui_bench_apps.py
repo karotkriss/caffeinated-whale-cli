@@ -17,17 +17,17 @@ MODULE = Path(__file__).resolve().parents[1] / "webui" / "src" / "data" / "bench
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 SW = {
-    "key": "gitlab.example.com/ministry-of-housing-and-water/chpa/single-window",
-    "name": "single_window",
-    "title": "Single Window",
-    "source": {"url": "https://gitlab.example.com/ministry-of-housing-and-water/chpa/single-window"},
+    "key": "gitlab.example.com/example-group/sub-group/field-service",
+    "name": "field_service",
+    "title": "Field Service",
+    "source": {"url": "https://gitlab.example.com/example-group/sub-group/field-service"},
     "installs": [],
 }
 SW_URL = SW["source"]["url"]
 CUSTOM = {
-    "key": "gitlab.example.com/dev-tools/customization",
+    "key": "gitlab.example.com/tools/customization",
     "name": "customization",
-    "source": {"url": "https://gitlab.example.com/dev-tools/customization"},
+    "source": {"url": "https://gitlab.example.com/tools/customization"},
 }
 
 
@@ -48,8 +48,8 @@ def _split(**args):
 
 
 def test_an_app_on_the_bench_by_name_is_not_a_remote_pick():
-    on_bench, remote = _split(catalog=[SW, CUSTOM], benchApps=["frappe", "single_window"])
-    assert on_bench == ["single_window"]
+    on_bench, remote = _split(catalog=[SW, CUSTOM], benchApps=["frappe", "field_service"])
+    assert on_bench == ["field_service"]
     assert remote == ["customization"]
 
 
@@ -59,19 +59,19 @@ def test_only_the_benchs_own_app_list_decides_what_it_holds():
     sw = {**SW, "installs": [{"project": "p", "bench_index": 0, "remote": SW["key"]}]}
     on_bench, remote = _split(catalog=[sw, CUSTOM], benchApps=["frappe"])
     assert on_bench == []
-    assert remote == ["single_window", "customization"]
+    assert remote == ["field_service", "customization"]
 
 
 def test_an_app_on_the_bench_by_repository_is_not_a_remote_pick_whatever_its_name():
     """The catalog names the repository's app differently from the bench's folder,
     but the bench detail's remote for that checkout is the catalog entry's repo."""
-    sw = {**SW, "name": "single-window"}
+    sw = {**SW, "name": "field-service"}
     on_bench, remote = _split(
         catalog=[sw, CUSTOM],
-        benchApps=["frappe", "single_window"],
-        benchRemotes={"single_window": [SW["source"]["url"]]},
+        benchApps=["frappe", "field_service"],
+        benchRemotes={"field_service": [SW["source"]["url"]]},
     )
-    assert on_bench == ["single_window"]
+    assert on_bench == ["field_service"]
     assert remote == ["customization"]
 
 
@@ -79,17 +79,17 @@ def test_an_app_on_the_bench_by_repository_is_not_a_remote_pick_whatever_its_nam
     "bench, held_as",
     [
         (
-            {"benchApps": ["frappe", "single_window"], "benchRemotes": {"single_window": [SW_URL]}},
-            "single_window",
+            {"benchApps": ["frappe", "field_service"], "benchRemotes": {"field_service": [SW_URL]}},
+            "field_service",
         ),
-        ({"benchApps": ["frappe", "single-window"]}, "single-window"),
+        ({"benchApps": ["frappe", "field-service"]}, "field-service"),
         ({"benchApps": ["frappe"], "benchRemotes": None}, None),
     ],
 )
 def test_a_remote_pick_maps_to_the_bench_app_that_holds_its_repository(bench, held_as):
     """A remote pick a fresh read finds on the bench is kept as that bench app, found
     by repository whatever the catalog calls it (NewSiteDialog's picker watcher)."""
-    sw = {**SW, "name": "single-window"}
+    sw = {**SW, "name": "field-service"}
     assert _run(f"benchAppFor({json.dumps(sw)}, {json.dumps(bench)})") == held_as
 
 

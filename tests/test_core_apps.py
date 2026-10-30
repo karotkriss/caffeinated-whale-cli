@@ -509,15 +509,15 @@ def test_a_present_dir_proceeds_when_apps_txt_is_unreadable(monkeypatch, contain
     assert any("install-app payments" in c for c in container.calls)
 
 
-SW_URL = "https://gitlab.example.com/ministry-of-housing-and-water/chpa/single-window"
+SW_URL = "https://gitlab.example.com/example-group/sub-group/field-service"
 
 
 @pytest.mark.parametrize(
     "target, repo, app",
     [
-        (SW_URL, "single-window", "single_window"),  # hyphen slug, underscore app
-        (f"{SW_URL}.git", "single-window", "single_window"),  # the web UI's .git spelling
-        ("https://example.com/org/housing-portal", "housing-portal", "chpa_portal"),
+        (SW_URL, "field-service", "field_service"),  # hyphen slug, underscore app
+        (f"{SW_URL}.git", "field-service", "field_service"),  # the web UI's .git spelling
+        ("https://example.com/org/service-portal", "service-portal", "svc_portal"),
     ],
 )
 @pytest.mark.parametrize("fetch_only", [True, False])
@@ -546,16 +546,16 @@ def test_an_app_already_on_the_bench_is_not_refetched_when_its_repo_has_another_
 def test_the_already_installed_refusal_checks_a_remote_matched_app_by_its_real_name(
     monkeypatch, container
 ):
-    container.available = ["frappe", "single_window"]
-    container.app_remotes = {"single_window": [SW_URL]}
-    container.installed = {"a.localhost": ["frappe", "single_window"]}
+    container.available = ["frappe", "field_service"]
+    container.app_remotes = {"field_service": [SW_URL]}
+    container.installed = {"a.localhost": ["frappe", "field_service"]}
     _cache(monkeypatch, [{"path": BENCH}])
 
     with pytest.raises(CwcliError) as exc:
         core_apps.install_apps("proj", [SW_URL], sites=["a.localhost"], require_absent=True)
 
     assert exc.value.code == "app.already_installed"
-    assert "'single_window'" in exc.value.message
+    assert "'field_service'" in exc.value.message
     assert not any("install-app" in c for c in container.calls)
 
 
@@ -567,7 +567,7 @@ def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodu
     def git(*args, cwd):
         subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
-    app = tmp_path / "apps" / "single_window"
+    app = tmp_path / "apps" / "field_service"
     app.mkdir(parents=True)
     git("init", "-q", cwd=app)
     git("remote", "add", "upstream", SW_URL, cwd=app)
@@ -580,15 +580,15 @@ def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodu
 
     remotes = core_apps.app_remotes(LocalContainer(), str(tmp_path))
 
-    assert remotes == {"single_window": {core_apps.remote_key(SW_URL)}}
+    assert remotes == {"field_service": {core_apps.remote_key(SW_URL)}}
 
 
 def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, container):
     """The bug itself, pinned through the fake: a bench copy with a DIFFERENT remote
     is not the requested repository, so it is fetched, and bench's rename fails."""
-    container.available = ["frappe", "single_window"]
-    container.app_remotes = {"single_window": ["https://elsewhere.example/fork/single-window"]}
-    container.repo_app_names = {"single-window": "single_window"}
+    container.available = ["frappe", "field_service"]
+    container.app_remotes = {"field_service": ["https://elsewhere.example/fork/field-service"]}
+    container.repo_app_names = {"field-service": "field_service"}
     _cache(monkeypatch, [{"path": BENCH}])
 
     result = core_apps.install_apps("proj", [SW_URL], fetch_only=True)
@@ -596,15 +596,15 @@ def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, contain
     assert result.data.ok is False
     assert any(c.startswith("bench get-app") for c in container.calls)
     # The failed clone is cleaned up; the app already on the bench is untouched.
-    assert container.available == ["frappe", "single_window"]
+    assert container.available == ["frappe", "field_service"]
 
 
 def test_a_remote_matched_dir_missing_from_apps_txt_is_refused_by_its_real_name(
     monkeypatch, container
 ):
-    container.available = ["frappe", "single_window"]
+    container.available = ["frappe", "field_service"]
     container.apps_txt = ["frappe"]
-    container.app_remotes = {"single_window": [SW_URL]}
+    container.app_remotes = {"field_service": [SW_URL]}
     container.fail_on = ["get-app"]
     _cache(monkeypatch, [{"path": BENCH}])
 
@@ -613,7 +613,7 @@ def test_a_remote_matched_dir_missing_from_apps_txt_is_refused_by_its_real_name(
     assert result.data.ok is False
     assert not any(c.startswith("bench get-app") for c in container.calls)
     w = next(w for w in result.warnings if w.code == "app.present_not_installed")
-    assert "apps/single_window" in w.text
+    assert "apps/field_service" in w.text
 
 
 def test_install_partial_failure_is_a_warning_envelope_carrying_ok_false(monkeypatch, container):

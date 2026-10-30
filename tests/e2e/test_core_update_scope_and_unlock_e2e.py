@@ -1,7 +1,7 @@
 """Real-Docker E2E: a core update touches ONLY frappe, clears every site's stale
 locks first and lists them, and never leaves anything bench-wide behind.
 
-The captain's staging16 run (2026-10-28): ``cwcli apps update staging16 frappe`` ran
+A staging-server run (2026-10-28): ``cwcli apps update my-instance frappe`` ran
 bench's bench-wide ``bench update --reset``, which hard-reset EVERY app on the bench,
 and a stale document lock (DocumentLockedError on a Module Profile fixture) killed
 the migrate on one site while cwcli reported "Git pull failed". The core path now

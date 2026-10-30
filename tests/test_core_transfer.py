@@ -340,17 +340,17 @@ def test_receive_files_every_set_in_the_download_into_the_store(home, monkeypatc
     # the bundle as the sender's outbox laid it out: <project>/<site>/<id>/{set.json, parts}
     other = tmp_path / "other-machine"
     monkeypatch.setattr(store, "cwcli_home", lambda: other)
-    a = _set(other, "staging16", "shop.localhost")
+    a = _set(other, "my-instance", "shop.localhost")
     monkeypatch.setattr(store, "cwcli_home", lambda: home)
     bundle = other / "backups"
     monkeypatch.setattr(transfer, "_sendme", lambda: str(_fake_sendme(tmp_path, bundle)))
     monkeypatch.setattr(store, "_bench_index", lambda p, bp: 0)
     events = []
     r = transfer.receive_sets("blob" + "a" * 60, on_event=events.append)
-    assert len(r.data["sets"]) == 1 and r.data["sets"][0].startswith("staging16/shop.localhost/")
+    assert len(r.data["sets"]) == 1 and r.data["sets"][0].startswith("my-instance/shop.localhost/")
     got = store.find_set(r.data["sets"][0])
     assert (
-        got is not None and got.reason == "received" and got.note == "from staging16:shop.localhost"
+        got is not None and got.reason == "received" and got.note == "from my-instance:shop.localhost"
     )
     assert (
         not (home / "backups" / ".inbox" / os.listdir(home / "backups" / ".inbox")[0]).exists()

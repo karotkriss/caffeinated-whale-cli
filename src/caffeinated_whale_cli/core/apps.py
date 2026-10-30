@@ -247,7 +247,7 @@ def _bench_copy_of(frappe_container, bench_path: str, target: str, before: set[s
 
     ``bench get-app`` clones into ``apps/<repo slug>`` and only then renames the
     clone to the app's real name, so a repository whose slug is not its app name
-    (``single-window`` holding ``single_window``) dodges bench's own "already
+    (``field-service`` holding ``field_service``) dodges bench's own "already
     exists" check and dies on the rename (``Directory not empty``) when the app is
     already on the bench. Match by the checkout's remote first, so the real app
     name is found whatever the repository is called; the slug is only a fallback
@@ -615,8 +615,8 @@ def _refuse_if_installed(
     the bench exactly as it found it.
 
     The name compared is the one ``install-app`` would be handed: the bench copy
-    :func:`_bench_copy_of` matches (by remote, so a ``single-window`` repository
-    holding ``single_window`` is checked as ``single_window``), else
+    :func:`_bench_copy_of` matches (by remote, so a ``field-service`` repository
+    holding ``field_service`` is checked as ``field_service``), else
     :func:`derive_app_name` of the target. When that derivation is wrong for an
     exotic URL the check simply does not match and the install proceeds to bench's
     own behaviour - it can miss a match, it cannot invent one, so it never refuses an
@@ -1059,7 +1059,7 @@ def checkout_app(
         # `git clean`, no `checkout -f`), and one in the target's way still refuses.
         steps.append(("reset", "git reset --hard"))
     steps.append(("checkout", f"git checkout -B {q_ref} FETCH_HEAD"))
-    # staging16 (2026-10-28): a narrow clone's fetch refspec covers only the branch it
+    # Seen on a staging server (2026-10-28): a narrow clone's fetch refspec covers only the branch it
     # was cloned with, so after this checkout `<remote>/<ref>` never exists and the
     # next reset ("unknown revision") fails. When <ref> is a branch on the remote, add
     # it to the refspec, fetch it so the remote-tracking ref exists, and track it.

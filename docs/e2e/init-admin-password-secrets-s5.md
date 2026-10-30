@@ -1,7 +1,7 @@
 # `init` secret hardening (M2) - real-instance E2E evidence
 
 Worked evidence for routing `bench new-site`'s two secrets off the argv/echo and generating the admin password.
-Run against a fully isolated throwaway instance (temporary `HOME`, unique `cwe2e-*` project, ports `18000-18005`/`19000-19005` away from the captain's real `ners` instance, dedicated volumes/network).
+Run against a fully isolated throwaway instance (temporary `HOME`, unique `cwe2e-*` project, ports `18000-18005`/`19000-19005` away from the captain's real `client-b` instance, dedicated volumes/network).
 The captain's real `~/.cwcli` and real instances were never touched, and every throwaway container/volume/network/`HOME` was removed afterward.
 
 Frappe resolved to `frappe/bench:v5.31.0` (version-16, `frappe 16.26.3`).
@@ -78,4 +78,4 @@ Eliminating the leaf-process exposure would require a change to `bench` itself a
 - Temporary `HOME` under the session scratchpad; fresh `~/.cwcli`.
 - Ports `18000-18005` / `19000-19005`; the port-conflict guard correctly refused a second instance on the busy ports (pre-existing cwcli behavior).
 - All `cwe2e-*` containers/volumes/network removed; temporary `HOME` deleted.
-- `ners` (the captain's real instance) stayed `Up`; real `~/.cwcli` untouched.
+- `client-b` (the captain's real instance) stayed `Up`; real `~/.cwcli` untouched.

@@ -81,7 +81,7 @@ def test_the_page_reads_what_the_remote_printed(node):
         "hub": "hub-x",
         "cap": "operator",
         "user": "frappe",
-        "address": "10.9.8.7",
+        "address": "192.0.2.7",
         "port": 2222,
         "name": "Build box",
         "host_key": "ssh-ed25519 AAAA",

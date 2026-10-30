@@ -13,7 +13,7 @@
 - [x] 1.7 Cover the `install` banner honesty branch: "App(s) fetched." vs "App(s) installed." depends on an `install-app` step actually having run (`apps.py:381-388`), so `--fetch-only` and a bench with no sites both say "fetched".
 - [x] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Green-before is committed as `affdda5`, its own point in history, so the claim is auditable rather than asserted.
   Design Decision 6 has been CORRECTED TWICE: it first claimed NO test edit was expected by design (falsified before implementation), then "exactly two" (falsified BY implementation - there are THREE; see Decision 6 for the list and why the third was missed). Every one is a subject that moved, not a behaviour that changed, and each is replaced by an equivalent with its assertions intact. No test in `tests/test_apps_characterization.py` changed its call or assertion; only its shared `_wire_container` helper re-pointed, which is the technique batch 4 used to keep its own characterization diff empty.
-- [ ] 1.9 Note for whoever runs the suite: `/tmp/pytest-of-cmckay` is owned by `root` on this host, so `tmp_path` tests error in setup unless `TMPDIR` is redirected. Environmental, not a real failure.
+- [ ] 1.9 Note for whoever runs the suite: `/tmp/pytest-of-<user>` is owned by `root` on this host, so `tmp_path` tests error in setup unless `TMPDIR` is redirected. Environmental, not a real failure.
 
 ## 2. `core/apps.py` - `list_apps` first (the pure read)
 

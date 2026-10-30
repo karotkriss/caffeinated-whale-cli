@@ -7,7 +7,7 @@
 //   GET /api/v1/instances/<p>        cache-backed core.inspect (benches, sites, apps)
 //   GET /api/v1/hosts/<h>/instances/<p>   the same read on a remote host, forwarded
 //
-// Two machines can each have an instance called `test555`, so everything here is
+// Two machines can each have an instance called `my-instance`, so everything here is
 // keyed by `ikey(host, project)`: the bare project for this machine, `<host>/<project>`
 // for a remote one, and every instance object carries `host` (null for local).
 //

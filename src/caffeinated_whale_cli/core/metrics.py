@@ -56,7 +56,7 @@ def _read_host() -> dict[str, Any]:
 
 
 def _role(container_name: str, project: str) -> str:
-    """``test555-redis-queue-1`` -> ``redis-queue``: the compose service name."""
+    """``my-instance-redis-queue-1`` -> ``redis-queue``: the compose service name."""
     name = container_name
     if name.startswith(project + "-"):
         name = name[len(project) + 1 :]

@@ -327,7 +327,7 @@ class TestAxiWrongCopy:
 
 
 class TestAFailedMigrateNamesTheSiteAndTheBenchState:
-    """The captain's staging16 run (2026-10-28): the failure was in migrate on one site,
+    """A staging-server run (2026-10-28): the failure was in migrate on one site,
     yet cwcli reported "frappe: Git pull failed" and said nothing about which sites had
     migrated or what the bench was left in. A core update now runs the ordinary
     per-site state machine, so every surface names the stage, the site and the state."""

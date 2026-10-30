@@ -1,6 +1,6 @@
 """``cwcli axi migrate`` / ``run-tests`` / ``build`` - the execution verbs.
 
-The gap frappemate reported: `bench migrate` and `bench run-tests` are the two
+The gap an agent reported: `bench migrate` and `bench run-tests` are the two
 commands every Frappe proof runs, and every execution step was dropping to raw
 `cwcli run` because neither had an agent form. `bench build` joined them for the
 same reason (a later probe): an app whose JS or CSS changed is not visibly changed
