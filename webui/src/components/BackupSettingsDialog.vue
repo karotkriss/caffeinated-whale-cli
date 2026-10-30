@@ -6,7 +6,7 @@ import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } fr
 import { backupSettingsDialog, loadRetention, saveBackupSettings, loadOffsite, sizeText, whenText, REASON_LABEL } from '../data/backups'
 import { openSettings } from '../data/settings-dialog'
 import { can } from '../data/session'
-import { instances } from '../data/fleet'
+import { localInstances } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 
@@ -28,7 +28,7 @@ const offsiteError = computed(() => {
   const e = plan.value?.offsite_target?.error
   return !e || /[.!?]$/.test(e) ? e : `${e}.`
 })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.project, value: i.project })))
+const projectOptions = computed(() => localInstances.value.map((i) => ({ label: i.project, value: i.project })))
 function fill(settings) {
   const s = settings || {}
   form.value = {
@@ -73,7 +73,7 @@ async function pruneOffsite() {
     d.open = false
   } catch (e) { error.value = e }
 }
-watch(() => d.open, (open) => { if (open) { project.value = d.project || instances.value[0]?.project || null; plan.value = null; refresh() } })
+watch(() => d.open, (open) => { if (open) { project.value = d.project || localInstances.value[0]?.project || null; plan.value = null; refresh() } })
 watch(project, () => { if (d.open) refresh() })
 const removing = computed(() => (plan.value?.decisions || []).filter((x) => !x.keep))
 const keeping = computed(() => (plan.value?.decisions || []).filter((x) => x.keep))

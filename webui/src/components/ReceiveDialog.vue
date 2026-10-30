@@ -4,7 +4,7 @@
 import { computed, ref, watch } from 'vue'
 import { Button, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { receiveDialog } from '../data/transfer'
-import { instances } from '../data/fleet'
+import { localInstances } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 
@@ -14,7 +14,7 @@ const site = ref('')
 const running = ref(false)
 const error = ref(null)
 watch(() => receiveDialog.open, (open) => { if (open) { ticket.value = ''; project.value = ''; site.value = ''; error.value = null } })
-const projectOptions = computed(() => [{ label: 'As filed by the sender', value: '' }, ...instances.value.map((i) => ({ label: i.project, value: i.project }))])
+const projectOptions = computed(() => [{ label: 'As filed by the sender', value: '' }, ...localInstances.value.map((i) => ({ label: i.project, value: i.project }))])
 const clean = computed(() => ticket.value.replace(/\s+/g, ''))
 const ok = computed(() => /^blob[a-z2-7]{40,}$/.test(clean.value) && (!project.value || !!site.value.trim()))
 async function start() {

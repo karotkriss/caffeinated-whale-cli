@@ -55,7 +55,7 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   challenge and access lists (Operator)
 * ``GET /api/v1/jobs[/<id>]``               - durable detached job summaries
   and one job's resumable event log
-* ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
+* ``GET /api/v1/stream[?focus=<project>[&host=<host>]]``  - SSE: one ``snapshot`` event, then
   ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
   frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
   (a reconnect always gets a fresh snapshot, which IS the resume)
@@ -92,6 +92,29 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   whole-cache clear keeps the core's own consent (``NEEDS_CHOICE``
   ``confirm_clear`` -> 409 until ``consent: true``), and nothing here is a
   project-scoped mutation, so it is serialized under one shared lock
+* ``GET /api/v1/hosts``                     - this hub's name and public key, and
+  every remote host with its link state (``core.hosts``)
+* ``POST /api/v1/hosts``                    - ``{op: add|remove|check|repin}`` (Admin):
+  pin a remote from its pairing string, forget it, reconnect it now, or pin a changed
+  host key
+* ``/api/v1/hosts/<host>/<path>``           - forwarded to ``/api/v1/<path>`` on that
+  host through its transport, GET and POST alike, as the signed-in user with their
+  role (the remote lowers it to its cap). Never the remote's session, stream or
+  hosts routes, never the unbounded upload. The answer comes back as DATA only:
+  JSON, a download as an attachment, or an image under a sandboxing policy, every
+  one with ``nosniff``, never a cookie, never a page
+
+**Remote hosts.** The ``host_snapshot``, ``host_delta``, ``host_job``, ``host_link``,
+``host_event`` and ``host_removed`` SSE events carry each remote host's frames with
+its id, and the first ``snapshot`` frame carries every host with its last-known
+instances. On the REMOTE side a bearer request from a hub's bridge carries
+``X-Cwcli-Delegated-User`` and ``X-Cwcli-Delegated-Role``; they are honored as a
+DOWNGRADE only (the token already means Admin, so a header can lower the role and
+never raise it), never on a cookie session, and a malformed pair is refused
+(``auth.delegation_invalid``). Jobs started that way record ``via: hub``. Whatever
+the delegated role, such a request never adds or updates a community integration or
+runs (or retries) a ``self-update`` job (``auth.code_change_refused``; the bridge
+refuses it first): only this machine's own Admin installs code here.
 
 The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps
 checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
@@ -108,7 +131,9 @@ conflict.
 open, and it is the whole mechanism behind the web-probe cadence: the SSE
 connection itself carries the answer, so closing the tab retracts focus when a
 later delta or keepalive discovers the closed response stream. See
-``core.fleet.Fleet.set_focus``.
+``core.fleet.Fleet.set_focus``. With ``&host=<host>`` the instance is a remote
+host's: that host's link holds its stream with the same focus, so the remote's
+daemon probes it live (``core.hosts.HostManager.set_focus``).
 
 **Binding.** The default is ``127.0.0.1``, and ``cwcli ui`` binds nothing else.
 Every endpoint names local projects, ports and sites, and the action endpoint
@@ -198,6 +223,7 @@ import mimetypes
 import os
 import platform
 import queue
+import re
 import secrets
 import shutil
 import signal
@@ -216,6 +242,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import typer
 
 from .. import __version__
+from .. import bridge as hub_bridge
 from .. import jobs as core_jobs
 from ..core import accounts as core_accounts
 from ..core import advisories as core_advisories
@@ -234,6 +261,7 @@ from ..core import doctor as core_doctor
 from ..core import editors as core_editors
 from ..core import fleet as core_fleet
 from ..core import git_refs as core_git_refs
+from ..core import hosts as core_hosts
 from ..core import inspect as core_inspect
 from ..core import integrations as core_integrations
 from ..core import label as core_label
@@ -258,6 +286,7 @@ from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
+from ..core.protocol import PROTOCOL_VERSION
 from ..core.rm import is_valid_project_name
 from ..utils import agent_hooks, cache, daemon_identity
 from ..utils.console import console, stderr_console
@@ -269,16 +298,20 @@ DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
 TOKEN_ENV = "CWCLI_SERVE_TOKEN"
 SESSION_COOKIE = "cwcli_serve_session"
-# Bumped on any change a page built against an older daemon could misread, so a
-# page compares it with the number it was built for instead of parsing versions.
-# 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
-# 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
-# 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
-# 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
-# 7: roles, directory sign-in, and /api/v1/integrations (the S3 target moved there).
-# 8: community integrations (the community_* integration ops, a card's community block).
-# 9: publishing sites (/api/v1/publications, /api/v1/publish/*, the publish job verbs).
-PROTOCOL_VERSION = 9
+# PROTOCOL_VERSION lives in core.protocol (the hub link applies the version rule
+# there); it is re-exported here for the page's meta and the tests.
+__all__ = ["PROTOCOL_VERSION"]
+# The headers a hub's bridge sets on the REMOTE daemon (see the module docstring).
+_DELEGATED_USER = "X-Cwcli-Delegated-User"
+_DELEGATED_ROLE = "X-Cwcli-Delegated-Role"
+_DELEGATED_USER_RE = re.compile(r"[A-Za-z0-9._+-]{1,80}@[A-Za-z0-9._-]{1,64}")
+_HOST_PREFIX = "/api/v1/hosts/"
+# What is never forwarded to a remote: its own sign-in (the bridge holds the token),
+# its stream (the hub holds one per host itself), its hosts (no hopping from one hub
+# through another), and the unbounded upload.
+_NOT_FORWARDED_FIRST = frozenset({"session", "stream", "hosts"})
+_NOT_FORWARDED = frozenset({"backups/upload"})
+_SAFE_FILENAME = re.compile(r"[A-Za-z0-9._-]{1,120}")
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -542,17 +575,23 @@ class _Hub:
     def __init__(self, on_focus) -> None:
         self._lock = threading.Lock()
         self._focus_lock = threading.Lock()
-        self._clients: dict[int, tuple[queue.Queue, str | None]] = {}
+        self._clients: dict[int, tuple[queue.Queue, tuple[str | None, str] | None, bool]] = {}
         self._next = 0
         self._event_id = 0
         self._on_focus = on_focus
+        # The remote hosts' share of focus, ``{host: project}``; set by ``make_server``.
+        self.on_host_focus: Callable[[dict[str, str]], None] | None = None
 
-    def subscribe(self, focus: str | None) -> tuple[int, queue.Queue]:
+    def subscribe(
+        self, focus: str | None, host: str | None = None, via_hub: bool = False
+    ) -> tuple[int, queue.Queue]:
+        """A new client. One a hub holds through the bridge (``via_hub``) is never sent a
+        frame about this machine's own remote hosts: no hopping from one hub through another."""
         q: queue.Queue = queue.Queue()
         with self._lock:
             self._next += 1
             client_id = self._next
-            self._clients[client_id] = (q, focus)
+            self._clients[client_id] = (q, (host, focus) if focus else None, via_hub)
         self._sync_focus()
         return client_id, q
 
@@ -563,10 +602,14 @@ class _Hub:
             self._sync_focus()
 
     def _sync_focus(self) -> None:
+        """This machine's focused instances to the fleet; a remote host's to the hosts,
+        one per host and the most recent tab's (clients are kept in the order they came)."""
         with self._focus_lock:
             with self._lock:
-                focused = {f for _q, f in self._clients.values() if f}
-            self._on_focus(focused)
+                focused = [f for _q, f, _via_hub in self._clients.values() if f]
+            self._on_focus({project for host, project in focused if host is None})
+            if self.on_host_focus is not None:
+                self.on_host_focus({host: project for host, project in focused if host})
 
     def next_id(self) -> int:
         with self._lock:
@@ -584,7 +627,7 @@ class _Hub:
             payload["cause"] = cause
         frame = _sse_frame("delta", payload, self.next_id())
         with self._lock:
-            queues = [q for q, _f in self._clients.values()]
+            queues = [q for q, _f, _via_hub in self._clients.values()]
         for q in queues:
             q.put(frame)
 
@@ -593,8 +636,11 @@ class _Hub:
 
     def publish_event(self, event: str, data: dict) -> None:
         frame = _sse_frame(event, data, self.next_id())
+        about_hosts = event.startswith("host_")
         with self._lock:
-            queues = [q for q, _f in self._clients.values()]
+            queues = [
+                q for q, _f, via_hub in self._clients.values() if not (via_hub and about_hosts)
+            ]
         for q in queues:
             q.put(frame)
 
@@ -677,6 +723,7 @@ class _Handler(BaseHTTPRequestHandler):
     site_icons: core_site_icons.SiteIconStore
     updates: core_updates.UpdatesStore
     advisories: core_advisories.AdvisoriesStore
+    hosts: core_hosts.HostManager
     action_locks: tuple[threading.Lock, ...]
     token: str
     lockout: core_accounts.Lockout
@@ -786,10 +833,76 @@ class _Handler(BaseHTTPRequestHandler):
         """The account behind this request's session cookie, or None."""
         return core_accounts.session_account(self._session_cookie())
 
+    def _delegation(self) -> tuple[str, str] | None:
+        """``(user, role)`` a hub's bridge delegated on a BEARER request, else None.
+
+        A session's role is its own, so the headers are ignored on a cookie
+        request; on a bearer request they can only lower the Admin the token
+        means (``_refuse_bad_delegation`` has refused anything malformed first).
+        """
+        user = (self.headers.get(_DELEGATED_USER) or "").strip()
+        role = (self.headers.get(_DELEGATED_ROLE) or "").strip().lower()
+        if not user and not role:
+            return None
+        if self._session_account() is not None or not self._bearer_authenticated():
+            return None
+        if role not in core_accounts.ROLES or not _DELEGATED_USER_RE.fullmatch(user):
+            return None
+        return user, role
+
+    def _refuse_delegated_code_change(self, path: str, payload: dict) -> bool:
+        """A hub's delegated request never installs or updates third-party code here or
+        replaces cwcli itself, whatever its cap (the bridge refuses it first; a retry or
+        continue of a ``self-update`` job counts too): send the 403 and return True.
+        This machine's own Admin still does both."""
+        if self._delegation() is None:
+            return False
+        if path == "/api/v1/jobs":
+            payload = {"verb": core_jobs.job_verb(payload.get("verb"))}
+        elif path == "/api/v1/integrations":
+            payload = {"op": _canonical_op(payload)}
+        job = _rerun_job(path)
+        if job is not None:
+            path, payload = "/api/v1/jobs", job
+        if not hub_bridge.code_change(path, payload):
+            return False
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "auth.code_change_refused",
+            "A hub cannot install or update community integrations or update cwcli on this "
+            "machine, whatever its cap; this machine's own Admin does that here.",
+        )
+        return True
+
+    def _refuse_bad_delegation(self) -> bool:
+        """Send the 400 and return True when a bearer request carries a delegation
+        pair that is not a valid user and role (a half-sent or forged pair never
+        falls back to the token's Admin)."""
+        user = (self.headers.get(_DELEGATED_USER) or "").strip()
+        role = (self.headers.get(_DELEGATED_ROLE) or "").strip().lower()
+        if (not user and not role) or self._session_account() is not None:
+            return False
+        if not self._bearer_authenticated():
+            return False
+        if role in core_accounts.ROLES and _DELEGATED_USER_RE.fullmatch(user):
+            return False
+        self._send_error(
+            400,
+            ErrorKind.USAGE.value,
+            "auth.delegation_invalid",
+            "The delegated user and role headers must name a user@hub and a role.",
+        )
+        return True
+
     def _account_name(self) -> str:
-        """Who is acting: the signed-in account, else ``api`` for a bearer client."""
+        """Who is acting: the signed-in account, the user a hub delegated, else ``api``
+        for a bearer client."""
         acct = self._session_account()
-        return acct.username if acct is not None else "api"
+        if acct is not None:
+            return acct.username
+        delegated = self._delegation()
+        return delegated[0] if delegated is not None else "api"
 
     _CHANGE_PENDING_PATHS = frozenset(
         {
@@ -960,20 +1073,25 @@ class _Handler(BaseHTTPRequestHandler):
     def _session_info(self) -> dict:
         acct = self._session_account()
         if acct is None:
+            delegated = self._delegation()
             return {
-                "username": "api",
+                "username": delegated[0] if delegated else "api",
                 "must_change_password": False,
                 "account": False,
-                "role": "admin",
-                "source": "api",
+                "role": delegated[1] if delegated else "admin",
+                "source": "hub" if delegated else "api",
                 "name": "",
             }
         return {**_account_info(acct), "account": True}
 
     def _role(self) -> str:
-        """The caller's role: the bearer token is the machine owner's, so Admin."""
+        """The caller's role: the bearer token is the machine owner's, so Admin, unless
+        a hub's bridge delegated a lower one (a downgrade only; see ``_delegation``)."""
         acct = self._session_account()
-        return acct.role if acct is not None else "admin"
+        if acct is not None:
+            return acct.role
+        delegated = self._delegation()
+        return delegated[1] if delegated is not None else "admin"
 
     def _refuse_role(self, needed: str) -> bool:
         """Send the 403 and return True when the caller's role is below ``needed``."""
@@ -994,20 +1112,23 @@ class _Handler(BaseHTTPRequestHandler):
         """The least role a POST needs. Viewers only read; Operators run the fleet;
         Admins also change settings and integrations, remove instances, sites, benches
         and backups, and update cwcli itself."""
-        if path in ("/api/v1/settings", "/api/v1/integrations", "/api/v1/backups/settings"):
+        if path == "/api/v1/integrations":
+            _canonical_op(payload)
+        if path in (
+            "/api/v1/settings",
+            "/api/v1/integrations",
+            "/api/v1/backups/settings",
+            "/api/v1/hosts",
+        ):
             return "admin"
         if path == "/api/v1/jobs":
-            admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
-            return "admin" if admin else "operator"
+            verb = core_jobs.job_verb(payload.get("verb"))
+            return "admin" if core_accounts.admin_only(verb, payload.get("args")) else "operator"
         if path == "/api/v1/publish/preflight":
             admin = core_accounts.admin_only("publish-site", {"address": payload.get("address")})
             return "admin" if admin else "operator"
-        if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
-            job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
-            try:
-                job = core_jobs.read_job(job_id)
-            except CwcliError:
-                job = {}
+        job = _rerun_job(path)
+        if job is not None:
             admin = any(
                 core_accounts.admin_only(job.get("verb"), args)
                 for args in (job.get("args"), payload.get("args"))
@@ -1112,14 +1233,28 @@ class _Handler(BaseHTTPRequestHandler):
                 meta["build"] = _running_build
             self._send_json(meta)
             return
-        if self._refuse_unauthenticated():
+        if self._refuse_unauthenticated() or self._refuse_bad_delegation():
             return
         if path == "/api/v1/session":
             self._send_json({"data": self._session_info()})
             return
         if self._refuse_change_pending(path):
             return
+        routed = _host_route(path)
+        if routed is not None:
+            host_id, rest = routed
+            if self._refuse_cross_origin() or self._refuse_role(
+                _GET_ROLES.get("/api/v1/" + rest, "viewer")
+            ):
+                return
+            self._forward(host_id, rest, parsed.query, method="GET")
+            return
         if self._refuse_role(_GET_ROLES.get(path, "viewer")):
+            return
+        if path == "/api/v1/hosts":
+            if self._refuse_cross_origin():
+                return
+            self._send_json({"data": self.hosts.view()})
             return
         if path == "/api/v1/session/sessions":
             acct = self._session_account()
@@ -1134,7 +1269,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/instances":
             self._send_json({"data": self.fleet.snapshot()})
         elif path == "/api/v1/stream":
-            self._stream_events((query.get("focus") or [None])[0])
+            self._stream_events((query.get("focus") or [None])[0], (query.get("host") or [None])[0])
         elif path.startswith("/api/v1/instances/"):
             rest = path[len("/api/v1/instances/") :]
             project, _sep, verb = rest.partition("/")
@@ -1344,7 +1479,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self._refuse_unauthenticated() or self._refuse_cross_origin():
             return
-        if self._refuse_change_pending(parsed.path):
+        if self._refuse_bad_delegation() or self._refuse_change_pending(parsed.path):
             return
         if parsed.path == "/api/v1/session/password":
             self._change_password(raw)
@@ -1360,19 +1495,31 @@ class _Handler(BaseHTTPRequestHandler):
                 "Action request body must be application/json.",
             )
             return
+        routed = _host_route(parsed.path)
         try:
             payload = _parse_action_body(raw)
-            needed = self._post_role(parsed.path, payload)
+            needed = (
+                _forward_role(routed[1], payload)
+                if routed is not None
+                else self._post_role(parsed.path, payload)
+            )
         except CwcliError as e:
             self._send_core_error(e)
             return
         if self._refuse_role(needed):
             return
+        if routed is not None:
+            self._forward(routed[0], routed[1], parsed.query, method="POST", body=raw)
+            return
         try:
+            if self._refuse_delegated_code_change(parsed.path, payload):
+                return
             if parsed.path == "/api/v1/actions":
                 status, body = self._dispatch_action(payload)
             elif parsed.path == "/api/v1/jobs":
                 status, body = self._create_job(payload)
+            elif parsed.path == "/api/v1/hosts":
+                status, body = self._hosts_post(payload)
             elif parsed.path == "/api/v1/settings":
                 status, body = self._apply_setting(payload)
             elif parsed.path == "/api/v1/apps/scan":
@@ -1434,18 +1581,22 @@ class _Handler(BaseHTTPRequestHandler):
         addr = getattr(self.server, "server_address", None)
         ui_port = addr[1] if isinstance(addr, tuple) and len(addr) > 1 else None
         acct = self._session_account()
-        return {
-            "via": "web",
+        delegated = self._delegation()
+        origin = {
+            "via": "hub" if delegated is not None else "web",
             "account": self._account_name(),
-            "account_source": acct.source if acct is not None else "api",
+            "account_source": acct.source if acct is not None else ("hub" if delegated else "api"),
             "role": self._role(),
             "ui_port": ui_port,
             "page": page,
             "agent": (self.headers.get("User-Agent") or "")[:80],
         }
+        if delegated is not None:
+            origin["hub"] = delegated[0].rsplit("@", 1)[-1]
+        return origin
 
     def _create_job(self, payload: dict) -> tuple[int, dict]:
-        verb = _required_str(payload, "verb")
+        verb = core_jobs.job_verb(payload.get("verb"))
         target = payload.get("target") or {}
         args = payload.get("args") or {}
         secret_values = payload.get("secrets") or {}
@@ -1494,7 +1645,7 @@ class _Handler(BaseHTTPRequestHandler):
                     ErrorKind.USAGE, "schedule.payload_invalid", "schedule must be an object."
                 )
             acct = self._session_account()
-            source = acct.source if acct is not None else "api"
+            source = acct.source if acct is not None else ("hub" if self._delegation() else "api")
             return 200, {"data": core_schedules.save(sched, by=by, by_source=source)}
         sid = str(payload.get("id") or "")
         if op == "delete":
@@ -2431,6 +2582,193 @@ class _Handler(BaseHTTPRequestHandler):
         )
         return 202, {"data": {"started": started, "checking": True}}
 
+    # ------------------------------------------------------------ remote hosts
+
+    def _hosts_post(self, payload: dict) -> tuple[int, dict]:
+        """``{op: add|remove|check|repin, ...}`` over ``core.hosts`` (Admin).
+
+        ``add`` pins a remote from the pairing string ``cwcli remote allow`` printed
+        there (explicit ``address``/``port``/``user``/``host_key`` override it), starts
+        its link and answers with the link's first state; nothing is added without a
+        host key. ``repin`` is the one way out of ``host_key_changed``.
+        """
+        op = str(payload.get("op") or "")
+        by = self._account_name()
+        if op == "add":
+            rec = core_hosts.add_host(
+                _optional_str(payload.get("pairing")),
+                name=_optional_str(payload.get("name")),
+                address=_optional_str(payload.get("address")),
+                port=_optional_int(payload.get("port"), "port"),
+                user=_optional_str(payload.get("user")),
+                host_key=_optional_str(payload.get("host_key")),
+                by=by,
+            )
+            self.hosts.resync()
+            return 200, {"data": {"host": self.hosts.wait_settled(rec.id)}}
+        host_id = _required_str(payload, "id")
+        if op == "remove":
+            rec = core_hosts.remove_host(host_id)
+            self.hosts.resync()
+            return 200, {"data": {"removed": rec.id}}
+        if op == "check":
+            view = self.hosts.check(host_id)
+            if view is None:
+                raise CwcliError(
+                    ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'."
+                )
+            return 200, {"data": {"host": view}}
+        if op == "repin":
+            core_hosts.repin_host(host_id, _required_str(payload, "host_key"))
+            self.hosts.resync()
+            return 200, {"data": {"host": self.hosts.wait_settled(host_id)}}
+        raise CwcliError(
+            ErrorKind.USAGE, "host.op_invalid", "op must be add, remove, check or repin."
+        )
+
+    def _forward(
+        self, host_id: str, rest: str, query: str, *, method: str, body: bytes = b""
+    ) -> None:
+        """One request to ``/api/v1/<rest>`` on a remote host, through its transport.
+
+        The hub builds the forwarded headers itself: the signed-in user, as ASCII
+        (the bridge refuses any other byte, and reads a name it cannot use as ``hub``),
+        and their role (the bridge appends ``@<hub>`` and lowers the role to the cap), the one
+        content type the hub admits, and nothing the browser sent. An action (POST)
+        needs the host ``connected``, which includes an equal protocol; a read needs
+        the link readable. Neither dials a host that is not. The answer is relayed as
+        data only (``_relay``).
+        """
+        first = rest.split("/", 1)[0]
+        if first in _NOT_FORWARDED_FIRST or rest in _NOT_FORWARDED:
+            self._send_error(
+                404, ErrorKind.NOT_FOUND.value, "host.route_not_forwarded", "not found"
+            )
+            return
+        view = self.hosts.link_view(host_id)
+        if view is None:
+            self._send_error(
+                404, ErrorKind.NOT_FOUND.value, "host.unknown", f"No remote host '{host_id}'."
+            )
+            return
+        allowed = view["state"] == core_hosts.CONNECTED if method == "POST" else view["readable"]
+        if not allowed:
+            code = (
+                "host.version_mismatch"
+                if view["state"] == core_hosts.VERSION_MISMATCH
+                else "host.not_connected"
+            )
+            what = "actions on it are" if method == "POST" else "reading it is"
+            self._send_error(
+                409,
+                ErrorKind.CONFLICT.value,
+                code,
+                f"{view['name']} is {view['state'].replace('_', ' ')}; {what} not available."
+                + (f" {view['reason']}" if view.get("reason") else ""),
+                host=host_id,
+                state=view["state"],
+            )
+            return
+        headers = [
+            ("Accept", "application/json, text/event-stream"),
+            (
+                _DELEGATED_USER,
+                self._account_name().split("@", 1)[0].encode("ascii", "backslashreplace").decode(),
+            ),
+            (_DELEGATED_ROLE, self._role()),
+            ("User-Agent", f"cwcli-hub/{__version__}"),
+        ]
+        if body:
+            headers.append(("Content-Type", "application/json"))
+        target = "/api/v1/" + rest + (f"?{query}" if query else "")
+        try:
+            resp = self.hosts.request(host_id, method, target, headers, body)
+        except core_hosts.LinkError as e:
+            self._send_error(
+                502,
+                ErrorKind.PRECONDITION.value,
+                f"host.{e.state}",
+                f"{view['name']}: {e.reason}",
+                host=host_id,
+                state=e.state,
+            )
+            return
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        try:
+            self._relay(resp, host_id)
+        finally:
+            resp.close()
+
+    def _relay(self, resp: core_hosts.HttpResponse, host_id: str) -> None:
+        """Send a remote's answer on as DATA: JSON or an event stream as itself, an
+        image under the logo route's sandboxing policy, anything else as an
+        attachment - and never a cookie, a page, or a header the remote chose.
+        A compromised remote controls these bytes, so the browser is told so, and a
+        status the page reads as the end of ITS OWN session (a 401, or a 403 asking
+        for a password change) becomes this hub's 502 naming the host."""
+        body: bytes | None = None
+        if resp.status in (401, 403):
+            try:
+                body = resp.read(_MAX_ACTION_BODY)
+            except core_hosts.LinkError as e:
+                self._send_error(
+                    502, ErrorKind.PRECONDITION.value, f"host.{e.state}", e.reason, host=host_id
+                )
+                return
+            if resp.status == 401 or _error_title(body) == "auth.password_change_required":
+                self._send_error(
+                    502,
+                    ErrorKind.PRECONDITION.value,
+                    "host.refused",
+                    f"The remote host refused the hub's request ({resp.status}).",
+                    host=host_id,
+                )
+                return
+        ctype = (
+            (resp.header("content-type") or "application/octet-stream")
+            .split(";", 1)[0]
+            .strip()
+            .lower()
+        )
+        attachment = False
+        csp = "default-src 'none'; sandbox"
+        if ctype in ("application/json", "text/event-stream"):
+            pass
+        elif ctype.startswith("image/"):
+            csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        else:
+            attachment = True
+            if ctype not in ("application/x-tar", "application/octet-stream", "application/gzip"):
+                ctype = "application/octet-stream"
+        self.send_response(resp.status)
+        self.send_header("Content-Type", ctype)
+        if body is not None:
+            self.send_header("Content-Length", str(len(body)))
+        elif resp.content_length is not None:
+            self.send_header("Content-Length", str(resp.content_length))
+        else:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        if attachment:
+            name = "download"
+            raw = resp.header("content-disposition") or ""
+            match = re.search(r'filename="?([^";]+)"?', raw)
+            if match and _SAFE_FILENAME.fullmatch(match.group(1)):
+                name = match.group(1)
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", csp)
+        self.end_headers()
+        try:
+            for chunk in [body] if body is not None else resp.iter_body():
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError, core_hosts.LinkError):
+            self.close_connection = True
+
     def _refresh_site_icons(self, payload: dict) -> tuple[int, dict]:
         """Read the favicons of the listed sites in the background (``core.site_icons``):
         live through the bench for a running instance, from the bench files on disk
@@ -2557,8 +2895,11 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _stream_events(self, focus: str | None) -> None:
-        client_id, q = self.hub.subscribe(focus)
+    def _stream_events(self, focus: str | None, host: str | None = None) -> None:
+        # A hub's own stream through the bridge never steers this machine's links, nor
+        # learns of them.
+        via_hub = self._delegation() is not None
+        client_id, q = self.hub.subscribe(focus, None if via_hub else host, via_hub)
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -2567,13 +2908,10 @@ class _Handler(BaseHTTPRequestHandler):
             # does, which is what an infinite stream means over HTTP/1.1.
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(
-                _sse_frame(
-                    "snapshot",
-                    {"instances": self.fleet.snapshot(), "jobs": core_jobs.list_jobs()},
-                    self.hub.next_id(),
-                )
-            )
+            snapshot: dict = {"instances": self.fleet.snapshot(), "jobs": core_jobs.list_jobs()}
+            if not via_hub:
+                snapshot["hosts"] = self.hosts.snapshot()
+            self.wfile.write(_sse_frame("snapshot", snapshot, self.hub.next_id()))
             self.wfile.flush()
             while True:
                 try:
@@ -2607,12 +2945,47 @@ _POST_PATHS = {
     "/api/v1/advisories/state",
     "/api/v1/publish/preflight",
     "/api/v1/publish/check",
+    "/api/v1/hosts",
 }
+
+
+def _error_title(raw: bytes) -> str | None:
+    """The first error title of an envelope body, else None."""
+    try:
+        errors = json.loads(raw.decode("utf-8")).get("errors")
+        return str(errors[0].get("title"))
+    except (ValueError, AttributeError, TypeError, IndexError, KeyError):
+        return None
+
+
+def _host_route(path: str) -> tuple[str, str] | None:
+    """``(host id, inner path)`` for ``/api/v1/hosts/<id>/<rest>``, else None."""
+    if not path.startswith(_HOST_PREFIX):
+        return None
+    host_id, separator, rest = path[len(_HOST_PREFIX) :].partition("/")
+    if not separator or not rest or not host_id:
+        return None
+    return unquote(host_id), rest
+
+
+def _forward_role(rest: str, payload: dict) -> str:
+    """The least role the HUB requires before forwarding a POST; the remote applies
+    its own check (and its cap) again, reading its own job and schedule stores."""
+    inner = "/api/v1/" + rest
+    if inner in ("/api/v1/settings", "/api/v1/integrations", "/api/v1/backups/settings"):
+        return "admin"
+    if inner == "/api/v1/jobs":
+        verb = core_jobs.job_verb(payload.get("verb"))
+        return "admin" if core_accounts.admin_only(verb, payload.get("args")) else "operator"
+    return "operator"
 
 
 def _is_post_path(path: str) -> bool:
     if path in _POST_PATHS:
         return True
+    routed = _host_route(path)
+    if routed is not None:
+        return _is_post_path("/api/v1/" + routed[1])
     if not path.startswith("/api/v1/jobs/"):
         return False
     _job_id, separator, operation = path[len("/api/v1/jobs/") :].partition("/")
@@ -2627,6 +3000,33 @@ def _parse_after(raw: str) -> dict[str, int] | None:
         if sep and process and offset.isdigit():
             after[process] = int(offset)
     return after or None
+
+
+def _canonical_op(payload: dict) -> str:
+    """An integration ``op`` exactly as sent: a non-empty string with nothing around it, so
+    the guards that compare it exactly read the op that runs; else a usage error."""
+    op = payload.get("op")
+    if isinstance(op, str) and op and op == op.strip():
+        return op
+    raise CwcliError(
+        ErrorKind.USAGE,
+        "integration.op_invalid",
+        "op must be test, configure, disable, action or a community_ op, exactly.",
+    )
+
+
+def _rerun_job(path: str) -> dict | None:
+    """The job a ``/api/v1/jobs/<id>/retry`` or ``/continue`` POST runs again (``{}``
+    when it cannot be read), else None."""
+    if not path.startswith("/api/v1/jobs/") or path.rsplit("/", 1)[-1] not in (
+        "retry",
+        "continue",
+    ):
+        return None
+    try:
+        return core_jobs.read_job(unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0])
+    except CwcliError:
+        return {}
 
 
 def _parse_action_body(raw: bytes) -> dict:
@@ -2885,15 +3285,19 @@ def make_server(
     site_icons: core_site_icons.SiteIconStore | None = None,
     updates: core_updates.UpdatesStore | None = None,
     advisories: core_advisories.AdvisoriesStore | None = None,
+    hosts: core_hosts.HostManager | None = None,
 ) -> ThreadingHTTPServer:
     """Bind the HTTP server, handing the handler class its fleet, hub and credentials.
 
     There is no unauthenticated mode: a programmatic client sends the bearer
     ``token``; a browser signs in with the administrator account
     (``core.accounts``), whose sessions live in the account store, so they
-    survive a daemon restart.
+    survive a daemon restart. Without ``hosts`` the handler gets a manager that
+    reads the store but runs no link (the tests' shape); ``run_daemon`` starts one.
     """
     core_accounts.ensure_default()
+    manager = hosts or core_hosts.HostManager(publish=hub.publish_event)
+    hub.on_host_focus = manager.set_focus
     handler = type(
         "Handler",
         (_Handler,),
@@ -2905,6 +3309,7 @@ def make_server(
             "site_icons": site_icons or core_site_icons.SiteIconStore(),
             "updates": updates or core_updates.UpdatesStore(),
             "advisories": advisories or core_advisories.AdvisoriesStore(),
+            "hosts": manager,
             "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
             "token": token,
             "lockout": core_accounts.Lockout(),
@@ -3127,6 +3532,9 @@ def run_daemon(
         t.start()
 
     _running_build = core_version.install_fingerprint()
+    # The remote hosts: one link per pinned machine whose transport integration is on,
+    # republished on this daemon's own stream with the host's id.
+    hosts_manager = core_hosts.HostManager(publish=hub.publish_event)
     try:
         httpd = make_server(
             host,
@@ -3138,11 +3546,13 @@ def run_daemon(
             metrics=metrics_store,
             updates=updates_store,
             advisories=advisories_store,
+            hosts=hosts_manager,
         )
     except OSError as e:
         stderr_console.print(f"[red]Could not bind {host}:{port}: {e}[/red]")
         stop.set()
         raise typer.Exit(code=1) from e
+    hosts_manager.start()
 
     bound, port = str(httpd.server_address[0]), httpd.server_address[1]
     console.print(f"[bold]cwcli ui[/bold] on [cyan]http://{_url_host(bound)}:{port}[/cyan]")
@@ -3183,6 +3593,7 @@ def run_daemon(
         console.print("\nstopping.")
     finally:
         stop.set()
+        hosts_manager.stop()
         httpd.shutdown()
         httpd.server_close()
 

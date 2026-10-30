@@ -1,16 +1,18 @@
 <script setup>
 // Direction C: the jobs list with Pilot's status tabs kept in the URL, relative
 // times with the absolute time in a tooltip, the raw id moved to the detail
-// page, and no stray "New instance" button in the header.
+// page, and no stray "New instance" button in the header. Jobs on remote hosts
+// are in the same list with a Machine column once a host is linked.
 import { computed, onMounted, ref } from 'vue'
 import { Badge, ErrorMessage, Select, TabButtons, TextInput, Tooltip } from 'frappe-ui'
 import { List, ListCell, ListHeader, ListHeaderCell, ListRow, ListRows } from 'frappe-ui/list'
 import PageHead from '../components/PageHead.vue'
 import JobState from '../components/JobState.vue'
 import EmptyState from '../components/EmptyState.vue'
-import { activeJobs, elapsed, JOB_LABEL, jobAccount, jobLabel, jobList, jobTarget, jobs, loadJobs } from '../data/jobs'
+import { activeJobs, elapsed, JOB_LABEL, jobAccount, jobLabel, jobList, jobPath, jobTarget, jobs, loadJobs } from '../data/jobs'
 import { setFocus, ago } from '../data/fleet'
 import { useTabQuery } from '../data/tabs'
+import { hasHosts, hostName } from '../data/hosts'
 
 const query = ref('')
 const status = useTabQuery('all', 'status')
@@ -31,7 +33,7 @@ const rows = computed(() => {
   return jobList.value.filter((job) => {
     if (status.value === 'active' ? !['queued', 'running', 'interrupting'].includes(job.state) : status.value !== 'all' && job.state !== status.value) return false
     if (kind.value !== 'all' && job.verb !== kind.value) return false
-    return !term || `${job.verb} ${jobTarget(job)} ${job.state}`.toLowerCase().includes(term)
+    return !term || `${job.verb} ${jobTarget(job)} ${job.state} ${job.host ? hostName(job.host) : ''}`.toLowerCase().includes(term)
   })
 })
 const absolute = (value) => (value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(value)) : 'not started')
@@ -41,6 +43,9 @@ const kindOptions = computed(() => [
   { label: 'Any type', value: 'all' },
   ...[...new Set(jobList.value.map((j) => j.verb))].map((v) => ({ label: JOB_LABEL[v] || v, value: v })).sort((a, b) => a.label.localeCompare(b.label)),
 ])
+const columns = computed(() => (hasHosts.value
+  ? { base: ['minmax(0,1fr)', '7rem'], md: ['minmax(10rem,1.4fr)', 'minmax(7rem,1fr)', '7rem', '8rem', '7rem', '6rem', '6rem'] }
+  : { base: ['minmax(0,1fr)', '7rem'], md: ['minmax(10rem,1.4fr)', 'minmax(7rem,1fr)', '8rem', '7rem', '6rem', '6rem'] }))
 </script>
 
 <template>
@@ -58,19 +63,21 @@ const kindOptions = computed(() => [
     </div>
     <ErrorMessage :message="jobs.error" />
     <EmptyState v-if="jobs.loaded && !rows.length" icon="lucide-list-checks" :title="filtered ? 'No job matches this filter' : 'No jobs yet'" :description="filtered ? 'Clear the filter or pick another status.' : 'Lifecycle work and long commands appear here with their full event history.'" />
-    <List v-else class="-mx-3 list-row-px-3" :columns="{ base: ['minmax(0,1fr)', '7rem'], md: ['minmax(10rem,1.4fr)', 'minmax(7rem,1fr)', '8rem', '7rem', '6rem', '6rem'] }" :row-height="52">
+    <List v-else class="-mx-3 list-row-px-3" :columns="columns" :row-height="52">
       <ListHeader>
         <ListHeaderCell>Job</ListHeaderCell>
         <ListHeaderCell class="max-md:hidden">Target</ListHeaderCell>
+        <ListHeaderCell v-if="hasHosts" class="max-md:hidden">Machine</ListHeaderCell>
         <ListHeaderCell>Status</ListHeaderCell>
         <ListHeaderCell class="max-md:hidden">Started</ListHeaderCell>
         <ListHeaderCell class="max-md:hidden">Duration</ListHeaderCell>
         <ListHeaderCell class="max-md:hidden">By</ListHeaderCell>
       </ListHeader>
-      <ListRows :items="rows" row-key="id" v-slot="{ item }">
-        <ListRow :route="`/jobs/${item.id}`">
+      <ListRows :items="rows" row-key="key" v-slot="{ item }">
+        <ListRow :route="jobPath(item)">
           <ListCell><span class="truncate text-base-medium text-ink-gray-9">{{ jobLabel(item) }}</span></ListCell>
           <ListCell class="max-md:hidden"><span class="truncate text-sm text-ink-gray-7">{{ jobTarget(item) }}</span></ListCell>
+          <ListCell v-if="hasHosts" class="gap-1.5 max-md:hidden"><span v-if="item.host" class="lucide-server size-3.5 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ item.host ? hostName(item.host) : 'this machine' }}</span></ListCell>
           <ListCell>
             <JobState :state="item.state" />
           </ListCell>

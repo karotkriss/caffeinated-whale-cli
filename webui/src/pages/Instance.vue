@@ -8,26 +8,32 @@ import PageHero from '../components/PageHero.vue'
 import PerformancePanel from '../components/PerformancePanel.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import UpdatePill from '../components/UpdatePill.vue'
+import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { updatesFor, updatesForApp } from '../data/updates'
 import { openJob } from '../data/job-dialog'
 import { openNewBench } from '../data/new-bench-dialog'
 import AppIcon from '../components/AppIcon.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { catalogApp } from '../data/catalog'
-import { openApp } from '../data/app-panel'
+import { appOpener } from '../data/app-panel'
 import CommandLine from '../components/CommandLine.vue'
-import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago } from '../data/fleet'
+import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago, instancePath, benchPath, sitePath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { useTabQuery } from '../data/tabs'
 import { can } from '../data/session'
+import { host as hostOf, hostName, linkAdvice } from '../data/hosts'
 
 const route = useRoute()
 const project = route.params.project
-onMounted(() => setFocus(project))
-const inst = computed(() => findInstance(project))
-const detail = loadDetail(project)
+// A remote host's instance: the same page, every read and action through the hub.
+const host = route.params.host || null
+const where = { project, host }
+onMounted(() => setFocus(project, host))
+const inst = computed(() => findInstance(project, host))
+const detail = loadDetail(project, { host })
 const tab = useTabQuery('benches')
 const filter = ref('')
+const link = computed(() => hostOf(host))
 
 const health = computed(() => Object.fromEntries((inst.value?.benches || []).map((b) => [b.index, b])))
 const benches = computed(() => {
@@ -49,9 +55,11 @@ const running = computed(() => inst.value?.container_running)
 // that holds it, Update (the apps update job) and Check out a ref.
 function appMenu(name) {
   const benches = (detail.data?.benches || []).filter((b) => (b.available_apps || []).includes(name) || (b.sites || []).some((s) => s.installed_apps.some((e) => e.split(/\s+/)[0] === name)))
-  const groups = [{ group: 'App', options: [{ label: 'Open details', icon: 'lucide-panel-right-open', onClick: () => openApp(catalogApp(name)) }] }]
+  // A remote instance's app has no details here: the panel is this machine's catalog.
+  const open = appOpener(host, name)
+  const groups = open ? [{ group: 'App', options: [{ label: 'Open details', icon: 'lucide-panel-right-open', onClick: open }] }] : []
   for (const b of benches) {
-    const c = { project, bench: String(b.index), benchName: benchName(b), app: name }
+    const c = { project, host, bench: String(b.index), benchName: benchName(b), app: name }
     groups.push({ group: benchName(b), options: [
       { label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...c, args: { apps: name, sites: '' } }) },
       menuOption('app.checkout', c, inst.value?.benches?.find((h) => String(h.index) === String(b.index))),
@@ -68,7 +76,7 @@ const dataLabel = computed(() => {
   const at = detail.data.cached_at ? Date.parse(detail.data.cached_at.replace(' ', 'T')) : null
   return at ? `from cache, ${ago(at)}` : 'from cache'
 })
-const ctx = { project }
+const ctx = { project, host }
 const more = computed(() => [
   menuOption('instance.restart', ctx),
   menuOption('instance.refresh', ctx),
@@ -76,21 +84,23 @@ const more = computed(() => [
   dangerGroup(['instance.remove'], ctx),
 ])
 const heroFacts = computed(() => [
+  ...(host ? [{ label: 'Machine', value: hostName(host) }] : []),
   { label: 'Container', value: inst.value?.docker_status || (gone.value ? 'not on Docker' : 'unknown') },
   { label: 'Benches', value: detail.data ? String(detail.data.benches.length) : detail.loading ? 'reading' : 'not cached' },
   { label: 'Sites', value: detail.data ? String(countSites(detail.data)) : detail.loading ? 'reading' : 'not cached' },
   { label: 'Published web ports', value: ports.value.web ? `${ports.value.web} (${ports.value.count})` : 'none', mono: !!ports.value.web },
   { label: 'Data', value: dataLabel.value, tone: 'muted' },
 ])
+const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
 </script>
 
 <template>
-  <PageHero icon="lucide-boxes" :title="project" :facts="heroFacts" :crumbs="[{ label: 'Instances', route: '/instances' }, { label: project, route: `/instances/${project}` }]">
-    <template #badge><StatusBadge :token="inst?.overall" size="lg" /></template>
+  <PageHero icon="lucide-boxes" :title="project" :facts="heroFacts" :crumbs="[{ label: 'Instances', route: '/instances' }, ...(host ? [{ label: hostName(host), route: '/instances' }] : []), { label: project, route: instancePath(where) }]">
+    <template #badge><StatusBadge :token="inst?.overall" size="lg" /><RemoteHostBadge :host="host" size="md" /></template>
     <template #actions>
       <template v-if="!gone">
         <template v-if="can('operator')">
-          <Button variant="subtle" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
+          <Button variant="subtle" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project, host })" />
           <Button v-if="!running" variant="solid" icon-left="lucide-play" label="Start" @click="openAction('instance.start', ctx)" />
           <Button v-else icon-left="lucide-square" label="Stop" @click="openAction('instance.stop', ctx)" />
         </template>
@@ -100,12 +110,13 @@ const heroFacts = computed(() => [
   </PageHero>
 
   <div class="space-y-5 px-3 pb-20 pt-5 sm:px-5">
-    <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on this Docker daemon`" description="It may have been removed or live on another Docker daemon. Search (Ctrl+K) finds the benches and sites cwcli remembers for it." />
+    <Alert v-if="host && link && !link.actions_allowed" :theme="link.readable ? 'gray' : 'amber'" :title="`${hostName(host)} is ${link.state.replaceAll('_', ' ')}`" :description="linkAdvice(link)" />
+    <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on ${machine}`" description="It may have been removed or live on another Docker daemon. Search (Ctrl+K) finds the benches and sites cwcli remembers for it." />
     <Alert v-else-if="inst && !running" theme="gray" :title="`${project} is stopped`" description="Benches, sites and apps below are remembered from the cwcli cache. Process health and logs need the container running." />
 
     <LoadingText v-if="detail.loading && !detail.data" text="Reading the cache..." />
     <div v-else-if="detail.error && gone" class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
-      <p class="text-base text-ink-gray-7">Docker has no container for {{ project }}, so there is nothing to read live.</p>
+      <p class="text-base text-ink-gray-7">Docker has no container for {{ project }} on {{ machine }}, so there is nothing to read live.</p>
       <p class="mt-1 text-sm text-ink-gray-5">{{ detail.error.message }}</p>
     </div>
     <div v-else-if="detail.error" class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
@@ -124,7 +135,7 @@ const heroFacts = computed(() => [
 
       <TabPanel value="benches" class="pt-4">
         <div class="mb-3 flex items-center gap-2">
-          <Button v-if="can('operator')" variant="subtle" size="sm" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
+          <Button v-if="can('operator')" variant="subtle" size="sm" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project, host })" />
           <TextInput v-model="filter" class="w-72 max-w-full" placeholder="Filter benches or sites" type="search">
             <template #prefix><span class="lucide-search size-3.5 text-ink-gray-5" aria-hidden="true" /></template>
           </TextInput>
@@ -140,14 +151,14 @@ const heroFacts = computed(() => [
             <ListHeaderCell class="max-lg:hidden">Web port</ListHeaderCell>
           </ListHeader>
           <ListRows :items="benches" :row-key="(b) => b.index" v-slot="{ item }">
-            <ListRow :route="`/instances/${project}/benches/${item.index}`">
+            <ListRow :route="benchPath(where, item.index)">
               <ListCell><span class="tabular-nums text-sm text-ink-gray-4">{{ item.index }}</span></ListCell>
               <ListCell class="flex-col !items-start justify-center gap-1 overflow-hidden">
                 <span class="flex max-w-full items-center gap-1.5">
                   <span v-if="item.label" class="flex min-w-0 items-center gap-1.5 truncate text-base-medium text-ink-gray-9">
                     <span class="lucide-tag size-3 shrink-0 text-ink-gray-5" aria-hidden="true" />{{ item.label }}</span>
                   <span v-else class="truncate text-base text-ink-gray-7">{{ benchName(item) }} <span class="text-xs text-ink-gray-4">no label</span></span>
-                  <Badge v-if="updatesFor(project, item.index).length" size="sm" :theme="updatesFor(project, item.index).some((u) => u.core) ? 'orange' : 'blue'" variant="subtle" class="shrink-0" :label="`${updatesFor(project, item.index).length} ${updatesFor(project, item.index).length === 1 ? 'update' : 'updates'}`" />
+                  <Badge v-if="updatesFor(project, item.index, host).length" size="sm" :theme="updatesFor(project, item.index, host).some((u) => u.core) ? 'orange' : 'blue'" variant="subtle" class="shrink-0" :label="`${updatesFor(project, item.index, host).length} ${updatesFor(project, item.index, host).length === 1 ? 'update' : 'updates'}`" />
                 </span>
                 <span class="truncate font-mono text-xs text-ink-gray-5">{{ item.path }}</span>
               </ListCell>
@@ -172,7 +183,7 @@ const heroFacts = computed(() => [
             <ListHeaderCell>Apps</ListHeaderCell>
           </ListHeader>
           <ListRows :items="allSites" :row-key="(s) => s.bench.index + s.name" v-slot="{ item }">
-            <ListRow :route="`/instances/${project}/benches/${item.bench.index}/sites/${item.name}`">
+            <ListRow :route="sitePath(where, item.bench.index, item.name)">
               <ListCell class="gap-2"><span class="truncate font-mono text-sm text-ink-gray-8">{{ item.name }}</span><DevModeBadge :state="detail.data?.dev_modes?.[`${item.bench.path}/${item.name}`]" quiet-off /></ListCell>
               <ListCell class="max-md:hidden"><span class="truncate text-sm text-ink-gray-6">{{ benchName(item.bench) }}</span></ListCell>
               <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.installed_apps.length }}</span></ListCell>
@@ -190,8 +201,9 @@ const heroFacts = computed(() => [
             <ListHeaderCell />
           </ListHeader>
           <ListRows :items="apps" row-key="name" v-slot="{ item }">
-            <ListRow @click="openApp(catalogApp(item.name))">
-              <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="updatesForApp(item.name).find((u) => u.project === project) || null" /></ListCell>
+            <ListRow :on-click="appOpener(host, item.name)">
+              <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
+              <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="host ? null : updatesForApp(item.name).find((u) => u.project === project) || null" /></ListCell>
               <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.benches }}</span></ListCell>
               <ListCell class="gap-1 overflow-hidden max-md:hidden">
                 <!-- Captain note 51: a branch is a fact, not a status - plain mono text, no pill. -->
@@ -209,7 +221,7 @@ const heroFacts = computed(() => [
         <p class="mt-3 text-p-sm text-ink-gray-5">Branches are what bench recorded at install time. git is the authority on what is checked out now.</p>
       </TabPanel>
       <TabPanel value="performance" class="pt-4">
-        <PerformancePanel :project="project" />
+        <PerformancePanel :project="project" :host="host" />
       </TabPanel>
     </Tabs>
   </div>

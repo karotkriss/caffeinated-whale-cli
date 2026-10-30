@@ -6,7 +6,7 @@
 import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
 
-export const PROTOCOL = 9 // the daemon's PROTOCOL_VERSION this page was built against
+export const PROTOCOL = 10 // the daemon's PROTOCOL_VERSION this page was built against (core/protocol.py)
 
 export const session = reactive({
   booted: false,

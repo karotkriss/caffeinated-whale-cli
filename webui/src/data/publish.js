@@ -39,9 +39,10 @@ export const canPublish = () => !!(publications.dns || publications.proxy)
 export const isPublicName = (name) => /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]+$/.test(name || '') && !name.endsWith('.localhost')
 
 // A public name is published in one place: `site`'s publication only when it is the
-// one on this instance's bench, never a same-named copy elsewhere.
-export function publicationAt(site, project, benchPath) {
-  const p = publications.sites[site]
+// one on this instance's bench, never a same-named copy elsewhere. `store` is this
+// machine's publications unless a remote host's own answer is passed.
+export function publicationAt(site, project, benchPath, store = publications) {
+  const p = store.sites?.[site]
   return p && p.project === project && p.bench_path === benchPath ? p : null
 }
 // Every part done (or not used), and the check passed.

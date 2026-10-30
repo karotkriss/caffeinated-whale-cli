@@ -3,11 +3,11 @@
 import { computed, ref, watch } from 'vue'
 import { siteIcon } from '../data/site-icons'
 
-const props = defineProps({ project: { type: String, required: true }, site: { type: String, required: true }, size: { type: String, default: 'md' } })
+const props = defineProps({ project: { type: String, required: true }, site: { type: String, required: true }, host: { type: String, default: null }, size: { type: String, default: 'md' } })
 const SIZE = { sm: 'size-6 rounded-md', md: 'size-8 rounded-lg', lg: 'size-10 rounded-lg' }
 const ICON = { sm: 'size-3.5', md: 'size-4', lg: 'size-5' }
 const broken = ref(false)
-const logo = computed(() => siteIcon(props.project, props.site))
+const logo = computed(() => siteIcon(props.project, props.site, props.host))
 watch(logo, () => (broken.value = false))
 </script>
 

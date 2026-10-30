@@ -76,7 +76,7 @@ ENTRY_POINT_GROUP = "cwcli.integrations"
 # The hook points cwcli calls.
 HOOK_POINTS = ("sign_in", "backup_target", "dns_record", "proxy_host")
 _ID = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
-_RESERVED_IDS = ("local", "host", "api")  # session and schedule-owner sources
+_RESERVED_IDS = ("local", "host", "api", "hub")  # session and schedule-owner sources
 # The test suite installs from local repositories; nothing a user runs sets this.
 _TEST_ONLY_FILE_URLS = "CWCLI_TEST_ONLY_ALLOW_FILE_REPOSITORY_URLS"
 _SIGN_IN_MISSING = "cwcli-community: no sign-in for "

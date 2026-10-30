@@ -20,6 +20,8 @@ import { integrations, loadIntegrations, disableIntegration, openIntegration, op
 import { openJob } from '../data/job-dialog'
 import { applySetting, settings } from '../data/settings'
 import { catalog, loadCatalog, scanCatalog, sources, hostLabel } from '../data/catalog'
+import { ago } from '../data/fleet'
+import { hosts, hostList, loadHosts, checkHost, removeHost, repinHost, applyHostLink, dropHost, openAddHost, linkLook, linkAdvice } from '../data/hosts'
 
 const open = computed({ get: () => settingsDialog.open, set: (v) => (settingsDialog.open = v) })
 const tab = computed({ get: () => settingsDialog.tab, set: (v) => (settingsDialog.tab = v) })
@@ -34,6 +36,7 @@ watch(open, (v) => {
   config.load(true)
   cacheProjects.load(true)
   loadIntegrations()
+  loadHosts()
 }, { immediate: true })
 const c = computed(() => config.data)
 // Your account
@@ -86,6 +89,40 @@ const errorText = computed(() => {
   const e = settings.error
   if (!e) return null
   return e.hint ? `${e.message} ${e.hint}` : e.message
+})
+
+// --- remote hosts ------------------------------------------------------------
+const hostLine = (h) => {
+  const parts = [`${h.user}@${h.address}${h.port !== 22 ? ':' + h.port : ''}`, `host key ${h.host_key_fingerprint}`]
+  if (h.cap) parts.push(`${h.cap} cap`)
+  if (h.remote?.version) parts.push(`cwcli ${h.remote.version}`)
+  if (h.state !== 'connected' && h.last_seen) parts.push(`last seen ${ago(h.last_seen * 1000)}`)
+  if (h.drops_10m) parts.push(`${h.drops_10m} ${h.drops_10m === 1 ? 'drop' : 'drops'} in 10 min`)
+  return parts.join(' · ')
+}
+const checkingHost = ref('')
+async function checkNow(h) {
+  checkingHost.value = h.id
+  try { const data = await checkHost(h.id); if (data.host) applyHostLink(data.host) } catch (e) { settings.error = e } finally { checkingHost.value = '' }
+}
+const repinning = ref(null)
+const newHostKey = ref('')
+const repinBusy = ref(false)
+async function pinNewKey() {
+  repinBusy.value = true
+  try { const data = await repinHost(repinning.value.id, newHostKey.value.trim()); if (data.host) applyHostLink(data.host); repinning.value = null; newHostKey.value = '' } catch (e) { settings.error = e } finally { repinBusy.value = false }
+}
+const removingHost = ref(null)
+const removeHostBusy = ref(false)
+async function confirmRemoveHost() {
+  removeHostBusy.value = true
+  try { await removeHost(removingHost.value.id); dropHost(removingHost.value.id); removingHost.value = null } catch (e) { settings.error = e } finally { removeHostBusy.value = false }
+}
+const hubLine = computed(() => {
+  const hub = hosts.hub
+  if (!hub) return 'reading…'
+  if (!hub.public_key) return 'No key yet: turn on Remote hosts over SSH in Integrations; its test creates the key pair.'
+  return `${hub.name} · key ${hub.public_key.split(' ')[1]?.slice(0, 12)}… · ${hub.transport_on ? 'Remote hosts over SSH is on' : 'Remote hosts over SSH is off'} · protocol ${hub.protocol}`
 })
 
 // --- search paths -----------------------------------------------------------
@@ -193,6 +230,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </SettingsNavGroup>
       <SettingsNavGroup label="Connections">
         <SettingsNavItem value="integrations"><template #prefix><span class="lucide-blocks size-4" aria-hidden="true" /></template>Integrations</SettingsNavItem>
+        <SettingsNavItem value="hosts"><template #prefix><span class="lucide-server size-4" aria-hidden="true" /></template>Remote hosts</SettingsNavItem>
       </SettingsNavGroup>
       </template>
       <SettingsNavGroup label="General">
@@ -385,6 +423,33 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
             <p v-if="!community.length && !integrations.loading" class="py-3 text-p-sm text-ink-gray-5">No community integrations yet.</p>
           </SettingsBody>
         </SettingsPanel>
+
+        <SettingsPanel value="hosts">
+          <SettingsHeader title="Remote hosts" description="Other machines whose instances this web UI shows and drives, each reached over SSH with this hub's one key. The machine's owner grants the key with cwcli remote allow, restricted to cwcli's API and capped at a role; this hub pins the machine's host key when it is added. Nothing is trusted on first contact, and a host that stops answering is shown as such, never acted on.">
+            <template #actions><CommandCopy command="cwcli remote ls" /><Button icon-left="lucide-plus" label="Add host…" @click="openAddHost" /></template>
+          </SettingsHeader>
+          <SettingsBody>
+            <ErrorMessage :message="hosts.error?.message || errorText" />
+            <SettingsRow title="This hub" :description="hubLine">
+              <div class="flex items-center gap-1"><CommandCopy :command="hosts.hub?.allow_command || 'cwcli remote key'" /><Button label="Integrations" @click="tab = 'integrations'" /></div>
+            </SettingsRow>
+            <SettingsRow v-for="h in hostList" :key="h.id" :title="h.name" :description="`${hostLine(h)}${h.state !== 'connected' ? ' · ' + linkAdvice(h) : ''}`">
+              <div class="flex flex-wrap items-center justify-end gap-1">
+                <Badge size="sm" :theme="linkLook(h.state).theme" :variant="h.state === 'connected' ? 'subtle' : 'outline'" :label="linkLook(h.state).label" />
+                <Button size="sm" variant="ghost" icon="lucide-refresh-cw" :aria-label="`Check ${h.name} now`" :loading="checkingHost === h.id" @click="checkNow(h)" />
+                <Button v-if="h.state === 'host_key_changed'" size="sm" label="Pin new key…" @click="repinning = h; newHostKey = ''" />
+                <Button size="sm" variant="ghost" icon="lucide-trash-2" :aria-label="`Remove ${h.name}`" @click="removingHost = h" />
+              </div>
+            </SettingsRow>
+            <div v-if="repinning" class="space-y-2 rounded-6 border border-outline-red-2 bg-surface-red-1 p-3">
+              <p class="text-sm text-ink-gray-8">{{ repinning.name }} presented a different SSH host key than the one pinned ({{ repinning.host_key_fingerprint }}). Confirm with its owner that the key really changed (a reinstall, a new VM), then paste the new one from /etc/ssh/ssh_host_ed25519_key.pub there. A changed key can also mean another machine is answering.</p>
+              <FormControl v-model="newHostKey" type="textarea" :rows="2" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off" aria-label="New host key" />
+              <div class="flex justify-end gap-2"><Button label="Cancel" @click="repinning = null" /><Button variant="solid" theme="red" label="Pin this key" :disabled="!newHostKey.trim()" :loading="repinBusy" @click="pinNewKey" /></div>
+            </div>
+            <p v-if="!hostList.length && hosts.loaded" class="py-3 text-p-sm text-ink-gray-5">No remote host yet. Add host walks through the pairing: run one command on the other machine as the user who runs cwcli there, then paste what it prints here.</p>
+            <p class="py-2 text-xs text-ink-gray-5">The remote lowers whatever this hub's user is to the cap it granted; a remote's owner withdraws this hub any time with cwcli remote revoke there, which also ends the hub's running connections.</p>
+          </SettingsBody>
+        </SettingsPanel>
       </template>
         <!-- min-w-0: the panel is a flex-row item, so without it one no-wrap session row sets
              the column's minimum width and the right edge of the panel leaves the dialog. -->
@@ -441,6 +506,15 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
 
   <IntegrationDialog />
   <CommunityDialog />
+  <Dialog :open="!!removingHost" :title="`Remove ${removingHost?.name || ''} from this hub?`" icon="lucide-server-off" @update:open="(v) => { if (!v) removingHost = null }">
+    <p class="text-p-base text-ink-gray-7">This hub forgets the host and drops its connection; nothing changes on {{ removingHost?.name }}. Its owner withdraws this hub's key there with <code class="font-mono text-sm">cwcli remote revoke</code>.</p>
+    <template #actions="{ close }">
+      <div class="flex justify-end gap-2">
+        <Button label="Cancel" @click="close" />
+        <Button variant="solid" theme="red" data-primary label="Remove host" :loading="removeHostBusy" @click="confirmRemoveHost" />
+      </div>
+    </template>
+  </Dialog>
   <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
     <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }} Its settings are kept for the next time it is turned on.</p>
     <template #actions="{ close }">

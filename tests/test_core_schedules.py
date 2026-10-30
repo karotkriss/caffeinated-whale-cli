@@ -34,7 +34,15 @@ class Fleet:
     def create(self, verb, target, args, *, consent=False, origin=None):
         if self.busy:
             raise CwcliError(sch.ErrorKind.CONFLICT, "job.project_busy", "busy")
-        rec = {"id": f"j{len(self.jobs) + 1}", "verb": verb, "target": target, "args": args, "consent": consent, "origin": origin, "state": "queued"}
+        rec = {
+            "id": f"j{len(self.jobs) + 1}",
+            "verb": verb,
+            "target": target,
+            "args": args,
+            "consent": consent,
+            "origin": origin,
+            "state": "queued",
+        }
         self.jobs.append(rec)
         return rec
 
@@ -51,12 +59,20 @@ class Fleet:
         job["state"] = state
 
 
+HUB_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm"
+
+
 def run_tick(fleet, **kw):
     return sch.tick(fleet.create, fleet.instance_status, read_job=fleet.read, **kw)
 
 
 def nightly(**over):
-    base = {"name": "Nightly backup", "verb": "backup-sites", "target": {"project": "p"}, "cron": "0 2 * * *"}
+    base = {
+        "name": "Nightly backup",
+        "verb": "backup-sites",
+        "target": {"project": "p"},
+        "cron": "0 2 * * *",
+    }
     base.update(over)
     return base
 
@@ -68,10 +84,16 @@ class TestCron:
         nxt = sch.next_cron("0 3 * * 0", T0)
         assert nxt.weekday() == 6 and nxt.hour == 3 and nxt > T0
         assert sch.next_cron("*/15 * * * *", T0) == T0.replace(minute=15)
-        assert sch.next_cron("0 7 * * 1-5", T0.replace(hour=8)) == T0.replace(day=3, hour=7)  # Tuesday
-        assert sch.next_cron("0 0 1 * *", T0).day == 1 and sch.next_cron("0 0 1 * *", T0).month == 12
+        assert sch.next_cron("0 7 * * 1-5", T0.replace(hour=8)) == T0.replace(
+            day=3, hour=7
+        )  # Tuesday
+        assert (
+            sch.next_cron("0 0 1 * *", T0).day == 1 and sch.next_cron("0 0 1 * *", T0).month == 12
+        )
 
-    @pytest.mark.parametrize("bad", ["", "0 2 * *", "60 2 * * *", "0 25 * * *", "a b c d e", "0 2 * * 8"])
+    @pytest.mark.parametrize(
+        "bad", ["", "0 2 * *", "60 2 * * *", "0 25 * * *", "a b c d e", "0 2 * * 8"]
+    )
     def test_bad_expressions_raise(self, bad):
         with pytest.raises(ValueError):
             sch.parse_cron(bad)
@@ -128,7 +150,12 @@ class TestStore:
             sch.delete(row["id"])
 
     def test_settings_windows_quiet_hours_guards(self):
-        sch.save_settings(windows={"p": {"start": "02:00", "end": "05:00", "days": ["sun"]}}, quiet_hours={"start": "22:00", "end": "06:00"}, guards={"min_free_disk_gb": 20}, digest="daily")
+        sch.save_settings(
+            windows={"p": {"start": "02:00", "end": "05:00", "days": ["sun"]}},
+            quiet_hours={"start": "22:00", "end": "06:00"},
+            guards={"min_free_disk_gb": 20},
+            digest="daily",
+        )
         got = sch.list_schedules(now=T0)
         assert got["windows"]["p"]["days"] == ["sun"] and got["quiet_hours"]["start"] == "22:00"
         assert got["guards"]["min_free_disk_gb"] == 20 and got["guards"]["min_free_mem_mb"] == 512
@@ -168,13 +195,39 @@ class TestTick:
 
     def test_updates_and_migrate_never_start_without_the_unattended_flag(self):
         fleet = Fleet()
-        upd = {"name": "u", "verb": "apps-update", "target": {"project": "p", "bench": "0"}, "cron": "0 2 * * *", "args": {"apps": ["frappe"]}}
+        upd = {
+            "name": "u",
+            "verb": "apps-update",
+            "target": {"project": "p", "bench": "0"},
+            "cron": "0 2 * * *",
+            "args": {"apps": ["frappe"]},
+        }
         sch.save(upd, now=T0)
         sch.save({**upd, "name": "u2", "unattended": True}, now=T0)
-        sch.save({"name": "m", "verb": "migrate", "target": {"project": "p", "site": "s"}, "cron": "0 2 * * *", "start_if_stopped": True}, now=T0)
-        sch.save({"name": "r", "verb": "recipe", "target": {"project": "p", "site": "s"}, "cron": "0 2 * * *", "steps": [{"verb": "backup-sites"}, {"verb": "migrate"}]}, now=T0)
+        sch.save(
+            {
+                "name": "m",
+                "verb": "migrate",
+                "target": {"project": "p", "site": "s"},
+                "cron": "0 2 * * *",
+                "start_if_stopped": True,
+            },
+            now=T0,
+        )
+        sch.save(
+            {
+                "name": "r",
+                "verb": "recipe",
+                "target": {"project": "p", "site": "s"},
+                "cron": "0 2 * * *",
+                "steps": [{"verb": "backup-sites"}, {"verb": "migrate"}],
+            },
+            now=T0,
+        )
         made = run_tick(fleet, now=T0.replace(hour=2))
-        assert [(j["verb"], j["origin"]["schedule"]) for j in made] == [("apps-update", made[0]["origin"]["schedule"])]
+        assert [(j["verb"], j["origin"]["schedule"]) for j in made] == [
+            ("apps-update", made[0]["origin"]["schedule"])
+        ]
         rows = {r["name"]: r for r in sch.list_schedules(now=T0.replace(hour=2))["schedules"]}
         assert rows["u2"]["id"] == made[0]["origin"]["schedule"]
         for name in ("u", "m", "r"):
@@ -226,7 +279,16 @@ class TestTick:
 
     def test_a_one_off_that_is_skipped_retires_instead_of_retrying_every_minute(self):
         fleet = Fleet(status="stopped")
-        sch.save({"name": "once", "verb": "restart", "target": {"project": "p"}, "kind": "once", "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z")}, now=T0)
+        sch.save(
+            {
+                "name": "once",
+                "verb": "restart",
+                "target": {"project": "p"},
+                "kind": "once",
+                "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+            now=T0,
+        )
         assert run_tick(fleet, now=T0.replace(hour=2)) == []
         fleet.status = "running"
         assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []
@@ -241,7 +303,9 @@ class TestTick:
         sch.set_enabled(row["id"], True, now=T0 + timedelta(days=3, hours=9))  # Thursday 10:00
         assert run_tick(fleet, now=T0 + timedelta(days=3, hours=9, minutes=1)) == []
         assert len(run_tick(fleet, now=T0 + timedelta(days=4, hours=1))) == 1
-        sch.save({**nightly(cron="0 4 * * *"), "id": row["id"]}, now=T0 + timedelta(days=6, hours=9))
+        sch.save(
+            {**nightly(cron="0 4 * * *"), "id": row["id"]}, now=T0 + timedelta(days=6, hours=9)
+        )
         assert run_tick(fleet, now=T0 + timedelta(days=6, hours=9, minutes=1)) == []
         assert len(run_tick(fleet, now=T0 + timedelta(days=7, hours=3))) == 1
 
@@ -255,7 +319,16 @@ class TestTick:
 
     def test_a_one_off_fires_once_and_disables_itself(self):
         fleet = Fleet()
-        sch.save({"name": "once", "verb": "restart", "target": {"project": "p"}, "kind": "once", "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z")}, now=T0)
+        sch.save(
+            {
+                "name": "once",
+                "verb": "restart",
+                "target": {"project": "p"},
+                "kind": "once",
+                "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+            now=T0,
+        )
         assert len(run_tick(fleet, now=T0.replace(hour=2))) == 1
         row = sch.list_schedules(now=T0.replace(hour=3))["schedules"][0]
         assert row["enabled"] is False
@@ -304,6 +377,137 @@ class TestAdminOnlySchedules:
         row = sch.list_schedules(now=T0.replace(hour=2))["schedules"][0]
         assert row["last_run"]["state"] == "skipped" and why in row["last_run"]["reason"]
         assert "ana" in row["last_skip"]["reason"]
+
+    @staticmethod
+    def _grant(tmp_path, cap, **kw):
+        """`cwcli remote allow` on this machine, recorded in the cwcli home the tick reads."""
+        from caffeinated_whale_cli.core import remote_access
+
+        remote_access.allow(
+            hub="hub-x", key=HUB_KEY, cap=cap, python="/opt/py/bin/python3", state_path=str(tmp_path / "ui.json"),
+            host_key_file=str(tmp_path / "none"), proc_root=tmp_path, **kw,
+        )  # fmt: skip
+
+    @staticmethod
+    def _last_run(day):
+        return sch.list_schedules(now=T0 + timedelta(days=day, hours=2))["schedules"][0]["last_run"]
+
+    def test_a_hub_users_schedule_runs_only_while_this_machine_grants_that_hub_admin(
+        self, tmp_path, monkeypatch
+    ):
+        """A hub's user acts here at most at the cap this machine's grant gives the hub, so
+        the remote, never the hub, decides whether that owner is still an Admin: no grant
+        or a lower re-grant skips the run, with the reason."""
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        assert (
+            self._last_run(0)["state"] == "skipped" and "hub hub-x" in self._last_run(0)["reason"]
+        )
+        self._grant(tmp_path, "admin")
+        (made,) = run_tick(fleet, now=T0 + timedelta(days=1, hours=2))
+        fleet.finish(made)
+        self._grant(tmp_path, "operator")
+        assert run_tick(fleet, now=T0 + timedelta(days=2, hours=2)) == []
+        assert (
+            self._last_run(2)["state"] == "skipped"
+            and "no longer lets act as an Admin" in self._last_run(2)["reason"]
+        )
+
+    def test_a_grant_written_to_a_chosen_authorized_keys_file_is_the_one_checked(
+        self, tmp_path, monkeypatch
+    ):
+        """`cwcli remote allow --authorized-keys <file>`: the bridge reads that file, so the
+        tick does too, never the ~/.ssh/authorized_keys of whoever runs it."""
+        from caffeinated_whale_cli.core import remote_access
+
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        chosen = tmp_path / "keys" / "authorized_keys"
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        self._grant(tmp_path, "admin", keys_path=chosen)
+        assert not (tmp_path / "remote-user" / ".ssh" / "authorized_keys").exists()
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        self._grant(tmp_path, "operator", keys_path=chosen)
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
+        remote_access.revoke(hub="hub-x", proc_root=tmp_path)
+        assert "cwcli-hub:hub-x" not in chosen.read_text() and remote_access.recorded_grants() == {}
+
+    def test_a_grant_line_this_home_never_recorded_still_counts(self, tmp_path, monkeypatch):
+        """The bridge honours a grant line in the default authorized_keys whether or not this
+        cwcli home recorded it (a reset home), so the schedule check counts it while the line's
+        bridge serves this home, until a revoke removes it."""
+        from caffeinated_whale_cli.core import remote_access
+        from caffeinated_whale_cli.utils import config_utils
+
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        self._grant(tmp_path, "admin")
+        remote_access.grants_record().unlink()
+        assert remote_access.recorded_grants() == {}
+        assert [g.home for g in remote_access.list_grants()] == [str(config_utils.cwcli_home())]
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        assert remote_access.revoke(hub="hub-x", proc_root=tmp_path).removed == 1
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
+
+    def test_a_grant_line_for_another_home_does_not_keep_an_admin_only_schedule_running(
+        self, tmp_path, monkeypatch
+    ):
+        """A line's bridge reaches only the cwcli home its command names: once the hub is
+        granted for another home instead, it has no way into this one, so this home's
+        Admin-only schedule stops, though that line still caps the hub at Admin."""
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        self._grant(tmp_path, "admin")
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        self._grant(tmp_path, "admin", home=tmp_path / "another-home")
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_on_a_shared_install_a_members_grant_is_confirmed_by_them_and_named_elsewhere(
+        self, tmp_path, monkeypatch
+    ):
+        """A group member ran `cwcli remote allow` (their own 0700 ~/.ssh/authorized_keys,
+        naming the shared home). Their own daemon's tick reads that grant and runs the
+        schedule; the shared scheduler, another account, cannot read the file, so it skips
+        the run naming the file and that member, never a traceback and never that the hub
+        lost its Admin cap."""
+        from caffeinated_whale_cli.core import remote_access
+
+        marker = tmp_path / "shared.toml"
+        marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "shared"}"\n')
+        monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+        monkeypatch.delenv("CWCLI_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path / "carol"))
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "carol")
+        self._grant(tmp_path, "admin")
+        carols = tmp_path / "carol" / ".ssh" / "authorized_keys"
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        monkeypatch.setenv("HOME", str(tmp_path / "shared"))  # the service account's home
+        os.chmod(carols.parent, 0)
+        try:
+            assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        finally:
+            os.chmod(carols.parent, 0o700)
+        reason = self._last_run(1)["reason"]
+        assert (
+            str(carols) in reason
+            and "written by carol" in reason
+            and "could not be confirmed" in reason
+        )
+        assert "no longer lets act as an Admin" not in reason
 
     def test_an_owner_saved_before_roles_keeps_running(self):
         """No ``owner_source``: the local account of that name, else this host's CLI."""
@@ -356,10 +560,14 @@ class TestRecipesAndTriggers:
         }
         sch.save(recipe, now=T0)
         made = run_tick(fleet, now=T0.replace(hour=2))
-        assert [j["verb"] for j in made] == ["backup-sites"] and made[0]["origin"]["recipe_step"] == 0
+        assert [j["verb"] for j in made] == ["backup-sites"] and made[0]["origin"][
+            "recipe_step"
+        ] == 0
         assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []  # still running
         fleet.finish(made[0])
-        made = run_tick(fleet, now=T0.replace(hour=2, minute=5))  # no finished_jobs: read from the records
+        made = run_tick(
+            fleet, now=T0.replace(hour=2, minute=5)
+        )  # no finished_jobs: read from the records
         assert [j["verb"] for j in made] == ["migrate"] and made[0]["consent"] is True
         # its own slot coming round again does not start a second copy mid-recipe
         assert run_tick(fleet, now=T0 + timedelta(days=1, hours=1)) == []
@@ -370,7 +578,16 @@ class TestRecipesAndTriggers:
 
     def test_a_later_recipe_step_retries_a_busy_instance_and_obeys_the_guards(self):
         fleet = Fleet()
-        sch.save({"name": "r", "verb": "recipe", "target": {"project": "p"}, "cron": "0 2 * * *", "steps": [{"verb": "backup-sites"}, {"verb": "restart"}]}, now=T0)
+        sch.save(
+            {
+                "name": "r",
+                "verb": "recipe",
+                "target": {"project": "p"},
+                "cron": "0 2 * * *",
+                "steps": [{"verb": "backup-sites"}, {"verb": "restart"}],
+            },
+            now=T0,
+        )
         first = run_tick(fleet, now=T0.replace(hour=2))[0]
         fleet.finish(first)
         fleet.busy = True
@@ -387,24 +604,84 @@ class TestRecipesAndTriggers:
 
     def test_after_job_and_on_start_triggers(self):
         fleet = Fleet()
-        sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}}, now=T0)
-        sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}}, now=T0)
+        sch.save(
+            {
+                "name": "after",
+                "verb": "restart",
+                "target": {"project": "p"},
+                "kind": "event",
+                "trigger": {"type": "after_job", "verb": "apps-update"},
+            },
+            now=T0,
+        )
+        sch.save(
+            {
+                "name": "boot",
+                "verb": "backup-sites",
+                "target": {"project": "q"},
+                "kind": "event",
+                "trigger": {"type": "on_start"},
+            },
+            now=T0,
+        )
         assert run_tick(fleet, now=T0, running_projects=set()) == []
-        finished = [{"id": "x", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}}]
+        finished = [
+            {
+                "id": "x",
+                "verb": "apps-update",
+                "state": "succeeded",
+                "target": {"project": "p"},
+                "origin": {},
+            }
+        ]
         made = run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"})
         assert sorted(j["verb"] for j in made) == ["backup-sites", "restart"]
         # a second scheduler offered the same job and the same start fires nothing
         assert run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"}) == []
         # a failed update or another instance's update does not fire it
-        finished = [{"id": "y", "verb": "apps-update", "state": "failed", "target": {"project": "p"}, "origin": {}}]
+        finished = [
+            {
+                "id": "y",
+                "verb": "apps-update",
+                "state": "failed",
+                "target": {"project": "p"},
+                "origin": {},
+            }
+        ]
         assert run_tick(fleet, now=T0, finished_jobs=finished) == []
 
     def test_an_event_that_meets_a_busy_instance_fires_once_it_is_free(self):
         fleet = Fleet()
-        sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}}, now=T0)
-        sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}}, now=T0)
+        sch.save(
+            {
+                "name": "after",
+                "verb": "restart",
+                "target": {"project": "p"},
+                "kind": "event",
+                "trigger": {"type": "after_job", "verb": "apps-update"},
+            },
+            now=T0,
+        )
+        sch.save(
+            {
+                "name": "boot",
+                "verb": "backup-sites",
+                "target": {"project": "q"},
+                "kind": "event",
+                "trigger": {"type": "on_start"},
+            },
+            now=T0,
+        )
         assert run_tick(fleet, now=T0, running_projects=set()) == []
-        finished = [{"id": "x", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}}]
+        finished = [
+            {
+                "id": "x",
+                "verb": "apps-update",
+                "state": "succeeded",
+                "target": {"project": "p"},
+                "origin": {},
+            }
+        ]
         fleet.busy = True
         assert run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"}) == []
         fleet.busy = False
@@ -427,7 +704,9 @@ def test_a_daily_slot_keeps_its_wall_clock_time_across_daylight_saving(monkeypat
         before = datetime(2026, 10, 31, 12, 0).astimezone()  # EDT; the clocks go back on Nov 1
         nxt = sch.next_cron("0 2 * * *", before)
         assert nxt.astimezone().replace(tzinfo=None) == datetime(2026, 11, 1, 2, 0)
-        assert sch.next_cron("0 2 * * *", nxt).astimezone().replace(tzinfo=None) == datetime(2026, 11, 2, 2, 0)
+        assert sch.next_cron("0 2 * * *", nxt).astimezone().replace(tzinfo=None) == datetime(
+            2026, 11, 2, 2, 0
+        )
     finally:
         monkeypatch.undo()
         time.tzset()

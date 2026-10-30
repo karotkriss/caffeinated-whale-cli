@@ -4,9 +4,10 @@
 import { computed, onMounted } from 'vue'
 import TimeSeries from './TimeSeries.vue'
 import { fmtBytes, fmtPct, hostSeries, loadMetrics, metrics } from '../data/metrics'
-import { instances } from '../data/fleet'
+import { localInstances } from '../data/fleet'
 
-const running = computed(() => instances.value.filter((i) => i.container_running).map((i) => i.project))
+// This machine's instances only: the host memory and load are this machine's.
+const running = computed(() => localInstances.value.filter((i) => i.container_running).map((i) => i.project))
 // Summed per sampler tick (every instance measured in one pass carries the same
 // tick), so a total never mixes one instance's point with another's from the next pass.
 function totals(field) {

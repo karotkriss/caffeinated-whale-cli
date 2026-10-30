@@ -8,10 +8,12 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { Button, ErrorMessage, LoadingText, TabButtons, TextInput } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import FollowPane from './FollowPane.vue'
-import { getJson } from '../data/api'
+import { apiBase, getJson } from '../data/api'
+import { benchPath } from '../data/fleet'
 
 const props = defineProps({
   project: { type: String, required: true },
+  host: { type: String, default: null }, // a remote host's site: read through the hub
   bench: { type: String, required: true },
   benchPath: { type: String, required: true },
   site: { type: String, required: true },
@@ -36,7 +38,7 @@ const shown = computed(() => {
 })
 let timer = null
 let inflight = false
-const base = () => `/api/v1/instances/${encodeURIComponent(props.project)}`
+const base = () => `${apiBase(props.host)}/instances/${encodeURIComponent(props.project)}`
 const params = () => new URLSearchParams({ bench_path: props.benchPath, site: props.site })
 
 async function poll() {
@@ -187,7 +189,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <template v-else-if="view === 'web'">
       <div class="rounded-6 border border-outline-gray-1 bg-surface-gray-1 px-4 py-6 text-p-sm text-ink-gray-6">
         <p>A development bench serves through Werkzeug, whose access lines carry no Host, so a request cannot be attributed to one site here. The bench's web log holds every site's requests together.</p>
-        <div class="mt-3"><Button variant="subtle" icon-left="lucide-scroll-text" label="Open the bench web log" @click="$router.push(`/instances/${project}/benches/${bench}?tab=logs&process=web`)" /></div>
+        <div class="mt-3"><Button variant="subtle" icon-left="lucide-scroll-text" label="Open the bench web log" @click="$router.push(`${benchPath({ project, host }, bench)}?tab=logs&process=web`)" /></div>
       </div>
     </template>
 
