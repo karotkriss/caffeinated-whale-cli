@@ -2553,35 +2553,34 @@ class _Handler(BaseHTTPRequestHandler):
         """
         op = str(payload.get("op") or "")
         by = self._account_name()
-        with self._action_lock(_SETTINGS_LOCK_KEY):
-            if op == "add":
-                rec = core_hosts.add_host(
-                    _optional_str(payload.get("pairing")),
-                    name=_optional_str(payload.get("name")),
-                    address=_optional_str(payload.get("address")),
-                    port=_optional_int(payload.get("port"), "port"),
-                    user=_optional_str(payload.get("user")),
-                    host_key=_optional_str(payload.get("host_key")),
-                    by=by,
+        if op == "add":
+            rec = core_hosts.add_host(
+                _optional_str(payload.get("pairing")),
+                name=_optional_str(payload.get("name")),
+                address=_optional_str(payload.get("address")),
+                port=_optional_int(payload.get("port"), "port"),
+                user=_optional_str(payload.get("user")),
+                host_key=_optional_str(payload.get("host_key")),
+                by=by,
+            )
+            self.hosts.resync()
+            return 200, {"data": {"host": self.hosts.wait_settled(rec.id)}}
+        host_id = _required_str(payload, "id")
+        if op == "remove":
+            rec = core_hosts.remove_host(host_id)
+            self.hosts.resync()
+            return 200, {"data": {"removed": rec.id}}
+        if op == "check":
+            view = self.hosts.check(host_id)
+            if view is None:
+                raise CwcliError(
+                    ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'."
                 )
-                self.hosts.resync()
-                return 200, {"data": {"host": self.hosts.wait_settled(rec.id)}}
-            host_id = _required_str(payload, "id")
-            if op == "remove":
-                rec = core_hosts.remove_host(host_id)
-                self.hosts.resync()
-                return 200, {"data": {"removed": rec.id}}
-            if op == "check":
-                view = self.hosts.check(host_id)
-                if view is None:
-                    raise CwcliError(
-                        ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'."
-                    )
-                return 200, {"data": {"host": view}}
-            if op == "repin":
-                core_hosts.repin_host(host_id, _required_str(payload, "host_key"))
-                self.hosts.resync()
-                return 200, {"data": {"host": self.hosts.wait_settled(host_id)}}
+            return 200, {"data": {"host": view}}
+        if op == "repin":
+            core_hosts.repin_host(host_id, _required_str(payload, "host_key"))
+            self.hosts.resync()
+            return 200, {"data": {"host": self.hosts.wait_settled(host_id)}}
         raise CwcliError(
             ErrorKind.USAGE, "host.op_invalid", "op must be add, remove, check or repin."
         )
