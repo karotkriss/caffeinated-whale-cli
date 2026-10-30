@@ -23,6 +23,7 @@ SW = {
     "source": {"url": "https://gitlab.example.com/ministry-of-housing-and-water/chpa/single-window"},
     "installs": [],
 }
+SW_URL = SW["source"]["url"]
 CUSTOM = {
     "key": "gitlab.example.com/dev-tools/customization",
     "name": "customization",
@@ -32,7 +33,7 @@ CUSTOM = {
 
 def _run(call):
     script = (
-        f"import {{ splitBenchApps, inventoryState }} from {json.dumps(MODULE.as_uri())};\n"
+        f"import {{ benchAppFor, splitBenchApps, inventoryState }} from {json.dumps(MODULE.as_uri())};\n"
         f"console.log(JSON.stringify({call}));\n"
     )
     out = subprocess.run(
@@ -72,6 +73,24 @@ def test_an_app_on_the_bench_by_repository_is_not_a_remote_pick_whatever_its_nam
     )
     assert on_bench == ["single_window"]
     assert remote == ["customization"]
+
+
+@pytest.mark.parametrize(
+    "bench, held_as",
+    [
+        (
+            {"benchApps": ["frappe", "single_window"], "benchRemotes": {"single_window": [SW_URL]}},
+            "single_window",
+        ),
+        ({"benchApps": ["frappe", "single-window"]}, "single-window"),
+        ({"benchApps": ["frappe"], "benchRemotes": None}, None),
+    ],
+)
+def test_a_remote_pick_maps_to_the_bench_app_that_holds_its_repository(bench, held_as):
+    """A remote pick a fresh read finds on the bench is kept as that bench app, found
+    by repository whatever the catalog calls it (NewSiteDialog's picker watcher)."""
+    sw = {**SW, "name": "single-window"}
+    assert _run(f"benchAppFor({json.dumps(sw)}, {json.dumps(bench)})") == held_as
 
 
 @pytest.mark.parametrize(

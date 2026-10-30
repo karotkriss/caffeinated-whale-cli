@@ -430,7 +430,9 @@ class TestHardenings:
                     return (1, b"")
                 return super().exec_run(cmd, workdir=workdir)
 
-        install(BrokenSiteContainer(apps=["frappe"], sites={"dev.local": [], "ok.local": ["frappe"]}))
+        install(
+            BrokenSiteContainer(apps=["frappe"], sites={"dev.local": [], "ok.local": ["frappe"]})
+        )
 
         result = core_inspect.inspect("proj", refresh="full")
 
@@ -777,7 +779,9 @@ class TestAppCopiesFlags:
                     app=a,
                     entry=f"{bench}/apps/{a}",
                     is_symlink=is_symlink,
-                    resolved_path=("/workspace/.hdsrc/frappe" if is_symlink else f"{bench}/apps/{a}"),
+                    resolved_path=(
+                        "/workspace/.hdsrc/frappe" if is_symlink else f"{bench}/apps/{a}"
+                    ),
                     imported_path=("/workspace/.hdsrc/frappe" if diverged else None),
                     diverged=diverged,
                     checked=True,
@@ -863,7 +867,7 @@ class TestAppRemotes:
 
         result = core_inspect.inspect("proj")
 
-        assert result.data.benches[0].app_remotes == {}
+        assert result.data.benches[0].app_remotes is None
         assert not container.read_remotes()
 
     def test_a_cache_served_read_has_none(self, wired):
@@ -874,5 +878,16 @@ class TestAppRemotes:
 
         result = core_inspect.inspect("proj", refresh="cache_only", app_remotes=True)
 
-        assert result.data.benches[0].app_remotes == {}
+        assert result.data.benches[0].app_remotes is None
         assert not container.read_remotes()
+
+    def test_a_failed_read_is_none_not_an_empty_map(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = FakeFrappeContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", app_remotes=True)
+
+        assert result.data.served_from == "partial"
+        assert result.data.benches[0].app_remotes is None

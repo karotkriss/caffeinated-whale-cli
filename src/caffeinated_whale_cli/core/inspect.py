@@ -105,8 +105,9 @@ class BenchInfo:
     app_copies: list[resolvers.AppImport] = field(default_factory=list)
     # Each app checkout's git remotes (``[remote ...]`` urls, credentials dropped),
     # read live only when the caller asks (``inspect(app_remotes=True)``) and the
-    # container answered; never cached. Empty on a cache-served read.
-    app_remotes: dict[str, list[str]] = field(default_factory=dict)
+    # container answered; never cached. None whenever they were not read (not asked,
+    # a cache-served read, or a failed exec), so "no remotes" is only ever a real answer.
+    app_remotes: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -911,23 +912,28 @@ def _to_bench_info(
 
 
 def _with_app_remotes(project_name: str, benches: list[BenchInfo]) -> list[BenchInfo]:
-    """``benches`` with each app's credential-free remote urls; unchanged on a failed read."""
+    """``benches`` with each app's credential-free remote urls; None where the read failed."""
     from . import apps as core_apps
 
     try:
         container = core_docker.get_frappe_container(project_name)
-        return [
-            dataclasses.replace(
-                b,
-                app_remotes={
-                    app: sorted(f"https://{key}" for key in keys)
-                    for app, keys in sorted(core_apps.app_remotes(container, b.path).items())
-                },
-            )
-            for b in benches
-        ]
+        read = [core_apps.app_remotes(container, b.path) for b in benches]
     except (CwcliError, DockerException, requests.RequestException):
         return benches
+    return [
+        dataclasses.replace(
+            b,
+            app_remotes=(
+                None
+                if remotes is None
+                else {
+                    app: sorted(f"https://{k}" for k in keys)
+                    for app, keys in sorted(remotes.items())
+                }
+            ),
+        )
+        for b, remotes in zip(benches, read, strict=True)
+    ]
 
 
 def inspect(
