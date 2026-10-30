@@ -188,3 +188,32 @@ class TestOtherFlowsCheckFirst:
             new_site.new_site("acme", site="shop.localhost", admin_password="a")
         assert exc.value.code == "db.root_password_wrong"
         assert not [c for c, _env in db.calls if "new-site" in " ".join(c)]
+
+    def test_the_web_new_site_job_refuses_before_fetching_remote_apps(self, monkeypatch):
+        from caffeinated_whale_cli import jobs
+
+        db = Db(DENIED)
+        monkeypatch.setattr(
+            jobs.core_resolvers,
+            "resolve_container_and_bench",
+            lambda *a, **k: (db, "/workspace/frappe-bench", []),
+        )
+        monkeypatch.setattr(db_access.supervision, "common_site_config", lambda c, b: {})
+        fetched: list = []
+        monkeypatch.setattr(jobs.core_apps, "install_apps", lambda *a, **k: fetched.append(a))
+
+        class Emit:
+            def lifecycle(self, *a, **k):
+                pass
+
+        with pytest.raises(CwcliError) as exc:
+            jobs._dispatch(
+                "new-site",
+                {"project": "acme", "bench": "0", "site": "shop.localhost"},
+                {"fetch": ["https://github.com/frappe/hrms"]},
+                False,
+                {"admin_password": "a", "db_root_password": SECRET},
+                Emit(),
+            )
+        assert exc.value.code == "db.root_password_wrong"
+        assert fetched == []

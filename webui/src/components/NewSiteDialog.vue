@@ -85,7 +85,7 @@ watch(() => newSiteDialog.open, (open) => {
   if (!retry) return
   const a = retry.args || {}
   site.value = retry.site || ''
-  apps.value = [...(a.apps || [])]
+  apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
   makeDefault.value = !!a.default
   devMode.value = !!a.developer_mode
   publishing.value = !!a.publish && publishable.value
@@ -122,8 +122,10 @@ watch(pickerOptions, (opts) => {
   const kept = apps.value.map((v) => (ok.has(v) ? v : pickOf(v))).filter((v) => ok.has(v))
   if (kept.length !== apps.value.length || kept.some((v, i) => v !== apps.value[i])) apps.value = [...new Set(kept)]
 })
-const chipApp = (v) => remoteApp(v) || catalogApp(v)
-const appNames = computed(() => apps.value.map((v) => remoteApp(v)?.name || v))
+// A remote pick resolves by catalog key, so one that is on the bench by now is still its app name.
+const pickedRemote = (v) => (String(v).startsWith('remote:') ? catalogApps.value.find((a) => a.key === v.slice(7)) : null)
+const chipApp = (v) => pickedRemote(v) || catalogApp(v)
+const appNames = computed(() => apps.value.map((v) => pickedRemote(v)?.name || v))
 const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url).filter(Boolean))
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
