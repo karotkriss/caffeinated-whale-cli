@@ -349,9 +349,9 @@ def _load() -> dict:
     return data
 
 
-def _write(path: Path, text: str) -> None:
-    """Replace ``path`` atomically, 0600 (group-shared 0660 on a shared install, where
-    the service account's daemon reads what a group member's CLI wrote)."""
+def write_state(path: Path, text: str) -> None:
+    """Replace a cwcli state file atomically, 0600 (group-shared 0660 on a shared install,
+    where the service account's daemon reads what a group member's CLI wrote)."""
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, shared_home.file_mode(0o600))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -364,7 +364,7 @@ def _write(path: Path, text: str) -> None:
 def _save(data: dict) -> None:
     path = store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write(path, json.dumps(data, indent=1, sort_keys=True))
+    write_state(path, json.dumps(data, indent=1, sort_keys=True))
     _write_known_hosts(data)
 
 
@@ -413,7 +413,7 @@ def _write_known_hosts(data: dict) -> None:
         for host_id, rec in sorted(data["hosts"].items())
         if rec.get("host_key")
     ]
-    _write(known_hosts_path(), "".join(lines))
+    write_state(known_hosts_path(), "".join(lines))
 
 
 def add_host(

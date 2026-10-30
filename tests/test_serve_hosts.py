@@ -135,7 +135,7 @@ def _connected(name="Build box", state=core_hosts.CONNECTED, reason=None):
     return {"id": "build-box", "name": name, "state": state, "reason": reason, "actions_allowed": state == core_hosts.CONNECTED, "readable": state in core_hosts.READABLE_STATES}
 
 
-DELEGATED = {"X-Cwcli-Delegated-User": "alice@hub-x", "X-Cwcli-Delegated-Role": "viewer", "X-Cwcli-Hub": "hub-x"}
+DELEGATED = {"X-Cwcli-Delegated-User": "alice@hub-x", "X-Cwcli-Delegated-Role": "viewer"}
 
 
 class TestDowngradeOnlyDelegation:
@@ -150,7 +150,9 @@ class TestDowngradeOnlyDelegation:
         assert daemon.jobs == []
 
     def test_an_admin_claim_on_a_bearer_stays_admin_and_the_job_records_the_hub(self, daemon):
-        headers = {**DELEGATED, "X-Cwcli-Delegated-Role": "admin"}
+        """The hub's name comes from the delegated user's @<hub> suffix, which the bridge
+        writes from its own command line; no other header names the hub."""
+        headers = {**DELEGATED, "X-Cwcli-Delegated-Role": "admin", "X-Cwcli-Hub": "some-other-hub"}
         status, _b, _ = _req(daemon, "/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}, bearer=True, headers=headers)
         assert status == 202
         (verb, origin), = daemon.jobs

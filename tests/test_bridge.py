@@ -269,7 +269,8 @@ class TestRewrite:
         assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "alice@some-other-hub"}))["x-cwcli-delegated-user"] == f"alice@{HUB}"
         assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "al ice\r\nX-Injected: 1"}))["x-cwcli-delegated-user"] == f"hub@{HUB}"
         assert self._rewrite(self._headers())["x-cwcli-delegated-user"] == f"hub@{HUB}"
-        assert self._rewrite(self._headers())["x-cwcli-hub"] == HUB
+        sent = self._rewrite(self._headers())
+        assert sent["x-cwcli-delegated-user"].rsplit("@", 1)[1] == HUB and "x-cwcli-hub" not in sent
 
     def test_a_connection_header_naming_a_delegation_header_is_refused(self):
         with pytest.raises(bridge.BridgeError) as e:
@@ -317,7 +318,7 @@ class TestTheRealExchange:
         assert seen["headers"]["authorization"] == f"Bearer {TOKEN}"
         assert seen["headers"]["x-cwcli-delegated-user"] == f"alice@{HUB}"
         assert seen["headers"]["x-cwcli-delegated-role"] == "operator"
-        assert seen["headers"]["x-cwcli-hub"] == HUB
+        assert seen["headers"]["x-cwcli-delegated-user"].rsplit("@", 1)[1] == HUB
         assert seen["headers"]["host"].startswith("127.0.0.1:")
         assert "cookie" not in seen["headers"]
         # The daemon's own bytes come back untouched; the hub decides what to relay.
