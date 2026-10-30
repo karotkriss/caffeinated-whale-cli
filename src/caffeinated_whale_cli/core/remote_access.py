@@ -39,11 +39,15 @@ when its bridge serves this home; ``revoke`` cleans this account's own
 account cannot read (another account's 0700 ``.ssh``) from its record. Such a file is an
 error that names the account that wrote the grant for ``revoke``, and leaves the owner
 check unable to confirm the cap. Grant files are read and rewritten byte for byte, so
-another key's comment that is not UTF-8 survives unchanged.
+another key's comment that is not UTF-8 survives unchanged, and a rewrite never changes who
+can read the file: it keeps the file's mode (and, under root, its owner), and a file another
+account owns is refused unless this is root, whose ``revoke`` also ends that account's
+bridges for the hub.
 """
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import json
 import os
@@ -51,8 +55,10 @@ import re
 import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -292,20 +298,60 @@ def _read_lines(path: Path) -> list[str]:
     return lines[:-1] if lines[-1] == "" else lines
 
 
-def _write_lines(path: Path, lines: list[str]) -> None:
-    """Rewrite ``authorized_keys`` atomically, keeping every other line byte for byte,
-    with the modes sshd insists on (``.ssh`` 0700, the file 0600)."""
-    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+def _owner_name(uid: int) -> str:
     try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
-    tmp = path.with_name(path.name + ".cwcli-tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write("".join(line + "\n" for line in lines).encode("utf-8", "surrogateescape"))
-    os.replace(tmp, path)
-    os.chmod(path, 0o600)
+        import pwd
+
+        return pwd.getpwuid(uid).pw_name
+    except (ImportError, KeyError):
+        return f"uid {uid}"
+
+
+def _write_lines(path: Path, lines: list[str]) -> None:
+    """Rewrite ``authorized_keys`` atomically without changing who can read it.
+
+    sshd opens the file as its owner, so the rewrite keeps every other line byte for byte,
+    the file's mode and, under root, its owner and group; a file another account owns is
+    refused unless this is root. The new content goes through a uniquely named file in the
+    same directory (never a planted link), removed if anything fails. Only a ``.ssh`` or a
+    file this call creates gets sshd's modes (0700, 0600).
+    """
+    me = os.getuid() if hasattr(os, "getuid") else None
+    tmp: str | None = None
+    try:
+        try:
+            st: os.stat_result | None = path.stat()
+        except FileNotFoundError:
+            st = None
+        if st is not None and me not in (None, 0, st.st_uid):
+            owner = _owner_name(st.st_uid)
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "remote.keys_not_owned",
+                f"{path} belongs to {owner}, not to this account, and rewriting it from here "
+                "would change who can read it",
+                hint=f"Run this as {owner}.",
+            )
+        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        with os.fdopen(fd, "wb") as f:
+            f.write("".join(line + "\n" for line in lines).encode("utf-8", "surrogateescape"))
+            if st is not None:
+                if me == 0:
+                    os.fchown(f.fileno(), st.st_uid, st.st_gid)
+                os.fchmod(f.fileno(), stat.S_IMODE(st.st_mode))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION, "remote.keys_unwritable", f"{path} could not be written: {e}"
+        ) from e
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
 
 def read_host_key(path: str | None = None) -> tuple[str, str] | None:
@@ -536,9 +582,10 @@ def _grants_in(keys_path: Path, lines: list[str]) -> list[HubGrant]:
 
 
 def bridge_pids(hub: str, *, proc_root: Path = Path("/proc")) -> list[int]:
-    """This user's running bridge processes for ``hub``, matched on exact argv tokens
-    (never a name pattern that could catch another hub's or another user's process)."""
-    uid = os.getuid() if hasattr(os, "getuid") else None
+    """This user's running bridge processes for ``hub`` (every user's under root, which may
+    rewrite any user's grant), matched on exact argv tokens (never a name pattern that could
+    catch another hub's process, or another user's for anyone but root)."""
+    uid = (os.getuid() or None) if hasattr(os, "getuid") else None
     found: list[int] = []
     if proc_root.is_dir():
         for entry in proc_root.iterdir():
@@ -608,9 +655,10 @@ def revoke(
     from this account's own ``authorized_keys`` and the file the record names for the hub
     (never another hub's). Removing a hub that was never granted is a no-op that says so
     (``removed == 0``), never an error. A record that cannot be read never blocks a revoke:
-    the default file is then searched. A recorded file this account cannot read is an
-    error naming the account that wrote the grant (its line stays, and so does its
-    record); the hub's bridges are ended whatever happens."""
+    the default file is then searched. A recorded file this account cannot read, or
+    another account's file it may not rewrite (anyone but root), is an error naming the
+    account to run it as (its line stays, and so does its record); the hub's bridges are
+    ended whatever happens."""
     hub = check_hub_name(hub)
     home = config_utils.cwcli_home()
     try:
