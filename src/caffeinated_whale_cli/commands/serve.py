@@ -1604,7 +1604,7 @@ class _Handler(BaseHTTPRequestHandler):
                     ErrorKind.USAGE, "schedule.payload_invalid", "schedule must be an object."
                 )
             acct = self._session_account()
-            source = acct.source if acct is not None else "api"
+            source = acct.source if acct is not None else ("hub" if self._delegation() else "api")
             return 200, {"data": core_schedules.save(sched, by=by, by_source=source)}
         sid = str(payload.get("id") or "")
         if op == "delete":
@@ -2716,7 +2716,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", csp)
-        self.send_header("X-Cwcli-Host", host_id)
         self.end_headers()
         try:
             for chunk in [body] if body is not None else resp.iter_body():

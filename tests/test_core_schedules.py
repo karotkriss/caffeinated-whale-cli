@@ -51,6 +51,9 @@ class Fleet:
         job["state"] = state
 
 
+HUB_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm"
+
+
 def run_tick(fleet, **kw):
     return sch.tick(fleet.create, fleet.instance_status, read_job=fleet.read, **kw)
 
@@ -304,6 +307,34 @@ class TestAdminOnlySchedules:
         row = sch.list_schedules(now=T0.replace(hour=2))["schedules"][0]
         assert row["last_run"]["state"] == "skipped" and why in row["last_run"]["reason"]
         assert "ana" in row["last_skip"]["reason"]
+
+    def test_a_hub_users_schedule_runs_only_while_this_machine_grants_that_hub_admin(self, tmp_path, monkeypatch):
+        """A hub's user acts here at most at the cap this machine's grant gives the hub, so
+        the remote, never the hub, decides whether that owner is still an Admin: no grant
+        or a lower re-grant skips the run, with the reason."""
+        from caffeinated_whale_cli.core import remote_access
+
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+
+        def grant(cap):
+            remote_access.allow(
+                hub="hub-x", key=HUB_KEY, cap=cap, python="/opt/py/bin/python3", home=tmp_path / "cw",
+                state_path=str(tmp_path / "ui.json"), host_key_file=str(tmp_path / "none"), proc_root=tmp_path,
+            )  # fmt: skip
+
+        def last_run(day):
+            return sch.list_schedules(now=T0 + timedelta(days=day, hours=2))["schedules"][0]["last_run"]
+
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        assert last_run(0)["state"] == "skipped" and "hub hub-x" in last_run(0)["reason"]
+        grant("admin")
+        (made,) = run_tick(fleet, now=T0 + timedelta(days=1, hours=2))
+        fleet.finish(made)
+        grant("operator")
+        assert run_tick(fleet, now=T0 + timedelta(days=2, hours=2)) == []
+        assert last_run(2)["state"] == "skipped" and "no longer lets act as an Admin" in last_run(2)["reason"]
 
     def test_an_owner_saved_before_roles_keeps_running(self):
         """No ``owner_source``: the local account of that name, else this host's CLI."""
