@@ -15,7 +15,7 @@ import { openNewBench } from '../data/new-bench-dialog'
 import AppIcon from '../components/AppIcon.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { catalogApp } from '../data/catalog'
-import { openApp } from '../data/app-panel'
+import { appOpener } from '../data/app-panel'
 import CommandLine from '../components/CommandLine.vue'
 import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago, instancePath, benchPath, sitePath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
@@ -55,7 +55,9 @@ const running = computed(() => inst.value?.container_running)
 // that holds it, Update (the apps update job) and Check out a ref.
 function appMenu(name) {
   const benches = (detail.data?.benches || []).filter((b) => (b.available_apps || []).includes(name) || (b.sites || []).some((s) => s.installed_apps.some((e) => e.split(/\s+/)[0] === name)))
-  const groups = [{ group: 'App', options: [{ label: 'Open details', icon: 'lucide-panel-right-open', onClick: () => openApp(catalogApp(name)) }] }]
+  // A remote instance's app has no details here: the panel is this machine's catalog.
+  const open = appOpener(host, name)
+  const groups = open ? [{ group: 'App', options: [{ label: 'Open details', icon: 'lucide-panel-right-open', onClick: open }] }] : []
   for (const b of benches) {
     const c = { project, host, bench: String(b.index), benchName: benchName(b), app: name }
     groups.push({ group: benchName(b), options: [
@@ -199,7 +201,8 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
             <ListHeaderCell />
           </ListHeader>
           <ListRows :items="apps" row-key="name" v-slot="{ item }">
-            <ListRow @click="openApp(catalogApp(item.name))">
+            <ListRow :on-click="appOpener(host, item.name)">
+              <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
               <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="host ? null : updatesForApp(item.name).find((u) => u.project === project) || null" /></ListCell>
               <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.benches }}</span></ListCell>
               <ListCell class="gap-1 overflow-hidden max-md:hidden">

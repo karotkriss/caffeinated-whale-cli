@@ -5,7 +5,7 @@ import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'f
 import { parseApp } from '../data/fleet'
 import AppIcon from './AppIcon.vue'
 import { catalogApp } from '../data/catalog'
-import { openApp } from '../data/app-panel'
+import { appOpener } from '../data/app-panel'
 import { menuOption, dangerGroup } from '../data/dialog'
 import UpdatePill from './UpdatePill.vue'
 import { updateItem } from '../data/updates'
@@ -45,7 +45,8 @@ const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, 
       <ListHeaderCell />
     </ListHeader>
     <ListRows :items="rows" row-key="name" v-slot="{ item }">
-      <ListRow @click="openApp(catalogApp(item.name))">
+      <ListRow :on-click="appOpener(host, item.name)">
+        <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
         <ListCell class="gap-2 overflow-hidden"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="truncate text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="truncate font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="updateItem(project, bench.index, item.name, host)" compact /></ListCell>
         <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.versions.join(', ') || 'unknown' }}</span></ListCell>
         <ListCell class="gap-1 overflow-hidden max-md:hidden">

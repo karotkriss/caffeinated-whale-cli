@@ -14,7 +14,7 @@ import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { apiBase, getJson } from '../data/api'
 import { jobList } from '../data/jobs'
 import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '../data/catalog'
-import { openApp } from '../data/app-panel'
+import { appOpener } from '../data/app-panel'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl, instancePath, benchPath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
@@ -170,7 +170,8 @@ const heroFacts = computed(() => [
           <ListHeaderCell class="max-md:hidden">Source</ListHeaderCell>
         </ListHeader>
         <ListRows :items="apps" row-key="name" v-slot="{ item }">
-          <ListRow @click="openApp(catalogApp(item.name))">
+          <ListRow :on-click="appOpener(host, item.name)">
+            <!-- A remote host's row opens no panel: the app panel is this machine's catalog. -->
             <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span></ListCell>
             <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.version || 'unknown' }}</span></ListCell>
             <ListCell class="max-md:hidden"><span class="truncate font-mono text-sm text-ink-gray-6">{{ item.branch || 'unknown' }}</span></ListCell>
