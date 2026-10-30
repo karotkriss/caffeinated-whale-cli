@@ -773,10 +773,11 @@ class _Planner:
         return target if target in self.bench_apps else None
 
     def choose_ref(
-        self, url: str, parent_ref: str | None, default: str | None
+        self, url: str, parent_ref: str | None, default: str | None, need: object = None
     ) -> tuple[str | None, Declarations]:
         """Same branch name as the parent, else version-N, else the default branch;
-        the first whose own frappe range passes (else the first candidate)."""
+        the first whose own frappe range passes and whose version fits ``need`` (the
+        range the requiring app declares for it), else the first candidate."""
         branches = self.branches(url)
         candidates: list[str | None] = []
         if branches is not None:
@@ -798,19 +799,30 @@ class _Planner:
                 first = (cand, decl)
             spec = decl.ranges.get("frappe")
             have = self.frappe_have()
-            if decl.readable and (not isinstance(spec, str) or not have or simple_spec(spec, have)):
+            fits_parent = (
+                not isinstance(need, str)
+                or not decl.version
+                or simple_spec(need, decl.version) is not False
+            )
+            if (
+                decl.readable
+                and fits_parent
+                and (not isinstance(spec, str) or not have or simple_spec(spec, have))
+            ):
                 return cand, decl
         assert first is not None
         return first
 
-    def source_options(self, found: list[Source], parent_ref: str | None) -> list[dict]:
+    def source_options(
+        self, found: list[Source], parent_ref: str | None, need: object = None
+    ) -> list[dict]:
         """Each candidate repository at the ref it would be fetched at, and whether its
         own Frappe range fits this bench (reads are memoised, so this costs nothing
         the resolution did not already spend)."""
         have = self.frappe_have()
         options = []
         for src in found:
-            ref, decl = self.choose_ref(src.url, parent_ref, src.default_branch)
+            ref, decl = self.choose_ref(src.url, parent_ref, src.default_branch, need)
             spec = decl.ranges.get("frappe")
             ok = decl.readable and (
                 not isinstance(spec, str) or not have or bool(simple_spec(spec, have))
@@ -830,13 +842,22 @@ class _Planner:
         return frappe.version if frappe else None
 
     # -- resolution
-    def resolve_source(self, module: str, pin: str | None, parent: str, parent_ref: str | None):
+    def resolve_source(
+        self,
+        module: str,
+        pin: str | None,
+        parent: str,
+        parent_ref: str | None,
+        need: object = None,
+    ):
         """(url, key, ref, declarations) for a required app not on the bench, or None."""
         found = self.sources(module, pin)
         if module in self.dep_sources:
             url = self.dep_sources[module]
             known = next((f for f in found if f.url == url), None)
-            ref, decl = self.choose_ref(url, parent_ref, known.default_branch if known else None)
+            ref, decl = self.choose_ref(
+                url, parent_ref, known.default_branch if known else None, need
+            )
             if len(found) > 1:
                 # Still name the alternatives, so a dialog can show (and change) the pick.
                 self.problem(
@@ -845,7 +866,7 @@ class _Planner:
                     module,
                     f"{module} is fetched from {app_catalog.remote_key(url) or url}, as picked "
                     f"from the {len(found)} repositories named {module} in the apps catalog.",
-                    options=self.source_options(found, parent_ref),
+                    options=self.source_options(found, parent_ref, need),
                     default=url,
                 )
             return url, app_catalog.remote_key(url), ref, decl
@@ -863,9 +884,9 @@ class _Planner:
                 ),
             )
             return None
-        picked = [(s, *self.choose_ref(s.url, parent_ref, s.default_branch)) for s in found]
+        picked = [(s, *self.choose_ref(s.url, parent_ref, s.default_branch, need)) for s in found]
         if len(picked) > 1:
-            options = self.source_options(found, parent_ref)
+            options = self.source_options(found, parent_ref, need)
             default = next((o["value"] for o in options if o["ok"]), options[0]["value"])
             self.problem(
                 "app.required_app_source_ambiguous",
@@ -933,7 +954,7 @@ class _Planner:
                     stack=stack,
                 )
                 continue
-            resolved = self.resolve_source(dep, pin, module, my_ref)
+            resolved = self.resolve_source(dep, pin, module, my_ref, decl.ranges.get(dep))
             if resolved is None:
                 continue
             url, key, dep_ref, dep_decl = resolved
@@ -1042,7 +1063,7 @@ class _Planner:
                         ),
                         overridable=acting and not self.ignore,
                     )
-                else:
+                elif dep in self.bench_apps:
                     self.problem(
                         "app.dependency_range_mismatch",
                         "blocker" if acting else "notice",
@@ -1053,6 +1074,21 @@ class _Planner:
                             f"{self.project} {dep} <branch>), or pick another bench. cwcli never "
                             "switches an app's branch as part of an install: that moves it for "
                             "every site on the bench."
+                        ),
+                    )
+                else:
+                    planned = self.nodes.get(dep)
+                    self.problem(
+                        "app.dependency_range_mismatch",
+                        "blocker" if acting else "notice",
+                        name,
+                        f"{name} needs {dep} {spec}, but no branch of {dep} cwcli may fetch "
+                        f"fits both that and this bench (the closest, "
+                        f"{planned.ref if planned and planned.ref else 'its default branch'}, "
+                        f"is {have}).",
+                        remedy=(
+                            f"Pick the branch of {name} built for this bench, or fetch a "
+                            f"{dep} that fits yourself with --dep-source {dep}=<url>."
                         ),
                     )
             self.nodes[name] = replace(node, ranges=checks)
@@ -1238,7 +1274,11 @@ def enforce(plan: DependencyPlan, *, with_deps: bool) -> Result | None:
     ``NEEDS_CHOICE``/``confirm_required_apps`` (param ``with_deps``): consent is a core
     parameter, so no frontend can install them unasked. None means go ahead.
     """
-    blockers = [p for p in plan.problems if p.severity == "blocker"]
+    requested = {n.app for n in plan.nodes if n.requested}
+    blockers = sorted(
+        (p for p in plan.problems if p.severity == "blocker"),
+        key=lambda p: p.app not in requested,
+    )
     if blockers:
         first = blockers[0]
         kind = (
