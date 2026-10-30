@@ -243,6 +243,7 @@ class Fleet:
                 state = dict(self._docker)
                 if not reachable:
                     for project, prev in list(self._instances.items()):
+                        self._generations[project] = self._generations.get(project, 0) + 1
                         new = replace(
                             prev,
                             overall=UNKNOWN,
