@@ -479,10 +479,13 @@ class TestRequirementsBeforeMigrate:
     def test_an_unknown_requirements_outcome_migrates_no_site(self, wired):
         _lose_stream_on(wired, "bench setup requirements")
 
-        report = _update().data
+        result = _update()
+        report = result.data
 
         assert report.requirements == "unknown" and report.migrated_sites == []
         assert report.ok is False
+        failed = [w for w in result.warnings if w.code == "requirements.failed"]
+        assert failed and "--skip-requirements" in failed[0].text
 
     def test_skip_requirements_runs_no_step_and_says_so(self, wired):
         events = []
