@@ -2379,7 +2379,7 @@ A dropped packet never flashes a host to unknown: one immediate re-probe decides
 A remote instance's page has the same live process readings and web check as a local one: while a tab has it open, the hub holds that host's stream with the instance as its focus.
 Backups, schedules, the apps catalog, publishing a site at a public address and the restore and transfer dialogs stay each machine's own; a remote site's backups show that machine's sets with Back up now, Verify, Download and Delete.
 Drop site on a remote site asks that machine, as the dialog opens, whether the site is published there, and offers "Also unpublish it" (ticked when it is), so the unpublish runs on the machine that published it.
-When that machine cannot be read, the box is offered unticked with a note that its publication state could not be read.
+When that machine cannot be read, or the page does not know the site's bench yet, the box is offered unticked with a note that its publication state could not be read.
 
 **Security.** The hub forwards only `/api/v1/` paths, never a remote's sign-in, stream or hosts routes, and relays every answer as DATA: JSON, a download as an attachment or an image under a sandboxing policy, each with `X-Content-Type-Options: nosniff`, never a cookie and never a page (a remote can never serve code into the hub's origin).
 The hub builds every `ssh` argument list itself, validates the host and user it was given and puts `--` before them.

@@ -52,10 +52,11 @@ export async function openAction(id, ctx = {}) {
   }
   // Publications are each machine's own store. A remote site's drop dialog reads its
   // host's once, through the hub's forward, as it opens (the hub never keeps it); a read
-  // that fails leaves `published` null, and the dialog says it could not tell.
-  let store = ctx.host ? {} : publications
-  if (ctx.host && id === 'site.remove') store = await getJson(`${apiBase(ctx.host)}/publications`).catch(() => null)
+  // that fails, or a bench whose path is not known yet, leaves `published` null, and the
+  // dialog says it could not tell.
   const bench = detailOf(ctx.project, ctx.host)?.data?.benches?.find((b) => String(b.index) === String(ctx.bench))
+  let store = ctx.host ? {} : publications
+  if (ctx.host && id === 'site.remove') store = bench?.path ? await getJson(`${apiBase(ctx.host)}/publications`).catch(() => null) : null
   const full = {
     benchName: ctx.bench,
     host: null,

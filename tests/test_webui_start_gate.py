@@ -390,29 +390,36 @@ def test_dropping_a_published_site_offers_also_unpublish_ticked(run, bench_path,
     assert out["reads"] == []
 
 
+PUBLISHED_THERE = {"sites": {"b.localhost": {"project": "acme", "bench_path": "/srv/bench-b"}}, "dns": {"name": "Box DNS"}}
+
+
 @pytest.mark.parametrize(
-    ("answer", "published"),
+    ("answer", "detail", "published"),
     [
-        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/srv/bench-b"}}, "dns": {"name": "Box DNS"}}, True),
+        (PUBLISHED_THERE, True, True),
         # The same name published on that host from a different bench is not this site.
-        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/workspace/bench-b"}}}, False),
-        (None, None),  # the host could not be read
+        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/workspace/bench-b"}}}, True, False),
+        (None, True, None),  # the host could not be read
+        # The remote's bench detail has not arrived (or failed), so its path is not known.
+        (PUBLISHED_THERE, False, None),
     ],
 )
-def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, answer, published):
+def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, answer, detail, published):
     """Publishing is each machine's own: a remote site's drop dialog reads that host's
     publications once, through the hub's forward, and sends the job's unpublish to the
     daemon that made them. This machine's store (which here names the same site) is never
-    consulted, and a host that cannot be read leaves the box offered, unticked, with a note."""
+    consulted, and a host that cannot be read, or a bench whose path the page does not
+    know yet, leaves the box offered, unticked, with a note."""
     remote = {**SITE, "host": "box"}
     out = run(
         "publish.publicationsLanded({ sites: { 'b.localhost': { project: 'acme', bench_path: '/srv/bench-b' } } })\n"
         + (f"globalThis.__t.answers['/api/v1/hosts/box/publications'] = {json.dumps(answer)}\n" if answer else "")
+        + ("" if detail else "delete (await import('./fleet')).details['box/acme']\n")
         + f"await dialog.openAction('site.remove', {json.dumps(remote)})\n"
         + DROP,
         instances=RUNNING,
     )
-    assert out["reads"] == ["/api/v1/hosts/box/publications"]
+    assert out["reads"] == (["/api/v1/hosts/box/publications"] if detail else [])
     assert out["published"] is published
     assert ("unpublish" in out["shown"]) is (published is not False)
     assert out["values"] == {True: {"unpublish": True}, False: {}, None: {"unpublish": False}}[published]
