@@ -1052,6 +1052,31 @@ class TestDockerOutage:
         f.probe("up")
         assert {p: f.get(p).overall for p in ("up", "idle")} == {"up": "running", "idle": "offline"}
 
+    def test_a_probe_finishing_after_an_outage_cannot_turn_its_row_green(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probe_started = threading.Event()
+        release_probe = threading.Event()
+
+        def _answer(project, **kwargs):
+            probe_started.set()
+            assert release_probe.wait(2)
+            return _report()
+
+        probing(_answer)
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        thread = threading.Thread(target=f.probe, args=("p",))
+        thread.start()
+        assert probe_started.wait(2)
+
+        f.set_docker(False, "refused")
+        release_probe.set()
+        thread.join(2)
+
+        assert not thread.is_alive()
+        assert f.get("p").overall == "unknown"
+        assert f.get("p").probe_error == "docker.unreachable: refused"
+
     def test_no_probe_runs_while_docker_is_down(self, listing, probing):
         listing(("up", "running", ["8000"]))
         probing(lambda project, **kw: _report())
