@@ -119,6 +119,9 @@ class UpdateReport:
     # (--skip-requirements), None when no app was updated so it never ran. Failed or
     # unknown means no site was migrated onto the new code.
     requirements: str | None
+    # A failed requirements step's own lines that name the failure (the installer's
+    # `error:`/`cause:` lines, not bench's traceback after them); empty otherwise.
+    requirements_cause: list[str]
     # Sites discovery could not open (a rejected database login, a broken config):
     # the code moved under them and they were NOT migrated, so the run is not ok.
     unreadable_sites: list[str]
@@ -298,6 +301,30 @@ def _stream_step(
         warnings.append(Message(e.code, reason, detail={"phase": phase, "item": item}))
         return None, reason
     return exit_code, None
+
+
+def _failure_cause(output: str) -> list[str]:
+    """The lines of a failed step's output that name the failure.
+
+    bench wraps a failed subcommand in its own CommandFailedError traceback, so the
+    last lines are always bench's frames; the installer's own ``error:``/``cause:``
+    lines (uv, pip) sit earlier. Each such line is kept with its deeper-indented
+    continuation lines. Falls back to the last lines when none match.
+    """
+    lines = [line for line in output.splitlines() if line.strip()]
+    picked: list[str] = []
+    indent: int | None = None
+    for line in lines:
+        depth = len(line) - len(line.lstrip())
+        if line.strip().lower().startswith(("error:", "cause:")):
+            picked.append(line)
+            indent = depth
+        elif indent is not None and depth > indent:
+            picked.append(line)
+        else:
+            indent = None
+    # ponytail: capped so a step spewing many error lines stays one readable block.
+    return picked[:8] or lines[-4:]
 
 
 def _run_step(
@@ -576,6 +603,7 @@ def _build_report(
     failed_maintenance_disable: list[str],
     unreadable_sites: list[str] | None = None,
     requirements: str | None = None,
+    requirements_cause: list[str] | None = None,
     app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
     bench_left_in_maintenance: bool | None = False,
@@ -635,6 +663,7 @@ def _build_report(
         unknown_builds=list(unknown_builds),
         unreadable_sites=list(unreadable_sites or []),
         requirements=requirements,
+        requirements_cause=list(requirements_cause or []),
         failed_cache_clears=list(failed_cache_clears),
         failed_website_cache_clears=list(failed_website_cache_clears),
         failed_maintenance_disable=list(failed_maintenance_disable),
@@ -1204,6 +1233,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
     unreadable_sites: list[str] = []  # could not be opened, so never discovered or migrated
     requirements: str | None = None  # the requirements step's outcome, when it was reached
+    requirements_cause: list[str] = []
     resync: supervision.ResyncOutcome | None = None
     aborted = False
     # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
@@ -1362,6 +1392,13 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 warnings.append(Message("requirements.skipped", skipped_note))
                 emit(UpdateStepEnd(phase="requirements_skipped", message=skipped_note))
             else:
+                output: list[str] = []
+
+                def _keep_output(event: UpdateEvent) -> None:
+                    if isinstance(event, UpdateOutput):
+                        output.append(event.text)
+                    emit(event)
+
                 requirements = _run_step(
                     frappe_container,
                     # The core path keeps the full step (Node too) it always ran.
@@ -1371,19 +1408,23 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     item="bench",
                     index=1,
                     total=1,
-                    emit=emit,
+                    emit=_keep_output,
                     warnings=warnings,
                     failed=[],
                     unknown=[],
                 )
+                if requirements == "failed":
+                    requirements_cause = _failure_cause("".join(output))
             if requirements in ("failed", "unknown"):
+                cause = " ".join(line.strip() for line in requirements_cause)
                 warnings.append(
                     Message(
                         "requirements.failed",
                         "bench setup requirements did not finish, so no site was migrated "
-                        "onto the new code; its own output names the cause. Fix that "
-                        "dependency and re-run, or re-run with --skip-requirements to "
-                        "migrate without the reinstall.",
+                        "onto the new code"
+                        + (f" ({cause})" if cause else "")
+                        + ". Fix that dependency and re-run, or re-run with "
+                        "--skip-requirements to migrate without the reinstall.",
                     )
                 )
 
@@ -1732,6 +1773,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_maintenance_disable=failed_maintenance_disable,
             unreadable_sites=unreadable_sites,
             requirements=requirements,
+            requirements_cause=requirements_cause,
             app_imports=app_imports,
             resync=resync,
             aborted=aborted and bool(sites_to_migrate),

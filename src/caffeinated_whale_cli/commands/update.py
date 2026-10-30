@@ -252,7 +252,7 @@ class _Renderer:
     def _on_output(self, event) -> None:
         # Capture the tail of each app's pull output regardless of verbosity, so the
         # summary can surface git's real error on a failed pull.
-        if event.phase in ("pull", "reset", "requirements", "migrate") and event.item:
+        if event.phase in ("pull", "reset", "migrate") and event.item:
             self._pull_tails[event.item] = (self._pull_tails.get(event.item, "") + event.text)[
                 -_PULL_TAIL_CHARS:
             ]
@@ -553,8 +553,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             "[bold red]✗[/bold red] bench setup requirements failed, so no site was "
             "migrated onto the new code"
         )
-        tail = (pull_tails or {}).get("bench", "").strip()
-        for text_line in tail.splitlines()[-4:]:
+        for text_line in report.requirements_cause:
             console.print("      " + text_line, markup=False, highlight=False, style="dim")
     elif report.requirements == "unknown":
         console.print(
