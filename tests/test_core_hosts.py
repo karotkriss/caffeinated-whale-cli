@@ -36,13 +36,17 @@ def _home(tmp_path, monkeypatch):
 
 
 class TestValidation:
-    @pytest.mark.parametrize("bad", ["-oProxyCommand=touch /tmp/x", "", "host name", "a;b", "ho\nst", "-", "x" * 300])
+    @pytest.mark.parametrize(
+        "bad", ["-oProxyCommand=touch /tmp/x", "", "host name", "a;b", "ho\nst", "-", "x" * 300]
+    )
     def test_a_destination_ssh_could_misread_is_refused(self, bad):
         with pytest.raises(CwcliError) as e:
             hosts.check_hostname(bad)
         assert e.value.kind is ErrorKind.USAGE
 
-    @pytest.mark.parametrize("good", ["box", "box.example.org", "10.0.0.5", "::1", "[fe80::1]", "under_score.host"])
+    @pytest.mark.parametrize(
+        "good", ["box", "box.example.org", "10.0.0.5", "::1", "[fe80::1]", "under_score.host"]
+    )
     def test_hostnames_and_ip_literals_pass(self, good):
         assert hosts.check_hostname(good)
 
@@ -58,9 +62,16 @@ class TestValidation:
         assert hosts.check_port("2222") == 2222
 
     def test_a_public_key_is_parsed_not_pasted(self):
-        kind, blob = hosts.parse_public_key(HOST_KEY + " a comment\nssh-rsa AAAAB3NzaC1yc2E= second")
+        kind, blob = hosts.parse_public_key(
+            HOST_KEY + " a comment\nssh-rsa AAAAB3NzaC1yc2E= second"
+        )
         assert (kind, blob) == tuple(HOST_KEY.split())
-        for bad in ('command="x" ' + HOST_KEY, "ssh-rsa " + HOST_KEY.split()[1], "ssh-ed25519 QUJD", "words"):
+        for bad in (
+            'command="x" ' + HOST_KEY,
+            "ssh-rsa " + HOST_KEY.split()[1],
+            "ssh-ed25519 QUJD",
+            "words",
+        ):
             with pytest.raises(CwcliError):
                 hosts.parse_public_key(bad)
 
@@ -68,36 +79,73 @@ class TestValidation:
         keygen = shutil.which("ssh-keygen")
         if keygen is None:
             pytest.skip("no ssh-keygen")
-        subprocess.run([keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(tmp_path / "k")], check=True)
+        subprocess.run(
+            [keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(tmp_path / "k")], check=True
+        )
         kind, blob = hosts.parse_public_key((tmp_path / "k.pub").read_text())
-        printed = subprocess.run([keygen, "-lf", str(tmp_path / "k.pub")], capture_output=True, text=True, check=True).stdout
+        printed = subprocess.run(
+            [keygen, "-lf", str(tmp_path / "k.pub")], capture_output=True, text=True, check=True
+        ).stdout
         assert hosts.fingerprint(kind, blob) in printed
 
 
 class TestPairing:
     def test_round_trip(self):
         fields = hosts.parse_pairing(hosts.make_pairing(PAIRING_FIELDS))
-        assert fields == {"user": "frappe", "address": "10.9.8.7", "port": 22, "name": "Build box", "hub": "hub-x", "cap": "operator", "host_key": HOST_KEY}
+        assert fields == {
+            "user": "frappe",
+            "address": "10.9.8.7",
+            "port": 22,
+            "name": "Build box",
+            "hub": "hub-x",
+            "cap": "operator",
+            "host_key": HOST_KEY,
+        }
 
-    @pytest.mark.parametrize("text", ["", "cwcli-remote:v1:", "cwcli-remote:v1:!!!", "cwcli-remote:v2:" + base64.urlsafe_b64encode(b"{}").decode(), "some words"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "cwcli-remote:v1:",
+            "cwcli-remote:v1:!!!",
+            "cwcli-remote:v2:" + base64.urlsafe_b64encode(b"{}").decode(),
+            "some words",
+        ],
+    )
     def test_a_damaged_or_foreign_string_is_refused(self, text):
         with pytest.raises(CwcliError) as e:
             hosts.parse_pairing(text)
         assert e.value.code == "host.pairing"
 
     def test_every_field_inside_is_validated(self):
-        for key, value in (("address", "-oProxyCommand=x"), ("user", "-x"), ("port", 70000), ("cap", "root"), ("hub", "a b"), ("host_key", "ssh-ed25519 QUJD")):
+        for key, value in (
+            ("address", "-oProxyCommand=x"),
+            ("user", "-x"),
+            ("port", 70000),
+            ("cap", "root"),
+            ("hub", "a b"),
+            ("host_key", "ssh-ed25519 QUJD"),
+        ):
             with pytest.raises(CwcliError):
                 hosts.parse_pairing(hosts.make_pairing({**PAIRING_FIELDS, key: value}))
 
     def test_a_pairing_without_a_host_key_parses_as_an_empty_pin(self):
-        assert hosts.parse_pairing(hosts.make_pairing({**PAIRING_FIELDS, "host_key": None}))["host_key"] is None
+        assert (
+            hosts.parse_pairing(hosts.make_pairing({**PAIRING_FIELDS, "host_key": None}))[
+                "host_key"
+            ]
+            is None
+        )
 
 
 class TestStore:
     def test_add_pins_the_host_key_under_an_alias_in_the_hubs_own_known_hosts(self):
         rec = hosts.add_host(hosts.make_pairing(PAIRING_FIELDS), by="t")
-        assert rec.id == "build-box" and rec.transport == "ssh" and rec.key_alias == "cwcli-host-build-box"
+        assert (
+            rec.id == "build-box"
+            and rec.transport == "ssh"
+            and rec.key_alias == "cwcli-host-build-box"
+        )
         assert hosts.known_hosts_path().read_text() == f"cwcli-host-build-box {HOST_KEY}\n"
         assert stat.S_IMODE(hosts.store_path().stat().st_mode) == 0o600
         assert stat.S_IMODE(hosts.known_hosts_path().stat().st_mode) == 0o600
@@ -109,13 +157,33 @@ class TestStore:
         assert hosts.list_hosts() == []
 
     def test_explicit_values_override_the_pairing_and_a_pasted_key_fills_an_empty_pin(self):
-        rec = hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "host_key": None}), address="build.lan", port=2222, host_key=HOST_KEY + " comment", name="Build")
-        assert (rec.address, rec.port, rec.host_key, rec.name) == ("build.lan", 2222, HOST_KEY, "Build")
+        rec = hosts.add_host(
+            hosts.make_pairing({**PAIRING_FIELDS, "host_key": None}),
+            address="build.lan",
+            port=2222,
+            host_key=HOST_KEY + " comment",
+            name="Build",
+        )
+        assert (rec.address, rec.port, rec.host_key, rec.name) == (
+            "build.lan",
+            2222,
+            HOST_KEY,
+            "Build",
+        )
 
     def test_the_record_holds_no_credential_of_the_remote(self):
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
         stored = json.loads(hosts.store_path().read_text())["hosts"]["build-box"]
-        assert set(stored) == {"name", "transport", "address", "port", "user", "host_key", "added_at", "added_by"}
+        assert set(stored) == {
+            "name",
+            "transport",
+            "address",
+            "port",
+            "user",
+            "host_key",
+            "added_at",
+            "added_by",
+        }
 
     def test_the_same_destination_twice_is_a_conflict_and_ids_stay_unique(self):
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
@@ -143,18 +211,36 @@ class TestStore:
         done = threading.Event()
 
         def add_second():
-            hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.9", "name": "Second"}), now=2.0)
+            hosts.add_host(
+                hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.9", "name": "Second"}),
+                now=2.0,
+            )
             done.set()
 
         worker = threading.Thread(target=add_second)
         with schedules.StoreLock(hosts.store_path()):
             data = json.loads(hosts.store_path().read_text())
             worker.start()
-            assert not done.wait(0.3), "an add must not read the store while another writer holds it"
-            data["hosts"]["other"] = {"name": "Other", "transport": "ssh", "address": "10.9.8.10", "port": 22, "user": "frappe", "host_key": HOST_KEY, "added_at": 3.0, "added_by": "cli:other"}
+            assert not done.wait(
+                0.3
+            ), "an add must not read the store while another writer holds it"
+            data["hosts"]["other"] = {
+                "name": "Other",
+                "transport": "ssh",
+                "address": "10.9.8.10",
+                "port": 22,
+                "user": "frappe",
+                "host_key": HOST_KEY,
+                "added_at": 3.0,
+                "added_by": "cli:other",
+            }
             hosts.store_path().write_text(json.dumps(data))
         worker.join(5)
-        assert done.is_set() and [r.id for r in hosts.list_hosts()] == ["build-box", "other", "second"]
+        assert done.is_set() and [r.id for r in hosts.list_hosts()] == [
+            "build-box",
+            "other",
+            "second",
+        ]
         assert hosts.known_hosts_path().read_text().count("cwcli-host-") == 3
 
     def test_store_changes_notify_a_running_manager(self):
@@ -169,20 +255,56 @@ class TestStore:
 
 class TestSshArgv:
     def _rec(self, **kw):
-        base = dict(id="b", name="b", transport="ssh", address="10.0.0.9", port=2200, user="frappe", host_key=HOST_KEY, added_at=0.0, added_by="")
+        base = dict(
+            id="b",
+            name="b",
+            transport="ssh",
+            address="10.0.0.9",
+            port=2200,
+            user="frappe",
+            host_key=HOST_KEY,
+            added_at=0.0,
+            added_by="",
+        )
         return hosts.HostRecord(**{**base, **kw})
 
-    def test_the_argv_pins_batches_multiplexes_and_puts_the_destination_after_a_dash_dash(self, tmp_path):
-        t = hosts.SshTransport(ssh="/usr/bin/ssh", key_path=tmp_path / "k", known_hosts=tmp_path / "kh", control=tmp_path / "c")
+    def test_the_argv_pins_batches_multiplexes_and_puts_the_destination_after_a_dash_dash(
+        self, tmp_path
+    ):
+        t = hosts.SshTransport(
+            ssh="/usr/bin/ssh",
+            key_path=tmp_path / "k",
+            known_hosts=tmp_path / "kh",
+            control=tmp_path / "c",
+        )
         argv = t.argv(self._rec())
         opts = {argv[i + 1] for i, a in enumerate(argv) if a == "-o"}
-        assert {"StrictHostKeyChecking=yes", "BatchMode=yes", "IdentitiesOnly=yes", "UpdateHostKeys=no", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "ControlMaster=auto", "ControlPersist=120", "ServerAliveInterval=15", "ServerAliveCountMax=3", "HostKeyAlias=cwcli-host-b", f"UserKnownHostsFile={tmp_path / 'kh'}", "GlobalKnownHostsFile=/dev/null"} <= opts
+        assert {
+            "StrictHostKeyChecking=yes",
+            "BatchMode=yes",
+            "IdentitiesOnly=yes",
+            "UpdateHostKeys=no",
+            "PasswordAuthentication=no",
+            "KbdInteractiveAuthentication=no",
+            "ControlMaster=auto",
+            "ControlPersist=120",
+            "ServerAliveInterval=15",
+            "ServerAliveCountMax=3",
+            "HostKeyAlias=cwcli-host-b",
+            f"UserKnownHostsFile={tmp_path / 'kh'}",
+            "GlobalKnownHostsFile=/dev/null",
+        } <= opts
         assert argv[argv.index("-i") + 1] == str(tmp_path / "k")
         assert argv[-2:] == ["--", "frappe@10.0.0.9"] and argv[argv.index("-p") + 1] == "2200"
         assert argv[1:3] == ["-F", "/dev/null"]
 
     def test_a_hostile_destination_never_reaches_ssh(self, tmp_path):
-        t = hosts.SshTransport(ssh="/usr/bin/ssh", key_path=tmp_path / "k", known_hosts=tmp_path / "kh", control=tmp_path / "c")
+        t = hosts.SshTransport(
+            ssh="/usr/bin/ssh",
+            key_path=tmp_path / "k",
+            known_hosts=tmp_path / "kh",
+            control=tmp_path / "c",
+        )
         with pytest.raises(CwcliError):
             t.argv(self._rec(address="-oProxyCommand=touch /tmp/pwn"))
         with pytest.raises(CwcliError):
@@ -193,7 +315,10 @@ class TestSshArgv:
         still selects on it, and a new pipe or socket can take that number; cancel only
         ends ssh, the reader sees the end of the stream, and the pipe stays its to close."""
         proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         channel = hosts.SshChannel(proc)
         got = []
@@ -213,21 +338,32 @@ class TestSshArgv:
         (and the read raised into the handler). A real process stands in for ssh."""
         script = "import sys; sys.stderr.write('Host key verification failed.\\n'); sys.exit(255)"
         proc = subprocess.Popen(
-            [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            [sys.executable, "-c", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         with pytest.raises(hosts.LinkError) as e:
-            hosts.exchange(hosts.SshChannel(proc), hosts.encode_request("GET", "/api/v1/bridge", []))
+            hosts.exchange(
+                hosts.SshChannel(proc), hosts.encode_request("GET", "/api/v1/bridge", [])
+            )
         assert e.value.state == hosts.HOST_KEY_CHANGED
 
     @pytest.mark.parametrize(
         "stderr, state",
         [
-            ("@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.", hosts.HOST_KEY_CHANGED),
+            (
+                "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.",
+                hosts.HOST_KEY_CHANGED,
+            ),
             ("Host key verification failed.", hosts.HOST_KEY_CHANGED),
             ("frappe@10.0.0.9: Permission denied (publickey).", hosts.AUTH_REFUSED),
             ("ssh: connect to host 10.0.0.9 port 2200: Connection timed out", hosts.UNREACHABLE),
             ("", hosts.UNREACHABLE),
-            ("bridge: this key is restricted to the cwcli bridge; it runs no command", hosts.AUTH_REFUSED),
+            (
+                "bridge: this key is restricted to the cwcli bridge; it runs no command",
+                hosts.AUTH_REFUSED,
+            ),
             # A request the bridge could not read is that request's failure, not a refused grant.
             ("bridge: expected an HTTP request", hosts.UNREACHABLE),
             ("bridge: no request arrived in time", hosts.UNREACHABLE),
@@ -276,7 +412,9 @@ class FakeChannel:
 
 
 def _http(status, body, ctype="application/json", length=True, extra=""):
-    head = f"HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\n{extra}" + (f"Content-Length: {len(body)}\r\n" if length else "")
+    head = f"HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\n{extra}" + (
+        f"Content-Length: {len(body)}\r\n" if length else ""
+    )
     return head.encode() + b"\r\n" + body
 
 
@@ -286,16 +424,22 @@ def _get(target, headers=()):
 
 class TestExchange:
     def test_a_content_length_body_is_read_exactly(self):
-        ch = FakeChannel([_http(200, b'{"a":1}')[:10], _http(200, b'{"a":1}')[10:], b"trailing-garbage"])
+        ch = FakeChannel(
+            [_http(200, b'{"a":1}')[:10], _http(200, b'{"a":1}')[10:], b"trailing-garbage"]
+        )
         resp = hosts.exchange(ch, _get("/api/v1/x", [("Accept", "a")]))
         assert resp.status == 200 and resp.read() == b'{"a":1}'
         assert ch.sent.startswith(b"GET /api/v1/x HTTP/1.1\r\nAccept: a\r\n")
 
     def test_a_stream_without_a_length_ends_at_eof_and_times_out_when_silent(self):
-        ch = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"data: 1\n\n", b"data: 2\n\n"])
+        ch = FakeChannel(
+            [_http(200, b"", "text/event-stream", length=False), b"data: 1\n\n", b"data: 2\n\n"]
+        )
         resp = hosts.exchange(ch, _get("/api/v1/stream"))
         assert b"".join(resp.iter_body()) == b"data: 1\n\ndata: 2\n\n"
-        silent = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"x"], hang_after=2)
+        silent = FakeChannel(
+            [_http(200, b"", "text/event-stream", length=False), b"x"], hang_after=2
+        )
         resp = hosts.exchange(silent, _get("/api/v1/stream"))
         with pytest.raises(hosts.LinkError) as e:
             list(resp.iter_body(idle_timeout=0.01))
@@ -342,18 +486,28 @@ class TestEncodeRequest:
             hosts.encode_request("GET", "/api/v1/instances", headers)
         assert e.value.code == "host.bad_request"
 
-    @pytest.mark.parametrize("target", ["/api/v1/instances/caf\xe9", "/api/v1/a b", "/api/v1/x\x01", "/etc/passwd", "/api/v2/x"])
+    @pytest.mark.parametrize(
+        "target",
+        ["/api/v1/instances/caf\xe9", "/api/v1/a b", "/api/v1/x\x01", "/etc/passwd", "/api/v2/x"],
+    )
     def test_a_target_the_bridge_would_not_read_is_refused(self, target):
         with pytest.raises(CwcliError) as e:
             hosts.encode_request("GET", target, [])
         assert e.value.code == "host.bad_request"
 
     def test_a_request_is_encoded_whole(self):
-        raw = hosts.encode_request("POST", "/api/v1/jobs?x=1", [("Content-Type", "application/json")], b"{}")
-        assert raw == b"POST /api/v1/jobs?x=1 HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+        raw = hosts.encode_request(
+            "POST", "/api/v1/jobs?x=1", [("Content-Type", "application/json")], b"{}"
+        )
+        assert (
+            raw
+            == b"POST /api/v1/jobs?x=1 HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+        )
 
     def test_sse_frames_and_keepalives(self):
-        frames, rest = hosts.parse_sse(b": keepalive\n\nid: 3\nevent: delta\ndata: {\"a\":1}\n\nevent: part")
+        frames, rest = hosts.parse_sse(
+            b': keepalive\n\nid: 3\nevent: delta\ndata: {"a":1}\n\nevent: part'
+        )
         assert frames == [(None, "", None), ("delta", '{"a":1}', "3")] and rest == b"event: part"
 
 
@@ -386,35 +540,73 @@ def _revoked():
     return _http(403, body, extra="X-Cwcli-Bridge-Error: bridge.revoked\r\n")
 
 
-def _bridge_answer(daemon_protocol=PROTOCOL_VERSION, cap="operator", bridge_protocol=BRIDGE_PROTOCOL, daemon=True, error=None):
+def _bridge_answer(
+    daemon_protocol=PROTOCOL_VERSION,
+    cap="operator",
+    bridge_protocol=BRIDGE_PROTOCOL,
+    daemon=True,
+    error=None,
+):
     data = {
         "bridge_protocol": bridge_protocol,
         "hub": "hub-x",
         "max_role": cap,
-        "daemon": {"version": "3.5.0", "protocol": daemon_protocol, "build": "b"} if daemon else None,
+        "daemon": (
+            {"version": "3.5.0", "protocol": daemon_protocol, "build": "b"} if daemon else None
+        ),
         "daemon_error": error,
     }
     return _http(200, json.dumps({"data": data}).encode())
 
 
 def _rec():
-    return hosts.HostRecord(id="build-box", name="Build box", transport="ssh", address="10.9.8.7", port=22, user="frappe", host_key=HOST_KEY, added_at=0.0, added_by="")
+    return hosts.HostRecord(
+        id="build-box",
+        name="Build box",
+        transport="ssh",
+        address="10.9.8.7",
+        port=22,
+        user="frappe",
+        host_key=HOST_KEY,
+        added_at=0.0,
+        added_by="",
+    )
 
 
 class TestProbe:
     def test_connected_when_the_bridge_and_daemon_answer_and_the_protocol_matches(self):
         probe = hosts.probe_host(FakeTransport([FakeChannel([_bridge_answer()])]), _rec())
-        assert probe.state == hosts.CONNECTED and probe.cap == "operator" and probe.remote["protocol"] == PROTOCOL_VERSION
+        assert (
+            probe.state == hosts.CONNECTED
+            and probe.cap == "operator"
+            and probe.remote["protocol"] == PROTOCOL_VERSION
+        )
 
     def test_a_different_protocol_is_a_version_mismatch_that_names_the_side_to_update(self):
-        older = hosts.probe_host(FakeTransport([FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION - 1)])]), _rec())
-        assert older.state == hosts.VERSION_MISMATCH and "update cwcli on the remote host" in older.reason
-        newer = hosts.probe_host(FakeTransport([FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION + 1)])]), _rec())
+        older = hosts.probe_host(
+            FakeTransport([FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION - 1)])]),
+            _rec(),
+        )
+        assert (
+            older.state == hosts.VERSION_MISMATCH
+            and "update cwcli on the remote host" in older.reason
+        )
+        newer = hosts.probe_host(
+            FakeTransport([FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION + 1)])]),
+            _rec(),
+        )
         assert newer.state == hosts.VERSION_MISMATCH and "update cwcli on this hub" in newer.reason
 
     def test_a_daemon_that_is_down_is_its_own_state(self):
-        probe = hosts.probe_host(FakeTransport([FakeChannel([_bridge_answer(daemon=False, error="not running")])]), _rec())
-        assert probe.state == hosts.DAEMON_DOWN and probe.reason == "not running" and probe.cap == "operator"
+        probe = hosts.probe_host(
+            FakeTransport([FakeChannel([_bridge_answer(daemon=False, error="not running")])]),
+            _rec(),
+        )
+        assert (
+            probe.state == hosts.DAEMON_DOWN
+            and probe.reason == "not running"
+            and probe.cap == "operator"
+        )
 
     def test_a_revoked_grant_reads_as_auth_refused_once_a_fresh_connection_agrees(self):
         transport = FakeTransport([FakeChannel([_revoked()]), FakeChannel([_revoked()])])
@@ -425,14 +617,18 @@ class TestProbe:
     def test_a_grant_changed_under_an_open_connection_is_read_afresh(self):
         """The open connection ran the old line's command (and cap): its answer is a
         refusal, and the fresh connection the hub makes next reads the new cap."""
-        transport = FakeTransport([FakeChannel([_revoked()]), FakeChannel([_bridge_answer(cap="viewer")])])
+        transport = FakeTransport(
+            [FakeChannel([_revoked()]), FakeChannel([_bridge_answer(cap="viewer")])]
+        )
         probe = hosts.probe_host(transport, _rec())
         assert probe.state == hosts.CONNECTED and probe.cap == "viewer"
         assert transport.closed == ["build-box"]
 
     def test_a_channel_failure_propagates_as_the_link_error(self):
         with pytest.raises(hosts.LinkError) as e:
-            hosts.probe_host(FakeTransport([hosts.LinkError(hosts.HOST_KEY_CHANGED, "changed")]), _rec())
+            hosts.probe_host(
+                FakeTransport([hosts.LinkError(hosts.HOST_KEY_CHANGED, "changed")]), _rec()
+            )
         assert e.value.state == hosts.HOST_KEY_CHANGED
 
 
@@ -449,7 +645,9 @@ class TestLinkStateMachine:
         return link, states, frames, now
 
     def test_a_changed_host_key_is_a_hard_stop_that_never_reconnects_by_itself(self):
-        transport = FakeTransport([hosts.LinkError(hosts.HOST_KEY_CHANGED, "mismatch"), FakeChannel([_bridge_answer()])])
+        transport = FakeTransport(
+            [hosts.LinkError(hosts.HOST_KEY_CHANGED, "mismatch"), FakeChannel([_bridge_answer()])]
+        )
         link, states, _, _ = self._link(transport)
         link.step()
         assert states[-1] == (hosts.HOST_KEY_CHANGED, "mismatch")
@@ -459,8 +657,20 @@ class TestLinkStateMachine:
         assert states[-1][0] == hosts.CONNECTED
 
     def test_frames_are_republished_and_a_drop_gets_one_grace_probe_before_unreachable(self):
-        stream = FakeChannel([_http(200, b"", "text/event-stream", length=False), b'event: snapshot\ndata: {"instances": [], "jobs": []}\n\n: keepalive\n\n', b'event: delta\ndata: {"project": "p"}\n\n'])
-        transport = FakeTransport([FakeChannel([_bridge_answer()]), stream, hosts.LinkError(hosts.UNREACHABLE, "timed out")])
+        stream = FakeChannel(
+            [
+                _http(200, b"", "text/event-stream", length=False),
+                b'event: snapshot\ndata: {"instances": [], "jobs": []}\n\n: keepalive\n\n',
+                b'event: delta\ndata: {"project": "p"}\n\n',
+            ]
+        )
+        transport = FakeTransport(
+            [
+                FakeChannel([_bridge_answer()]),
+                stream,
+                hosts.LinkError(hosts.UNREACHABLE, "timed out"),
+            ]
+        )
         link, states, frames, now = self._link(transport)
         delay = link.step()
         assert [ev for ev, _ in frames] == ["snapshot", "delta"]
@@ -471,9 +681,13 @@ class TestLinkStateMachine:
         assert link.view()["drops_10m"] == 1
 
     def test_a_grace_probe_that_succeeds_never_shows_a_flash(self):
-        stream1 = FakeChannel([_http(200, b"", "text/event-stream", length=False), b": keepalive\n\n"])
+        stream1 = FakeChannel(
+            [_http(200, b"", "text/event-stream", length=False), b": keepalive\n\n"]
+        )
         stream2 = FakeChannel([_http(200, b"", "text/event-stream", length=False)])
-        transport = FakeTransport([FakeChannel([_bridge_answer()]), stream1, FakeChannel([_bridge_answer()]), stream2])
+        transport = FakeTransport(
+            [FakeChannel([_bridge_answer()]), stream1, FakeChannel([_bridge_answer()]), stream2]
+        )
         link, states, _, _ = self._link(transport)
         link.step()
         link.step()
@@ -499,7 +713,10 @@ class TestLinkStateMachine:
         script = []
         for _ in range(3):
             script += [FakeChannel([_bridge_answer()]), stream()]
-        script += [FakeChannel([_bridge_answer()]), Lived([_http(200, b"", "text/event-stream", length=False)], now)]
+        script += [
+            FakeChannel([_bridge_answer()]),
+            Lived([_http(200, b"", "text/event-stream", length=False)], now),
+        ]
         script += [FakeChannel([_bridge_answer()]), stream()]
         link, states, _, _ = self._link(FakeTransport(script), clock=lambda: now[0])
         assert [link.step() for _ in range(5)] == [0.0, 2.0, 4.0, 0.0, 2.0]
@@ -512,31 +729,68 @@ class TestLinkStateMachine:
         assert delays == [2.0, 4.0, 8.0]  # 2**n with the fixed 0.5 jitter -> 2**n * 1.0
 
     def test_auth_refused_retries_slowly_and_a_daemon_down_is_reported_as_such(self):
-        transport = FakeTransport([hosts.LinkError(hosts.AUTH_REFUSED, "denied"), FakeChannel([_bridge_answer(daemon=False, error="down")])])
+        transport = FakeTransport(
+            [
+                hosts.LinkError(hosts.AUTH_REFUSED, "denied"),
+                FakeChannel([_bridge_answer(daemon=False, error="down")]),
+            ]
+        )
         link, states, _, _ = self._link(transport)
         assert link.step() == hosts.MAX_BACKOFF_S
         link.step()
         assert states[-1] == (hosts.DAEMON_DOWN, "down")
 
     def test_a_version_mismatch_still_holds_the_stream_for_the_read_only_view(self):
-        stream = FakeChannel([_http(200, b"", "text/event-stream", length=False), b'event: snapshot\ndata: {"instances": []}\n\n'])
-        transport = FakeTransport([FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION - 1)]), stream])
+        stream = FakeChannel(
+            [
+                _http(200, b"", "text/event-stream", length=False),
+                b'event: snapshot\ndata: {"instances": []}\n\n',
+            ]
+        )
+        transport = FakeTransport(
+            [FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION - 1)]), stream]
+        )
         link, states, frames, _ = self._link(transport)
         link.step()
-        assert states[0][0] == hosts.VERSION_MISMATCH and frames and not link.view()["actions_allowed"] and link.view()["readable"]
+        assert (
+            states[0][0] == hosts.VERSION_MISMATCH
+            and frames
+            and not link.view()["actions_allowed"]
+            and link.view()["readable"]
+        )
 
     def test_a_stream_frame_larger_than_the_hub_accepts_ends_the_stream(self, monkeypatch):
         monkeypatch.setattr(hosts, "_FRAME_LIMIT", 64)
-        stream = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"data: " + b"x" * 100, b'\n\nevent: delta\ndata: {"project": "p"}\n\n'])
+        stream = FakeChannel(
+            [
+                _http(200, b"", "text/event-stream", length=False),
+                b"data: " + b"x" * 100,
+                b'\n\nevent: delta\ndata: {"project": "p"}\n\n',
+            ]
+        )
         link, _, frames, _ = self._link(FakeTransport([FakeChannel([_bridge_answer()]), stream]))
         link.step()
         assert frames == [] and stream.closed and link.view()["drops_10m"] == 1
 
     def test_a_new_cap_is_published_even_when_the_state_stays_connected(self):
         stream = FakeChannel([_http(200, b"", "text/event-stream", length=False)])
-        transport = FakeTransport([FakeChannel([_bridge_answer()]), stream, FakeChannel([_bridge_answer(cap="viewer")]), FakeChannel([_http(200, b"", "text/event-stream", length=False)])])
+        transport = FakeTransport(
+            [
+                FakeChannel([_bridge_answer()]),
+                stream,
+                FakeChannel([_bridge_answer(cap="viewer")]),
+                FakeChannel([_http(200, b"", "text/event-stream", length=False)]),
+            ]
+        )
         published = []
-        link = hosts.HostLink(_rec(), transport, on_state=lambda lk: published.append((lk.status.state, lk.status.cap)), on_frame=lambda *a: None, clock=lambda: 1.0, jitter=lambda: 0.5)
+        link = hosts.HostLink(
+            _rec(),
+            transport,
+            on_state=lambda lk: published.append((lk.status.state, lk.status.cap)),
+            on_frame=lambda *a: None,
+            clock=lambda: 1.0,
+            jitter=lambda: 0.5,
+        )
         link.step()
         link.step()
         assert published == [(hosts.CONNECTED, "operator"), (hosts.CONNECTED, "viewer")]
@@ -544,7 +798,22 @@ class TestLinkStateMachine:
     def test_the_view_carries_what_the_page_needs_and_no_secret(self):
         link, _, _, _ = self._link(FakeTransport([]))
         view = link.view()
-        assert {"id", "name", "address", "port", "user", "state", "reason", "last_seen", "cap", "remote", "drops_10m", "actions_allowed", "readable", "host_key_fingerprint"} <= set(view)
+        assert {
+            "id",
+            "name",
+            "address",
+            "port",
+            "user",
+            "state",
+            "reason",
+            "last_seen",
+            "cap",
+            "remote",
+            "drops_10m",
+            "actions_allowed",
+            "readable",
+            "host_key_fingerprint",
+        } <= set(view)
         assert "host_key" not in view and "token" not in json.dumps(view)
 
 
@@ -577,7 +846,9 @@ class TestFocus:
         """A held stream that runs ``then`` once its keepalive was read (a tab moving)."""
 
         def __init__(self, then):
-            super().__init__([_http(200, b"", "text/event-stream", length=False), b": keepalive\n\n"])
+            super().__init__(
+                [_http(200, b"", "text/event-stream", length=False), b": keepalive\n\n"]
+            )
             self._then = then
 
         def read(self, size, timeout):
@@ -587,14 +858,23 @@ class TestFocus:
                 then()
             return piece
 
-    def test_focusing_a_remote_instance_reopens_the_stream_with_it_and_leaving_reopens_without(self):
+    def test_focusing_a_remote_instance_reopens_the_stream_with_it_and_leaving_reopens_without(
+        self,
+    ):
         held = {}
         unfocused = self._Then(lambda: held["link"].set_focus("p 1"))
         focused = self._Then(lambda: held["link"].set_focus(None))
         last = FakeChannel([_http(200, b"", "text/event-stream", length=False)])
         transport = FakeTransport([FakeChannel([_bridge_answer()]), unfocused, focused, last])
         states = []
-        link = hosts.HostLink(_rec(), transport, on_state=lambda lk: states.append(lk.status.state), on_frame=lambda *a: None, clock=lambda: 1000.0, jitter=lambda: 0.5)
+        link = hosts.HostLink(
+            _rec(),
+            transport,
+            on_state=lambda lk: states.append(lk.status.state),
+            on_frame=lambda *a: None,
+            clock=lambda: 1000.0,
+            jitter=lambda: 0.5,
+        )
         held["link"] = link
         link.step()
         assert [c.sent.split(b"\r\n", 1)[0] for c in (unfocused, focused, last)] == [
@@ -604,10 +884,14 @@ class TestFocus:
         ]
         # A move of focus is no drop: no re-probe in between, nothing flashed, and only the
         # last stream's real end counts.
-        assert transport.opened == 4 and states == [hosts.CONNECTED] and link.view()["drops_10m"] == 1
+        assert (
+            transport.opened == 4 and states == [hosts.CONNECTED] and link.view()["drops_10m"] == 1
+        )
 
     def test_the_manager_hands_each_host_its_latest_focus_new_links_included(self):
-        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager = hosts.HostManager(
+            publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])}
+        )
         manager.set_focus({"build-box": "p"})
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
         manager.resync()
@@ -621,10 +905,15 @@ class TestFocus:
 
 class TestManager:
     def _manager(self, transport, published):
-        return hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {"ssh": transport})
+        return hosts.HostManager(
+            publish=lambda ev, data: published.append((ev, data)),
+            transports_fn=lambda: {"ssh": transport},
+        )
 
     def _linked(self, manager, transport, state=hosts.CONNECTED):
-        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame)
+        link = hosts.HostLink(
+            _rec(), transport, on_state=manager._state_changed, on_frame=manager._frame
+        )
         manager._links[link.host.id] = link
         link.status.state = state
         return link
@@ -634,9 +923,16 @@ class TestManager:
         transport = FakeTransport([])
         manager = self._manager(transport, published)
         link = self._linked(manager, transport)
-        manager._frame(link, "delta", {"host": None, "project": "p", "instance": {"project": "p"}, "removed": False})
+        manager._frame(
+            link,
+            "delta",
+            {"host": None, "project": "p", "instance": {"project": "p"}, "removed": False},
+        )
         manager._frame(link, "job", {"host": "other-box", "id": "j1", "state": "running"})
-        assert [(ev, data["host"]) for ev, data in published] == [("host_delta", "build-box"), ("host_job", "build-box")]
+        assert [(ev, data["host"]) for ev, data in published] == [
+            ("host_delta", "build-box"),
+            ("host_job", "build-box"),
+        ]
 
     def test_a_link_that_was_removed_or_replaced_never_publishes_its_host_back(self):
         """resync stops a link without waiting for its thread; a probe still in flight
@@ -691,11 +987,15 @@ class TestManager:
         transport = FakeTransport([first, fresh])
         manager = self._manager(transport, [])
         self._linked(manager, transport)
-        resp = manager.request("build-box", "POST", "/api/v1/jobs", [("Content-Type", "application/json")], b"{}")
+        resp = manager.request(
+            "build-box", "POST", "/api/v1/jobs", [("Content-Type", "application/json")], b"{}"
+        )
         assert resp.status == 200 and resp.read() == b'{"data": 1}'
         assert transport.closed == ["build-box"] and first.closed and first.sent == fresh.sent
 
-    def test_checking_a_host_that_holds_its_stream_without_being_connected_reaches_a_fresh_probe(self):
+    def test_checking_a_host_that_holds_its_stream_without_being_connected_reaches_a_fresh_probe(
+        self,
+    ):
         """A version mismatch keeps the stream for the read-only view; Check must still
         end it and wait for the probe that follows, not time out on a sleeping loop."""
         held = HeldChannel(_http(200, b"", "text/event-stream", length=False))
@@ -704,7 +1004,9 @@ class TestManager:
             FakeChannel([_bridge_answer()]), HeldChannel(_http(200, b"", "text/event-stream", length=False)),
         ])  # fmt: skip
         manager = self._manager(transport, [])
-        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame)
+        link = hosts.HostLink(
+            _rec(), transport, on_state=manager._state_changed, on_frame=manager._frame
+        )
         manager._links[link.host.id] = link
         link.start()
         try:
@@ -723,53 +1025,100 @@ class TestManager:
         published = []
         transport = FakeTransport([])
         manager = self._manager(transport, published)
-        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame, clock=lambda: 5.0)
+        link = hosts.HostLink(
+            _rec(),
+            transport,
+            on_state=manager._state_changed,
+            on_frame=manager._frame,
+            clock=lambda: 5.0,
+        )
         manager._links[link.host.id] = link
         link.status.state = hosts.CONNECTED
         link.touch()
-        running = {"project": "p", "overall": "running", "web_probed": True, "container_running": True, "probe_error": None, "benches": [{"index": 0, "overall": "running", "web_http_code": "200"}]}
+        running = {
+            "project": "p",
+            "overall": "running",
+            "web_probed": True,
+            "container_running": True,
+            "probe_error": None,
+            "benches": [{"index": 0, "overall": "running", "web_http_code": "200"}],
+        }
         manager._frame(link, "snapshot", {"instances": [running], "jobs": [{"id": "j1"}]})
-        manager._frame(link, "delta", {"project": "q", "instance": {"project": "q", "overall": "degraded"}, "removed": False})
+        manager._frame(
+            link,
+            "delta",
+            {"project": "q", "instance": {"project": "q", "overall": "degraded"}, "removed": False},
+        )
         manager._frame(link, "job", {"id": "j2", "state": "running"})
         manager._frame(link, "metrics", {"x": 1})
-        assert [ev for ev, _ in published] == ["host_snapshot", "host_delta", "host_job", "host_event"]
+        assert [ev for ev, _ in published] == [
+            "host_snapshot",
+            "host_delta",
+            "host_job",
+            "host_event",
+        ]
         assert published[-1][1] == {"host": "build-box", "event": "metrics", "data": {"x": 1}}
         published.clear()
         link._set(hosts.UNREACHABLE, "gone")
         events = dict(published)
-        assert set(events) == {"host_link", "host_snapshot"}  # nothing starts, stops or retries work
-        assert events["host_link"]["state"] == hosts.UNREACHABLE and events["host_link"]["last_seen"] == 5.0
+        assert set(events) == {
+            "host_link",
+            "host_snapshot",
+        }  # nothing starts, stops or retries work
+        assert (
+            events["host_link"]["state"] == hosts.UNREACHABLE
+            and events["host_link"]["last_seen"] == 5.0
+        )
         snap = events["host_snapshot"]
         assert snap["stale"] is True and {i["overall"] for i in snap["instances"]} == {"unknown"}
-        assert {i["project"] for i in snap["instances"]} == {"p", "q"} and [j["id"] for j in snap["jobs"]] == ["j1", "j2"]
+        assert {i["project"] for i in snap["instances"]} == {"p", "q"} and [
+            j["id"] for j in snap["jobs"]
+        ] == ["j1", "j2"]
         # Marked the way a failed probe is, so no page reads a bench's last readings as live.
         for listed in (snap["instances"], manager.snapshot()[0]["instances"]):
             p = next(i for i in listed if i["project"] == "p")
             assert p["overall"] == "unknown" and p["probe_error"] == "Build box: gone"
-            assert [b["overall"] for b in p["benches"]] == ["unknown"] and p["benches"][0]["web_http_code"] == "200"
-            assert {i["overall"] for i in listed} == {"unknown"} and all(i["probe_error"] for i in listed)
+            assert [b["overall"] for b in p["benches"]] == ["unknown"] and p["benches"][0][
+                "web_http_code"
+            ] == "200"
+            assert {i["overall"] for i in listed} == {"unknown"} and all(
+                i["probe_error"] for i in listed
+            )
         link._set(hosts.CONNECTING, None)
-        assert {i["probe_error"] for i in dict(published)["host_snapshot"]["instances"]} == {"Build box is connecting"}
+        assert {i["probe_error"] for i in dict(published)["host_snapshot"]["instances"]} == {
+            "Build box is connecting"
+        }
 
     def _off_after_a_link(self, published):
         """A host that had a running link with a snapshot, then the integration was turned
         off: the link stops, and its last-known state stays (a quiet host's rule)."""
         available = {"ssh": FakeTransport([])}
-        manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: dict(available))
+        manager = hosts.HostManager(
+            publish=lambda ev, data: published.append((ev, data)),
+            transports_fn=lambda: dict(available),
+        )
         rec = hosts.add_host(hosts.make_pairing(PAIRING_FIELDS), now=1.0)
-        link = hosts.HostLink(rec, available["ssh"], on_state=manager._state_changed, on_frame=manager._frame)
+        link = hosts.HostLink(
+            rec, available["ssh"], on_state=manager._state_changed, on_frame=manager._frame
+        )
         manager._links[rec.id] = link
         link.status.state = hosts.CONNECTED
         link.status.since = 2.0
         link.status.last_seen = 3.0
-        manager._frame(link, "snapshot", {"instances": [{"project": "p", "overall": "running"}], "jobs": [{"id": "j1"}]})
+        manager._frame(
+            link,
+            "snapshot",
+            {"instances": [{"project": "p", "overall": "running"}], "jobs": [{"id": "j1"}]},
+        )
         available.clear()
         manager.resync()
         (off,) = manager.snapshot()
         assert manager.get(rec.id) is None and off["state"] == hosts.TRANSPORT_OFF
         assert (off["since"], off["last_seen"]) == (2.0, 3.0)
         assert manager.view()["hosts"][0]["last_seen"] == 3.0
-        assert [i["project"] for i in off["instances"]] == ["p"] and [j["id"] for j in off["jobs"]] == ["j1"]
+        assert [i["project"] for i in off["instances"]] == ["p"] and [
+            j["id"] for j in off["jobs"]
+        ] == ["j1"]
         return manager, rec
 
     def test_turning_the_transport_off_tells_open_pages_the_hosts_instances_are_unknown(self):
@@ -781,14 +1130,18 @@ class TestManager:
             (link_event, view), (snap_event, snap) = published[-2:]
             assert (link_event, view["state"]) == ("host_link", hosts.TRANSPORT_OFF)
             assert (view["since"], view["last_seen"]) == (2.0, 3.0)
-            assert snap_event == "host_snapshot" and snap["host"] == rec.id and snap["stale"] is True
+            assert (
+                snap_event == "host_snapshot" and snap["host"] == rec.id and snap["stale"] is True
+            )
             assert (snap["since"], snap["last_seen"]) == (2.0, 3.0)
             assert [(i["project"], i["overall"]) for i in snap["instances"]] == [("p", "unknown")]
             assert [j["id"] for j in snap["jobs"]] == ["j1"]
         finally:
             manager.stop()
 
-    def test_a_host_removed_while_it_has_no_link_is_announced_and_its_last_known_state_dropped(self):
+    def test_a_host_removed_while_it_has_no_link_is_announced_and_its_last_known_state_dropped(
+        self,
+    ):
         """With the integration off, or on a group member's web UI, a host has no running
         link; its removal must still reach every page and take its cached state with it."""
         published = []
@@ -812,7 +1165,9 @@ class TestManager:
             hosts.remove_host(rec.id)
             if not one_resync:
                 manager.resync()
-            again = hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.8"}), now=2.0)
+            again = hosts.add_host(
+                hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.8"}), now=2.0
+            )
             manager.resync()
             assert again.id == rec.id and ("host_removed", {"host": rec.id}) in published
             (snap,) = manager.snapshot()
@@ -823,7 +1178,9 @@ class TestManager:
     def test_a_host_whose_transport_is_off_is_shown_as_such_and_never_dialled(self):
         published = []
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
-        manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {})
+        manager = hosts.HostManager(
+            publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {}
+        )
         manager.resync()
         (view,) = manager.views()
         assert view["state"] == hosts.TRANSPORT_OFF and view["actions_allowed"] is False
@@ -836,9 +1193,13 @@ class TestManager:
     def test_checking_a_connected_host_probes_out_of_band_and_ends_a_stale_stream(self):
         """The held stream cannot say a daemon died until it notices; Check now must."""
         published = []
-        transport = FakeTransport([FakeChannel([_bridge_answer(daemon=False, error="not running")])])
+        transport = FakeTransport(
+            [FakeChannel([_bridge_answer(daemon=False, error="not running")])]
+        )
         manager = self._manager(transport, published)
-        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame)
+        link = hosts.HostLink(
+            _rec(), transport, on_state=manager._state_changed, on_frame=manager._frame
+        )
         manager._links[link.host.id] = link
         link.status.state = hosts.CONNECTED
         link.status.cap = "operator"
@@ -880,7 +1241,13 @@ class TestTransportHookPoint:
                 fields=(), normalize=lambda s: {}, test=lambda s, x: integrations.Check(True, "ok"),
                 hooks={h: (lambda s, x, _i=iid: type("T", (), {"id": _i})()) for h in provides},
             )  # fmt: skip
-        reg = {"t1": integ("t1", ("host_transport",)), "t2": integ("t2", ("host_transport",)), "s1": integ("s1", ("sign_in",)), "s2": integ("s2", ("sign_in",))}
+
+        reg = {
+            "t1": integ("t1", ("host_transport",)),
+            "t2": integ("t2", ("host_transport",)),
+            "s1": integ("s1", ("sign_in",)),
+            "s2": integ("s2", ("sign_in",)),
+        }
         monkeypatch.setattr(integrations, "official", lambda: reg)
         monkeypatch.setattr(integrations, "registry", lambda: reg)
         return reg
@@ -926,7 +1293,10 @@ class TestHubKey:
         assert hosts.allow_command().startswith("cwcli remote allow --hub ")
 
     def test_the_hub_name_is_validated_and_defaults_to_the_hostname(self):
-        assert hosts.SSH_INTEGRATION.normalize({"hub_name": ""})["hub_name"] == hosts.default_hub_name()
+        assert (
+            hosts.SSH_INTEGRATION.normalize({"hub_name": ""})["hub_name"]
+            == hosts.default_hub_name()
+        )
         with pytest.raises(CwcliError):
             hosts.SSH_INTEGRATION.normalize({"hub_name": "a b"})
         with pytest.raises(CwcliError):
@@ -941,7 +1311,9 @@ class TestHubKey:
         """The path is predictable in a world-writable directory, so another local user
         could create it first; ssh's mux client would then talk to their socket."""
         real_access = os.access
-        monkeypatch.setattr(os, "access", lambda p, m, **k: False if str(p) == "/tmp" else real_access(p, m, **k))
+        monkeypatch.setattr(
+            os, "access", lambda p, m, **k: False if str(p) == "/tmp" else real_access(p, m, **k)
+        )
         monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
         expected = tmp_path / f"cwcli-hub-{os.getuid()}"
         elsewhere = tmp_path / "elsewhere"
@@ -994,20 +1366,31 @@ class TestSharedInstall:
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
         published = []
         transport = FakeTransport([])
-        manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {"ssh": transport})
+        manager = hosts.HostManager(
+            publish=lambda ev, data: published.append((ev, data)),
+            transports_fn=lambda: {"ssh": transport},
+        )
         manager.resync()
         (view,) = manager.views()
         assert manager.get("build-box") is None
-        assert view["state"] == hosts.SERVICE_ACCOUNT_ONLY and view["reason"] == hosts.SERVICE_ACCOUNT_REASON
+        assert (
+            view["state"] == hosts.SERVICE_ACCOUNT_ONLY
+            and view["reason"] == hosts.SERVICE_ACCOUNT_REASON
+        )
         assert view["actions_allowed"] is False and view["readable"] is False
         assert ("host_link", view) in published and manager.view()["hosts"] == [view]
         assert manager.check("build-box")["state"] == hosts.SERVICE_ACCOUNT_ONLY
         with pytest.raises(hosts.LinkError) as e:
             manager.request("build-box", "GET", "/api/v1/instances", [])
-        assert (e.value.state, e.value.reason) == (hosts.SERVICE_ACCOUNT_ONLY, hosts.SERVICE_ACCOUNT_REASON)
+        assert (e.value.state, e.value.reason) == (
+            hosts.SERVICE_ACCOUNT_ONLY,
+            hosts.SERVICE_ACCOUNT_REASON,
+        )
         assert transport.opened == 0
 
-    def test_a_member_opted_back_to_a_private_home_runs_a_hub_of_its_own(self, shared, tmp_path, monkeypatch):
+    def test_a_member_opted_back_to_a_private_home_runs_a_hub_of_its_own(
+        self, shared, tmp_path, monkeypatch
+    ):
         """CWCLI_HOME always wins on a shared box, and that home's key, pins and store are
         the member's own: its links run as on a per-user install, with no note."""
         monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid() + 1)
@@ -1017,7 +1400,9 @@ class TestSharedInstall:
             assert hosts.ensure_hub_key("hub-mine").startswith("ssh-ed25519 ")
             assert hosts.hub_key_path().is_relative_to(tmp_path / "mine")
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
-        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager = hosts.HostManager(
+            publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])}
+        )
         manager.resync()
         try:
             assert manager.get("build-box") is not None
@@ -1027,7 +1412,9 @@ class TestSharedInstall:
     def test_the_service_accounts_own_web_ui_still_runs_its_links(self, shared, monkeypatch):
         monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid())
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
-        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager = hosts.HostManager(
+            publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])}
+        )
         manager.resync()
         try:
             assert manager.get("build-box") is not None
@@ -1043,7 +1430,12 @@ def test_links_run_on_their_own_thread_and_stop_cleanly():
             gate.wait(2)
             return super().open(host)
 
-    link = hosts.HostLink(_rec(), Blocking([hosts.LinkError(hosts.UNREACHABLE, "x")] * 50), on_state=lambda lk: None, on_frame=lambda *a: None)
+    link = hosts.HostLink(
+        _rec(),
+        Blocking([hosts.LinkError(hosts.UNREACHABLE, "x")] * 50),
+        on_state=lambda lk: None,
+        on_frame=lambda *a: None,
+    )
     link.start()
     gate.set()
     time.sleep(0.05)

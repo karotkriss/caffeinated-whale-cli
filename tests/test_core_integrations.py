@@ -90,7 +90,6 @@ class TestSecrets:
         assert integrations.store_path().stat().st_mode & 0o777 == 0o600
         assert integrations.key_path().stat().st_mode & 0o777 == 0o600
 
-
     def test_a_stored_secret_is_never_sent_where_the_request_points_it(self, fake):
         integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
         tested = len(fake["tested"])
@@ -105,7 +104,6 @@ class TestSecrets:
         assert len(fake["tested"]) == tested
         assert integrations.test("fake", {"port": 9}, {"token": SECRET}).ok
         assert integrations.test("fake", {"host": "good"}).ok  # the port kept: stored secret
-
 
     def test_a_write_waits_while_another_process_holds_the_store(self, fake):
         import threading

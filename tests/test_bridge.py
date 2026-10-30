@@ -59,7 +59,12 @@ class _Daemon:
                 if self.path == "/api/v1/meta":
                     payload = {"version": "9.9.9", "protocol": PROTOCOL_VERSION, "build": "x"}
                 else:
-                    payload = {"data": {"echo": self.path, "seen": self.headers.get("X-Cwcli-Delegated-Role")}}
+                    payload = {
+                        "data": {
+                            "echo": self.path,
+                            "seen": self.headers.get("X-Cwcli-Delegated-Role"),
+                        }
+                    }
                 raw = json.dumps(payload).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -72,7 +77,9 @@ class _Daemon:
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        ).start()
 
     def close(self):
         self.httpd.shutdown()
@@ -152,7 +159,11 @@ def _error_code(raw: bytes) -> str:
 
 class TestNotAShell:
     def test_a_command_passed_by_the_client_is_refused_before_anything_is_read(self, grant, capsys):
-        code, out = _run(grant, b"GET /api/v1/meta HTTP/1.1\r\n\r\n", env={"SSH_ORIGINAL_COMMAND": "cat /etc/hostname; id"})
+        code, out = _run(
+            grant,
+            b"GET /api/v1/meta HTTP/1.1\r\n\r\n",
+            env={"SSH_ORIGINAL_COMMAND": "cat /etc/hostname; id"},
+        )
         assert code == 2 and out == b""
         assert "restricted to the cwcli bridge" in capsys.readouterr().err
 
@@ -166,13 +177,26 @@ class TestNotAShell:
 
     @pytest.mark.parametrize(
         "line",
-        [b"GET /etc/passwd HTTP/1.1", b"GET / HTTP/1.1", b"DELETE /api/v1/jobs/x HTTP/1.1", b"GET /api/v2/x HTTP/1.1"],
+        [
+            b"GET /etc/passwd HTTP/1.1",
+            b"GET / HTTP/1.1",
+            b"DELETE /api/v1/jobs/x HTTP/1.1",
+            b"GET /api/v2/x HTTP/1.1",
+        ],
     )
     def test_only_get_and_post_on_the_api_are_requests_at_all(self, grant, line):
         code, out = _run(grant, line + b"\r\n\r\n")
         assert code == 2 and out == b""
 
-    @pytest.mark.parametrize("path", ["/api/v1/session", "/api/v1/session/password", "/api/v1/hosts", "/api/v1/hosts/x/instances"])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v1/session",
+            "/api/v1/session/password",
+            "/api/v1/hosts",
+            "/api/v1/hosts/x/instances",
+        ],
+    )
     def test_the_session_and_hosts_routes_are_never_forwarded(self, grant, path, daemon):
         code, out = _run(grant, f"GET {path} HTTP/1.1\r\n\r\n".encode())
         assert code == 1 and _error_code(out) == "bridge.path_refused"
@@ -188,7 +212,9 @@ class TestTheGrantIsRechecked:
         assert b"\r\nX-Cwcli-Bridge-Error: bridge.revoked\r\n" in out
         assert daemon.requests == []
 
-    def test_a_new_cap_refuses_the_channels_of_a_connection_made_under_the_old_line(self, grant, tmp_path, daemon):
+    def test_a_new_cap_refuses_the_channels_of_a_connection_made_under_the_old_line(
+        self, grant, tmp_path, daemon
+    ):
         """sshd binds the forced command when a connection authenticates and the hub keeps
         that connection open, so a lowered cap reaches it only through this refusal."""
         lowered = _grant(tmp_path, cap="viewer")
@@ -223,7 +249,9 @@ class TestTheGrantIsRechecked:
         assert _allowed([HUB if arg == "other-hub" else arg for arg in other]) is False
 
     def test_a_key_that_merely_mentions_the_marker_is_not_a_grant(self, grant, tmp_path):
-        (tmp_path / "authorized_keys").write_text(f"{KEY} cwcli-hub:{HUB}\n")  # no restrict, no bridge command
+        (tmp_path / "authorized_keys").write_text(
+            f"{KEY} cwcli-hub:{HUB}\n"
+        )  # no restrict, no bridge command
         assert _allowed(grant) is False
 
 
@@ -245,11 +273,17 @@ class TestRewrite:
         return headers
 
     def _rewrite(self, headers, cap="operator"):
-        out = bridge.rewrite("POST", "/api/v1/jobs", headers, hub=HUB, cap=cap, port=1234, token=TOKEN, body_length=2)
+        out = bridge.rewrite(
+            "POST", "/api/v1/jobs", headers, hub=HUB, cap=cap, port=1234, token=TOKEN, body_length=2
+        )
         return {k.lower(): v for k, v in out}
 
     def test_credentials_identity_and_provenance_from_the_hub_are_dropped(self):
-        sent = self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "alice", "X-Cwcli-Delegated-Role": "operator"}))
+        sent = self._rewrite(
+            self._headers(
+                **{"X-Cwcli-Delegated-User": "alice", "X-Cwcli-Delegated-Role": "operator"}
+            )
+        )
         assert sent["authorization"] == f"Bearer {TOKEN}"
         assert "cookie" not in sent and "origin" not in sent and "referer" not in sent
         assert "sec-fetch-site" not in sent and "x-forwarded-for" not in sent
@@ -259,15 +293,47 @@ class TestRewrite:
         assert sent["accept"] == "application/json" and sent["user-agent"] == "cwcli-hub/1"
 
     def test_the_claimed_role_is_lowered_to_the_cap_and_never_raised(self):
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "admin"}))["x-cwcli-delegated-role"] == "operator"
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "viewer"}))["x-cwcli-delegated-role"] == "viewer"
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "admin"}), cap="admin")["x-cwcli-delegated-role"] == "admin"
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "root"}))["x-cwcli-delegated-role"] == "viewer"
-        assert self._rewrite(self._headers())["x-cwcli-delegated-role"] == "viewer"  # no claim: the lowest
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "admin"}))[
+                "x-cwcli-delegated-role"
+            ]
+            == "operator"
+        )
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "viewer"}))[
+                "x-cwcli-delegated-role"
+            ]
+            == "viewer"
+        )
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "admin"}), cap="admin")[
+                "x-cwcli-delegated-role"
+            ]
+            == "admin"
+        )
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-Role": "root"}))[
+                "x-cwcli-delegated-role"
+            ]
+            == "viewer"
+        )
+        assert (
+            self._rewrite(self._headers())["x-cwcli-delegated-role"] == "viewer"
+        )  # no claim: the lowest
 
     def test_the_hub_name_on_the_delegated_user_is_the_bridges_own(self):
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "alice@some-other-hub"}))["x-cwcli-delegated-user"] == f"alice@{HUB}"
-        assert self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "al ice\r\nX-Injected: 1"}))["x-cwcli-delegated-user"] == f"hub@{HUB}"
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "alice@some-other-hub"}))[
+                "x-cwcli-delegated-user"
+            ]
+            == f"alice@{HUB}"
+        )
+        assert (
+            self._rewrite(self._headers(**{"X-Cwcli-Delegated-User": "al ice\r\nX-Injected: 1"}))[
+                "x-cwcli-delegated-user"
+            ]
+            == f"hub@{HUB}"
+        )
         assert self._rewrite(self._headers())["x-cwcli-delegated-user"] == f"hub@{HUB}"
         sent = self._rewrite(self._headers())
         assert sent["x-cwcli-delegated-user"].rsplit("@", 1)[1] == HUB and "x-cwcli-hub" not in sent
@@ -282,7 +348,9 @@ class TestRewrite:
         assert e.value.status == 400 and e.value.code == "bridge.connection_header"
 
     def test_headers_named_in_connection_are_dropped_as_hop_by_hop(self):
-        sent = self._rewrite([("Connection", "X-Custom, keep-alive"), ("X-Custom", "gone"), ("Accept", "a")])
+        sent = self._rewrite(
+            [("Connection", "X-Custom, keep-alive"), ("X-Custom", "gone"), ("Accept", "a")]
+        )
         assert "x-custom" not in sent and sent["accept"] == "a"
 
     def test_chunked_bodies_are_refused(self):
@@ -320,8 +388,15 @@ class TestStrictHead:
             b"X-Note\r\n",  # no colon
         ],
     )
-    def test_a_head_the_daemon_could_read_differently_is_refused_whole(self, grant, daemon, capsys, header_lines):
-        code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n" + header_lines + b"Accept: application/json\r\n\r\n")
+    def test_a_head_the_daemon_could_read_differently_is_refused_whole(
+        self, grant, daemon, capsys, header_lines
+    ):
+        code, out = _run(
+            grant,
+            b"GET /api/v1/instances HTTP/1.1\r\n"
+            + header_lines
+            + b"Accept: application/json\r\n\r\n",
+        )
         assert code == 2 and out == b"" and daemon.requests == []
         assert capsys.readouterr().err.startswith("bridge: ")
 
@@ -361,13 +436,18 @@ class TestNoCodeChangeThroughAHub:
     @pytest.mark.parametrize(
         "path,payload",
         [
-            ("/api/v1/integrations", {"op": "community_add", "url": "https://example.com/x.git", "commit": "abc"}),
+            (
+                "/api/v1/integrations",
+                {"op": "community_add", "url": "https://example.com/x.git", "commit": "abc"},
+            ),
             ("/api/v1/integrations", {"op": "community_update", "id": "x", "commit": "abc"}),
             ("/api/v1/jobs", {"verb": "self-update", "target": {}, "args": {}}),
             ("/api/v1/jobs?from=page", {"verb": "self-update"}),
         ],
     )
-    def test_installing_or_updating_code_is_refused_at_the_admin_cap(self, admin, daemon, path, payload):
+    def test_installing_or_updating_code_is_refused_at_the_admin_cap(
+        self, admin, daemon, path, payload
+    ):
         code, out = _run(admin, _post(path, payload))
         assert code == 1 and _error_code(out) == "bridge.code_change_refused"
         assert daemon.requests == []
@@ -376,38 +456,58 @@ class TestNoCodeChangeThroughAHub:
         code, out = _run(admin, _post("/api/v1/settings", {"setting": "cache.enable"}))
         assert code == 0 and _status_and_json(out)[0] == 200
         (seen,) = daemon.requests
-        assert seen["path"] == "/api/v1/settings" and seen["headers"]["x-cwcli-delegated-role"] == "admin"
+        assert (
+            seen["path"] == "/api/v1/settings"
+            and seen["headers"]["x-cwcli-delegated-role"] == "admin"
+        )
 
     @pytest.mark.parametrize(
         "path,payload",
         [
             ("/api/v1/jobs", {"verb": " self-update"}),
             ("/api/v1/jobs", {"verb": "self-update\n"}),
-            ("/api/v1/jobs", {"verb": "rm ", "target": {"project": "x"}, "args": {"no_backup": True}}),
+            (
+                "/api/v1/jobs",
+                {"verb": "rm ", "target": {"project": "x"}, "args": {"no_backup": True}},
+            ),
             ("/api/v1/jobs", {"verb": ""}),
-            ("/api/v1/integrations", {"op": " community_add", "url": "https://example.com/x.git", "commit": "abc"}),
+            (
+                "/api/v1/integrations",
+                {"op": " community_add", "url": "https://example.com/x.git", "commit": "abc"},
+            ),
         ],
     )
-    def test_a_padded_verb_or_op_is_refused_never_read_as_the_one_it_pads(self, admin, daemon, path, payload):
+    def test_a_padded_verb_or_op_is_refused_never_read_as_the_one_it_pads(
+        self, admin, daemon, path, payload
+    ):
         code, out = _run(admin, _post(path, payload))
         assert code == 1 and _error_code(out) == "bridge.not_canonical"
         assert daemon.requests == []
 
     @pytest.mark.parametrize(
         "path,payload",
-        [("/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}), ("/api/v1/integrations", {"op": "test", "id": "ldap"})],
+        [
+            ("/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}),
+            ("/api/v1/integrations", {"op": "test", "id": "ldap"}),
+        ],
     )
     def test_an_exact_verb_or_op_still_crosses(self, admin, daemon, path, payload):
         code, out = _run(admin, _post(path, payload))
-        assert code == 0 and _status_and_json(out)[0] == 200 and [r["path"] for r in daemon.requests] == [path]
+        assert (
+            code == 0
+            and _status_and_json(out)[0] == 200
+            and [r["path"] for r in daemon.requests] == [path]
+        )
 
 
 class TestTheRealExchange:
-    def test_a_read_reaches_the_daemon_with_the_machines_own_token_and_identity(self, grant, daemon):
+    def test_a_read_reaches_the_daemon_with_the_machines_own_token_and_identity(
+        self, grant, daemon
+    ):
         request = (
-            "GET /api/v1/instances?x=1 HTTP/1.1\r\nHost: hub\r\nAuthorization: Bearer forged\r\n"
-            "X-Cwcli-Delegated-User: alice\r\nX-Cwcli-Delegated-Role: admin\r\nAccept: application/json\r\n\r\n"
-        ).encode()
+            b"GET /api/v1/instances?x=1 HTTP/1.1\r\nHost: hub\r\nAuthorization: Bearer forged\r\n"
+            b"X-Cwcli-Delegated-User: alice\r\nX-Cwcli-Delegated-Role: admin\r\nAccept: application/json\r\n\r\n"
+        )
         code, out = _run(grant, request)
         assert code == 0
         status, body = _status_and_json(out)
@@ -458,7 +558,9 @@ class TestTheRealExchange:
         code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n\r\n")
         assert _error_code(out) == "bridge.daemon_down"
 
-    def test_a_daemon_that_is_down_is_started_once_the_way_cwcli_ui_does(self, tmp_path, daemon, monkeypatch):
+    def test_a_daemon_that_is_down_is_started_once_the_way_cwcli_ui_does(
+        self, tmp_path, daemon, monkeypatch
+    ):
         """Without ``--no-start`` the bridge starts the remote's own daemon (as a person
         running ``cwcli ui`` would) when nothing answers, once, then reads its state file;
         the hub never learns the token that file holds."""
@@ -482,18 +584,23 @@ class TestTheRealExchange:
         found, error = bridge.daemon_endpoint(str(tmp_path / "home"), str(state), start=False)
         assert found is None and "not running" in error and len(calls) == 1
 
-
     def test_a_port_the_daemon_left_behind_is_never_trusted(self, grant, tmp_path, daemon):
         """The daemon died and its state file kept the port; whoever binds that port next
         (``daemon`` plays them here) must get neither the token nor the hub's request."""
         (tmp_path / "ui.pid").write_text("999999999\n")  # a daemon that is gone
         code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n\r\n")
-        assert code == 0 and _status_and_json(out)[0] == 503 and _error_code(out) == "bridge.daemon_down"
+        assert (
+            code == 0
+            and _status_and_json(out)[0] == 503
+            and _error_code(out) == "bridge.daemon_down"
+        )
         code, out = _run(grant, b"GET /api/v1/bridge HTTP/1.1\r\n\r\n")
         assert code == 0 and _status_and_json(out)[1]["data"]["daemon"] is None
         assert daemon.requests == []
 
-    def test_the_daemon_is_trusted_through_the_pid_file_cwcli_ui_writes_beside_its_state(self, tmp_path, monkeypatch, daemon):
+    def test_the_daemon_is_trusted_through_the_pid_file_cwcli_ui_writes_beside_its_state(
+        self, tmp_path, monkeypatch, daemon
+    ):
         monkeypatch.setenv("CWCLI_HOME", str(tmp_path))
         ui_cmd.run_dir().mkdir(parents=True)
         ui_cmd.state_file().write_text(json.dumps({"port": daemon.port, "token": TOKEN}))
@@ -512,7 +619,9 @@ def test_the_bridge_imports_only_the_stdlib_and_the_package_init():
         "print(sorted(m for m in sys.modules if m.startswith('caffeinated_whale_cli'))); "
         "print(sorted(m for m in ('typer', 'rich', 'docker', 'toml', 'peewee', 'requests') if m in sys.modules))"
     )
-    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
     lines = done.stdout.strip().splitlines()
     assert lines[0] == (
         "['caffeinated_whale_cli', 'caffeinated_whale_cli.bridge', 'caffeinated_whale_cli.core', "

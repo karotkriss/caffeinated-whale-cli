@@ -2340,7 +2340,7 @@ Nothing is trusted on first contact, in either direction.
 cwcli remote key                 # this hub's public key and the command a remote's owner runs
 
 # On each remote, as the user who runs cwcli there:
-cwcli remote allow --hub <hub name> --key "<hub public key>" [--max-role operator]
+cwcli remote allow --hub <hub name> --key "<hub public key>" [--max-role operator] [--no-start-daemon]
 cwcli remote hubs                # the hubs this machine lets in, with their caps and homes
 cwcli remote revoke --hub <name> # withdraw a hub: removes its line and ends its running connections
 
@@ -2366,6 +2366,8 @@ Both rewrite `authorized_keys` where it really lives without changing who can re
 On a shared install each group member grants under their own login: the line goes into that member's `authorized_keys` and names the shared home, so the hub logs in as that member and reaches the `cwcli ui` daemon they run there, and only that member's `cwcli remote revoke` (or root's) removes it.
 `allow` records each hub's grant in the cwcli home (its file, the home its bridge serves, the account that wrote it, the cap and the key fingerprint), so `cwcli remote hubs` from any account lists each recorded grant along with the lines in its own `authorized_keys`, and shows one whose file it cannot read from the record as `recorded by <account>, not readable from this account`.
 `revoke` cleans the hub's recorded file and the account's own `authorized_keys`, and the check that keeps a hub user's Admin-only schedule running reads only the hub's recorded file (else the account's own `authorized_keys`); neither reads another hub's file, and when the hub's file cannot be read, `revoke` exits 1 naming the account to run it as and the schedule is skipped with a reason naming the file and that account.
+By default, the bridge starts this machine's `cwcli ui` daemon once when the daemon is down.
+Pass `--no-start-daemon` to make a grant that only connects while the owner has already started the daemon.
 
 **Pairing.** `allow` prints a pairing string that carries the SSH user, address, port and this machine's SSH host key (from `/etc/ssh/ssh_host_ed25519_key.pub`; `--host-key-file` names another).
 The hub pins that key when the host is added (`StrictHostKeyChecking=yes` against its own `known_hosts`) and refuses to add a host without one.

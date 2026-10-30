@@ -49,7 +49,9 @@ def node(tmp_path):
     hooks = tmp_path / "hooks.mjs"
     hooks.write_text(HOOKS % json.dumps(STUBS))
     register = tmp_path / "register.mjs"
-    register.write_text(f"import {{ register }} from 'node:module'\nregister({json.dumps(hooks.as_uri())})\n")
+    register.write_text(
+        f"import {{ register }} from 'node:module'\nregister({json.dumps(hooks.as_uri())})\n"
+    )
 
     def _run(body: str):
         script = f"const out = await (async () => {{ {body} }})()\nconsole.log(JSON.stringify(out ?? null))\n"
@@ -74,11 +76,22 @@ def _read(node, text: str):
 
 
 def test_the_page_reads_what_the_remote_printed(node):
-    fields = {"v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "10.9.8.7", "port": 2222, "name": "Build box", "host_key": "ssh-ed25519 AAAA"}
+    fields = {
+        "v": 1,
+        "hub": "hub-x",
+        "cap": "operator",
+        "user": "frappe",
+        "address": "10.9.8.7",
+        "port": 2222,
+        "name": "Build box",
+        "host_key": "ssh-ed25519 AAAA",
+    }
     assert _read(node, hosts.make_pairing(fields)) == fields
 
 
-@pytest.mark.parametrize("text", ["", "cwcli-remote:v1:", "cwcli-remote:v1:!!!", "words", "cwcli-remote:v2:e30"])
+@pytest.mark.parametrize(
+    "text", ["", "cwcli-remote:v1:", "cwcli-remote:v1:!!!", "words", "cwcli-remote:v2:e30"]
+)
 def test_anything_else_reads_as_nothing(node, text):
     assert _read(node, text) is None
 
@@ -108,8 +121,13 @@ def test_a_remote_icon_can_name_only_the_remotes_own_logo_route(node):
         "seen.local = icons.siteIcon('p', 's.localhost')?.url ?? null\n"
         "return seen"
     )
-    assert seen.pop("/api/v1/apps/logo/0123abcd4567ef89.png") == "/api/v1/hosts/build%20box/apps/logo/0123abcd4567ef89.png"
-    assert seen.pop("local") == "/api/v1/apps/logo/a.png"  # this machine's own daemon, as it sent it
+    assert (
+        seen.pop("/api/v1/apps/logo/0123abcd4567ef89.png")
+        == "/api/v1/hosts/build%20box/apps/logo/0123abcd4567ef89.png"
+    )
+    assert (
+        seen.pop("local") == "/api/v1/apps/logo/a.png"
+    )  # this machine's own daemon, as it sent it
     assert seen == {url: None for url in urls[1:]}
 
 
