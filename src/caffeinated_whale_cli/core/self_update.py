@@ -142,6 +142,9 @@ def _run(
             text=True,
             errors="replace",
             env=env,
+            # Shared mode relaxes cwcli's umask to 0007 for its group-owned state;
+            # the install itself must stay readable by everyone who runs it.
+            umask=0o022 if shared_home.shared_mode() else -1,
             **_as_user(run_as),
         )
     except OSError as exc:
