@@ -12,9 +12,11 @@ hub's stream carries the remote's snapshot, and a remote that stops answering sh
 last snapshot as unknown with nothing done about it.
 
 No Frappe instance is needed (both daemons see the Docker daemon's instance list, and
-the proof is the plumbing and the trust model), so this is ``standalone``. The remote's
-grant is written with ``--no-start-daemon`` so the test never spawns a detached daemon on
-the machine it runs on.
+the proof is the plumbing and the trust model), so this is ``standalone``. The instance
+assertions are conditional: each test compares against what the remote lists at the
+time, which is nothing on a runner with an empty fleet, while the link assertions always
+run. The remote's grant is written with ``--no-start-daemon`` so the test never spawns a
+detached daemon on the machine it runs on.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -69,6 +72,19 @@ def _code(body) -> str | None:
     return (body.get("errors") or [{}])[0].get("title") if isinstance(body, dict) else None
 
 
+def _next_frame(resp, event: str, match=lambda data: True) -> dict:
+    """The data of the next ``event`` frame ``match`` accepts on an open stream."""
+    name, deadline = None, time.monotonic() + 90
+    while time.monotonic() < deadline:
+        line = resp.readline()
+        assert line, f"the stream ended before a {event} frame"
+        if line.startswith(b"event: "):
+            name = line[7:].strip().decode()
+        elif line.startswith(b"data: ") and name == event and match(data := json.loads(line[6:])):
+            return data
+    raise AssertionError(f"no {event} frame within 90s")
+
+
 class Lab:
     def __init__(self, root: Path):
         self.root = root
@@ -81,7 +97,7 @@ class Lab:
         self.hub_home = Path(os.environ["HOME"]) / "hub-cwcli"
         self.keys = Path(os.environ["HOME"]) / ".ssh" / "authorized_keys"
         self.procs: list[subprocess.Popen] = []
-        self.remote_proc: subprocess.Popen | None = None
+        self.sshd_proc: subprocess.Popen | None = None
 
     # -- the private sshd -------------------------------------------------
     def start_sshd(self) -> None:
@@ -111,17 +127,37 @@ class Lab:
                 ]
             )
         )
-        proc = subprocess.Popen(
-            [SSHD, "-f", str(config), "-D", "-E", str(self.ssh_dir / "sshd.log")],
+        self.run_sshd()
+
+    def run_sshd(self) -> None:
+        """sshd on the lab's port and host key, the first time and after ``stop_sshd``."""
+        pid_file = self.ssh_dir / "sshd.pid"
+        pid_file.unlink(missing_ok=True)
+        self.sshd_proc = subprocess.Popen(
+            [SSHD, "-f", str(self.ssh_dir / "sshd_config"), "-D", "-E", str(self.ssh_dir / "sshd.log")],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        self.procs.append(proc)
+        self.procs.append(self.sshd_proc)
         # The pid file lands once sshd listens; polling the port instead would count as
         # unauthenticated connections toward sshd's per-source penalty.
-        harness.wait_until(lambda: (self.ssh_dir / "sshd.pid").exists(), timeout=30, interval=0.5, desc="sshd")
+        harness.wait_until(lambda: pid_file.exists(), timeout=30, interval=0.5, desc="sshd")
         assert _port_open(self.ssh_port)
+
+    def stop_sshd(self) -> None:
+        """The remote stops answering: sshd stops listening and drops the connections it
+        holds. Each connection runs in a session of its own, so they are ended by pid,
+        with sshd stopped meanwhile so it forks no new one."""
+        assert self.sshd_proc is not None
+        pid = self.sshd_proc.pid
+        os.kill(pid, signal.SIGSTOP)
+        held = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+        for child in held:
+            os.kill(int(child), signal.SIGTERM)
+        self.sshd_proc.terminate()
+        os.kill(pid, signal.SIGCONT)
+        self.sshd_proc.wait(timeout=30)
 
     # -- the daemons -------------------------------------------------------
     def env(self, home: Path, token: str) -> dict:
@@ -142,7 +178,7 @@ class Lab:
         return proc
 
     def start_remote(self) -> None:
-        self.remote_proc = self._daemon(self.remote_home, self.remote_port, REMOTE_TOKEN)
+        self._daemon(self.remote_home, self.remote_port, REMOTE_TOKEN)
 
     def start_hub(self) -> None:
         self._daemon(self.hub_home, self.hub_port, HUB_TOKEN)
@@ -317,8 +353,10 @@ class TestTheKeyReachesOnlyTheApi:
             stderr=subprocess.PIPE,
         )
         try:
-            time.sleep(2)
             # Either sshd closed the session outright, or the tunnel is open but every use is refused.
+            deadline = time.monotonic() + 30
+            while proc.poll() is None and not _port_open(local) and time.monotonic() < deadline:
+                time.sleep(0.2)
             if proc.poll() is None:
                 with socket.socket() as s:
                     s.settimeout(5)
@@ -453,27 +491,31 @@ class TestPresenceIsReportedNeverActedOn:
     def test_a_quiet_remote_keeps_its_last_snapshot_as_unknown_and_nothing_runs(self, lab):
         before = lab.ensure_connected()
         assert before["state"] == "connected", before
+        # What the remote lists before it goes quiet: every check on its instances below
+        # is over this list, and holds with nothing to check on an empty fleet.
+        captured = sorted(i["project"] for i in _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]["data"])
         jobs_before = _api(lab.remote, "/api/v1/jobs", token=REMOTE_TOKEN)[1]["data"]
-        lab.remote_proc.terminate()
-        lab.remote_proc.wait(timeout=30)
-        view = lab.check()
-        assert view["state"] == "daemon_down", view
-        assert view["last_seen"] is not None and view["actions_allowed"] is False
-        # The hub's stream still carries the remote's instances, each honestly unknown.
         req = urllib.request.Request(lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"})
-        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310
-            line = b""
-            while not line.startswith(b"data: "):
-                line = resp.readline()
-        (host,) = json.loads(line[6:])["hosts"]
-        assert host["state"] == "daemon_down"
-        assert host["instances"] and {i["overall"] for i in host["instances"]} == {"unknown"}
+        with urllib.request.urlopen(req, timeout=60) as stream:  # noqa: S310
+            _next_frame(stream, "snapshot")
+            lab.stop_sshd()
+            view = lab.check()
+            assert view["state"] == "unreachable", view
+            assert view["last_seen"] is not None and view["actions_allowed"] is False
+            # An open page is told at once: the remote's last-known instances, each unknown.
+            stale = _next_frame(stream, "host_snapshot", lambda d: d.get("host") == lab.host_id and d.get("stale"))
+        assert sorted(i["project"] for i in stale["instances"]) == captured
         # ... down to every bench, with the reason a page shows over the last readings.
-        assert all(i["probe_error"] and {b["overall"] for b in i["benches"]} <= {"unknown"} for i in host["instances"])
+        assert all(
+            i["overall"] == "unknown" and i["probe_error"] and {b["overall"] for b in i["benches"]} <= {"unknown"}
+            for i in stale["instances"]
+        )
+        # Asking again reaches nothing new: the last-seen time stays where it went quiet.
+        assert stale["last_seen"] == view["last_seen"] == lab.check()["last_seen"]
         status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", {"verb": "start", "target": {"project": "p"}}, token=HUB_TOKEN)
         assert status == 409 and _code(body) == "host.not_connected"
         # Back up: the link recovers on its own and no job appeared on the remote meanwhile.
-        lab.start_remote()
+        lab.run_sshd()
         view = lab.check()
         assert view["state"] == "connected", view
         jobs_after = _api(lab.remote, "/api/v1/jobs", token=REMOTE_TOKEN)[1]["data"]

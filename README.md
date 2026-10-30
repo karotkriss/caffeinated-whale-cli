@@ -2382,6 +2382,7 @@ Drop site on a remote site asks that machine, as the dialog opens, whether the s
 When that machine cannot be read, or the page does not know the site's bench yet, the box is offered unticked with a note that its publication state could not be read.
 
 **Security.** The hub forwards only `/api/v1/` paths, never a remote's sign-in, stream or hosts routes, and relays every answer as DATA: JSON, a download as an attachment or an image under a sandboxing policy, each with `X-Content-Type-Options: nosniff`, never a cookie and never a page (a remote can never serve code into the hub's origin).
+A remote that is itself a hub keeps its own remote hosts to itself: the stream it serves through its bridge carries its own instances and jobs, never its hosts.
 The hub builds every `ssh` argument list itself, validates the host and user it was given and puts `--` before them.
 A transport sees every request to a remote, job passwords included, so only official transport integrations are allowed; `Remote hosts over SSH` is the one that ships, and different hosts may use different transports at once (the Integrations contract's one multi-provider hook point).
 A hub runs on Linux, macOS or WSL (the native Windows OpenSSH cannot multiplex connections).

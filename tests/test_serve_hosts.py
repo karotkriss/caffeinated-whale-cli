@@ -138,6 +138,25 @@ def _connected(name="Build box", state=core_hosts.CONNECTED, reason=None):
 DELEGATED = {"X-Cwcli-Delegated-User": "alice@hub-x", "X-Cwcli-Delegated-Role": "viewer"}
 
 
+def _stream(d, headers=None):
+    req = urllib.request.Request(d.base + "/api/v1/stream", headers={"Authorization": f"Bearer {TOKEN}", **(headers or {})})
+    return urllib.request.urlopen(req, timeout=5)  # noqa: S310 - loopback
+
+
+def _frames(resp, until):
+    """``(event, data)`` for each frame up to and including the first ``until`` one."""
+    out, event = [], None
+    while True:
+        line = resp.readline()
+        assert line, "the stream ended"
+        if line.startswith(b"event: "):
+            event = line[7:].strip().decode()
+        elif line.startswith(b"data: "):
+            out.append((event, json.loads(line[6:])))
+            if event == until:
+                return out
+
+
 class TestDowngradeOnlyDelegation:
     """The remote daemon's side: a bearer request from a hub's bridge."""
 
@@ -375,6 +394,28 @@ class TestHostsRoutes:
     def test_an_unknown_op_is_a_usage_error(self, daemon):
         status, body, _ = _req(daemon, "/api/v1/hosts", {"op": "explode", "id": "x"}, bearer=True)
         assert status == 400 and _code(body) == "host.op_invalid"
+
+    def test_a_hubs_stream_never_learns_this_machines_own_hosts(self, daemon):
+        """A remote that is itself a hub keeps its own hosts to itself: the stream a hub holds
+        through the bridge gets this machine's instance and job frames, but no `hosts` in its
+        snapshot and no host frame, while a stream of this machine's own still gets both."""
+        assert _req(daemon, "/api/v1/hosts", {"op": "add", "pairing": PAIRING}, bearer=True)[0] == 200
+        via_hub, own = _stream(daemon, DELEGATED), _stream(daemon)
+        try:
+            ((_, hub_snapshot),) = _frames(via_hub, "snapshot")
+            ((_, own_snapshot),) = _frames(own, "snapshot")
+            daemon.manager.resync()  # the host's link state and last-known instances
+            daemon.hub.publish("fast", "acme", None, None)
+            daemon.hub.publish_job({"id": "j1", "state": "running"})
+            hub_seen = [event for event, _data in _frames(via_hub, "job")]
+            own_seen = [event for event, _data in _frames(own, "job")]
+        finally:
+            via_hub.close()
+            own.close()
+        assert "hosts" not in hub_snapshot and {"instances", "jobs"} <= set(hub_snapshot)
+        assert [h["id"] for h in own_snapshot["hosts"]] == ["build-box"]
+        assert hub_seen == ["delta", "job"]
+        assert own_seen == ["host_link", "host_snapshot", "delta", "job"]
 
     def test_the_stream_snapshot_carries_the_hosts(self, daemon):
         req = urllib.request.Request(daemon.base + "/api/v1/stream", headers={"Authorization": f"Bearer {TOKEN}"})

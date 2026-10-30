@@ -1485,7 +1485,8 @@ class HostManager:
 
         A host that left the store, or whose id a new enrollment took (a different
         ``added_at``; a re-pin keeps it), is announced removed and its last-known
-        instances and jobs are dropped, with or without a running link. On a shared
+        instances and jobs are dropped, with or without a running link. A host left with
+        no link keeps them, announced as unknown. On a shared
         install a daemon working in the shared home as someone other than the service
         account runs no link: it cannot read the hub key, so every host is listed with
         the reason and nothing is dialled."""
@@ -1532,7 +1533,7 @@ class HostManager:
                 transport = None if member else available.get(rec.transport)
                 if transport is None:
                     self._off[host_id] = rec
-                    self._publish("host_link", self._off_view(rec))
+                    self._publish_link(host_id, self._off_view(rec))
                     continue
                 link = HostLink(
                     rec,
@@ -1634,19 +1635,23 @@ class HostManager:
         with self._lock:
             if not self._current_link(link):
                 return
-            view = link.view()
-            self._publish("host_link", view)
-            if view["state"] not in READABLE_STATES:
-                self._publish(
-                    "host_snapshot",
-                    {
-                        "host": link.host.id,
-                        "instances": _unknownify(self._instances.get(link.host.id, []), view),
-                        "jobs": list(self._jobs.get(link.host.id, [])),
-                        "stale": True,
-                        "last_seen": view["last_seen"],
-                    },
-                )
+            self._publish_link(link.host.id, link.view())
+
+    def _publish_link(self, host_id: str, view: dict[str, Any]) -> None:
+        """A host's link state and, while it is not readable, its last-known instances as
+        unknown, so no open page keeps showing them live. Called under the lock."""
+        self._publish("host_link", view)
+        if view["state"] not in READABLE_STATES:
+            self._publish(
+                "host_snapshot",
+                {
+                    "host": host_id,
+                    "instances": _unknownify(self._instances.get(host_id, []), view),
+                    "jobs": list(self._jobs.get(host_id, [])),
+                    "stale": True,
+                    "last_seen": view["last_seen"],
+                },
+            )
 
     def _frame(self, link: HostLink, event: str, data: Any) -> None:
         host_id = link.host.id

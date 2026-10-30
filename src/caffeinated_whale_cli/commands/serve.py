@@ -575,19 +575,23 @@ class _Hub:
     def __init__(self, on_focus) -> None:
         self._lock = threading.Lock()
         self._focus_lock = threading.Lock()
-        self._clients: dict[int, tuple[queue.Queue, tuple[str | None, str] | None]] = {}
+        self._clients: dict[int, tuple[queue.Queue, tuple[str | None, str] | None, bool]] = {}
         self._next = 0
         self._event_id = 0
         self._on_focus = on_focus
         # The remote hosts' share of focus, ``{host: project}``; set by ``make_server``.
         self.on_host_focus: Callable[[dict[str, str]], None] | None = None
 
-    def subscribe(self, focus: str | None, host: str | None = None) -> tuple[int, queue.Queue]:
+    def subscribe(
+        self, focus: str | None, host: str | None = None, via_hub: bool = False
+    ) -> tuple[int, queue.Queue]:
+        """A new client. One a hub holds through the bridge (``via_hub``) is never sent a
+        frame about this machine's own remote hosts: no hopping from one hub through another."""
         q: queue.Queue = queue.Queue()
         with self._lock:
             self._next += 1
             client_id = self._next
-            self._clients[client_id] = (q, (host, focus) if focus else None)
+            self._clients[client_id] = (q, (host, focus) if focus else None, via_hub)
         self._sync_focus()
         return client_id, q
 
@@ -602,7 +606,7 @@ class _Hub:
         one per host and the most recent tab's (clients are kept in the order they came)."""
         with self._focus_lock:
             with self._lock:
-                focused = [f for _q, f in self._clients.values() if f]
+                focused = [f for _q, f, _via_hub in self._clients.values() if f]
             self._on_focus({project for host, project in focused if host is None})
             if self.on_host_focus is not None:
                 self.on_host_focus({host: project for host, project in focused if host})
@@ -623,7 +627,7 @@ class _Hub:
             payload["cause"] = cause
         frame = _sse_frame("delta", payload, self.next_id())
         with self._lock:
-            queues = [q for q, _f in self._clients.values()]
+            queues = [q for q, _f, _via_hub in self._clients.values()]
         for q in queues:
             q.put(frame)
 
@@ -632,8 +636,11 @@ class _Hub:
 
     def publish_event(self, event: str, data: dict) -> None:
         frame = _sse_frame(event, data, self.next_id())
+        about_hosts = event.startswith("host_")
         with self._lock:
-            queues = [q for q, _f in self._clients.values()]
+            queues = [
+                q for q, _f, via_hub in self._clients.values() if not (via_hub and about_hosts)
+            ]
         for q in queues:
             q.put(frame)
 
@@ -2889,8 +2896,10 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _stream_events(self, focus: str | None, host: str | None = None) -> None:
-        # A hub's own stream through the bridge never steers this machine's links.
-        client_id, q = self.hub.subscribe(focus, None if self._delegation() else host)
+        # A hub's own stream through the bridge never steers this machine's links, nor
+        # learns of them.
+        via_hub = self._delegation() is not None
+        client_id, q = self.hub.subscribe(focus, None if via_hub else host, via_hub)
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -2899,17 +2908,10 @@ class _Handler(BaseHTTPRequestHandler):
             # does, which is what an infinite stream means over HTTP/1.1.
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(
-                _sse_frame(
-                    "snapshot",
-                    {
-                        "instances": self.fleet.snapshot(),
-                        "jobs": core_jobs.list_jobs(),
-                        "hosts": self.hosts.snapshot(),
-                    },
-                    self.hub.next_id(),
-                )
-            )
+            snapshot: dict = {"instances": self.fleet.snapshot(), "jobs": core_jobs.list_jobs()}
+            if not via_hub:
+                snapshot["hosts"] = self.hosts.snapshot()
+            self.wfile.write(_sse_frame("snapshot", snapshot, self.hub.next_id()))
             self.wfile.flush()
             while True:
                 try:
