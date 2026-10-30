@@ -396,12 +396,24 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         # "did not run" rather than "nothing changed": --force may have re-owned a repo.
         if report.preflight_blocked:
             blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
+            what = "The core update did not run." if report.frappe_reset else "Nothing was pulled."
             console.print(
                 f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
-                "The core update did not run.[/bold red]"
+                f"{what}[/bold red]"
             )
+            if any(
+                f.code in ("app.required_app_missing", "app.required_app_not_installed")
+                for f in blockers
+            ):
+                console.print(
+                    "Re-run with --with-deps to fetch and install the required apps first."
+                )
             console.print(
-                "Re-run with --no-preflight to run bench anyway"
+                (
+                    "Re-run with --no-preflight to run bench anyway"
+                    if report.frappe_reset
+                    else "Re-run with --no-preflight to skip the checks"
+                )
                 + (
                     "; the local work below still needs --force."
                     if report.data_loss_refused

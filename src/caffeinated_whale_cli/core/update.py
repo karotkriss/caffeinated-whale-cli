@@ -138,10 +138,10 @@ class UpdateReport:
     # Always False now: cwcli never runs bench's bench-wide update, so nothing can
     # set maintenance_mode/pause_scheduler bench-wide. Kept so documents keep their shape.
     bench_left_in_maintenance: bool | None
-    # The frappe path's checks before `bench update --reset` (core.update_preflight).
-    # Empty for another app; under --no-preflight, only the data-loss guard's
-    # findings. A blocked preflight ran NOTHING: no backup, no maintenance flag, no
-    # reset.
+    # The checks before anything moves: the frappe path's (core.update_preflight)
+    # plus, for every named app, the dependency tier (what its new code declares).
+    # Under --no-preflight, only the data-loss guard's findings. A blocked preflight
+    # ran NOTHING: no backup, no maintenance flag, no reset, no pull.
     preflight: list[PreflightFinding]
     preflight_blocked: bool
     # The frappe path's data-loss guard (core.update_preflight.local_work): apps whose

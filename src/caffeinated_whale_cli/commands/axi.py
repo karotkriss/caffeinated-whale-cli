@@ -612,9 +612,9 @@ def _choice_error_message(choice: Choice) -> str:
 
 
 _AXI_WITH_DEPS_HELP = (
-    "Consent to fetch and install the apps this one requires (required_apps), "
-    "dependencies first. Without it a missing required app is exit 2 naming this flag. "
-    "There is no Frappe-range override here; the human verb has it."
+    "Also fetch and install the apps this one requires (required_apps), dependencies "
+    "first. Without it a missing required app is exit 2 naming this flag. There is no "
+    "Frappe-range override here; the human verb has it."
 )
 _AXI_DEP_SOURCE_HELP = (
     "APP=URL: the repository for a required app the apps catalog holds several of. " "Repeatable."
@@ -624,7 +624,8 @@ _AXI_DEP_SOURCE_HELP = (
 def _axi_dep_sources(values: list[str] | None) -> dict[str, str] | None:
     """``--dep-source app=url`` values; a malformed one is a TOON usage error, exit 2."""
     found: dict[str, str] = {}
-    for value in values or []:
+    # A direct call leaves Typer's default object here: "not given".
+    for value in values if isinstance(values, list) else []:
         app_name, sep, url = str(value).partition("=")
         if not sep or not app_name.strip() or not url.strip():
             typer.echo(toon.kv("error", f"--dep-source takes APP=URL, got '{value}'"))
@@ -940,7 +941,7 @@ def axi_new_site(
             bench=bench,
             apps=[a for a in picked if a not in urls],
             fetch=urls,
-            with_deps=with_deps,
+            with_deps=with_deps is True,
             dep_sources=_axi_dep_sources(dep_source),
             default=default,
             developer_mode=dev_mode,
@@ -1026,7 +1027,7 @@ def axi_new_bench(
             install_erpnext=erpnext,
             apps=list(apps or []),
             db_root_password=db_root_password or _os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
-            with_deps=with_deps,
+            with_deps=with_deps is True,
             dep_sources=_axi_dep_sources(dep_source),
             after_init=lambda path: _cache.recache_project(project, bench_path=path, warnings=[]),
         )
@@ -2060,7 +2061,7 @@ def axi_apps_update(
             force=force,
             preflight=not no_preflight,
             fix_branches=fix_branches,
-            with_deps=with_deps,
+            with_deps=with_deps is True,
             dep_sources=_axi_dep_sources(dep_source),
         )
     except CwcliError as error:
@@ -2414,7 +2415,7 @@ def axi_apps_install(
             # already-installed refusal (require_absent) stays the default.
             require_absent=not if_not_present,
             if_not_present=if_not_present,
-            with_deps=with_deps,
+            with_deps=with_deps is True,
             dep_sources=_axi_dep_sources(dep_source),
             on_event=_checkout_narrate,
         )
