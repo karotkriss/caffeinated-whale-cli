@@ -1381,7 +1381,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     Message(
                         "requirements.failed",
                         "bench setup requirements did not finish, so no site was migrated "
-                        "onto the new code; its own output names the cause.",
+                        "onto the new code; its own output names the cause. Fix that "
+                        "dependency and re-run, or re-run with --skip-requirements to "
+                        "migrate without the reinstall.",
                     )
                 )
 

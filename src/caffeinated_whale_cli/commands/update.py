@@ -556,6 +556,16 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         tail = (pull_tails or {}).get("bench", "").strip()
         for text_line in tail.splitlines()[-4:]:
             console.print("      " + text_line, markup=False, highlight=False, style="dim")
+    elif report.requirements == "unknown":
+        console.print(
+            "[bold red]✗[/bold red] bench setup requirements did not report an outcome, "
+            "so no site was migrated onto the new code"
+        )
+    if report.requirements in ("failed", "unknown"):
+        console.print(
+            "  Fix the failing dependency and re-run, or re-run with --skip-requirements "
+            "to migrate without the reinstall."
+        )
 
     if report.failed_maintenance_enable:
         console.print(

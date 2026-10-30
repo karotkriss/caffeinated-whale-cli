@@ -2132,4 +2132,5 @@ def test_update_failed_requirements_shows_the_cause_without_verbose(monkeypatch,
     out = " ".join(capsys.readouterr().out.split())
     assert "bench setup requirements failed, so no site was migrated" in out
     assert "error running: bench setup requirements --python" in out
+    assert "re-run with --skip-requirements" in out
     assert not any("migrate" in c for c in container.calls)
