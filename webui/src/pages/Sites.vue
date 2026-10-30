@@ -19,7 +19,7 @@ import StatusDot from '../components/StatusDot.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath } from '../data/fleet'
 import { catalogApp } from '../data/catalog'
-import { openApp } from '../data/app-panel'
+import { appOpener } from '../data/app-panel'
 import { openAction } from '../data/dialog'
 import { loadSiteIcons, refreshSiteIcons, siteIcons, siteIcon } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
@@ -55,7 +55,7 @@ const rows = computed(() => {
           inst: i,
           bench: b,
           site: s,
-          apps: s.installed_apps.map(parseApp).filter((a) => a.name !== 'frappe'),
+          apps: s.installed_apps.map(parseApp).filter((a) => a.name !== 'frappe').map((a) => ({ ...a, open: appOpener(i.host, a.name) })),
           running: !!i.container_running,
           serving: token === 'running' || token === 'degraded',
           token,
@@ -184,7 +184,9 @@ const hasMenu = (r) => !r.host && (!!r.pub || (canPublish() && isPublicName(r.si
           <ListCell class="gap-1.5 overflow-hidden max-lg:hidden" @click.stop.prevent>
             <span v-if="!item.apps.length" class="text-sm text-ink-gray-4">frappe only</span>
             <Tooltip v-for="a in item.apps.slice(0, 6)" :key="a.name" :text="`${catalogApp(a.name).title}${a.version ? ' · ' + a.version : ''}${a.branch ? ' · ' + a.branch : ''}`">
-              <button class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-outline-gray-4" @click.stop.prevent="openApp(catalogApp(a.name))"><AppIcon :app="catalogApp(a.name)" size="sm" /></button>
+              <button v-if="a.open" class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-outline-gray-4" @click.stop.prevent="a.open()"><AppIcon :app="catalogApp(a.name)" size="sm" /></button>
+              <!-- A remote site's icon only shows: the app panel is this machine's catalog. -->
+              <span v-else><AppIcon :app="catalogApp(a.name)" size="sm" /></span>
             </Tooltip>
             <span v-if="item.apps.length > 6" class="text-xs tabular-nums text-ink-gray-5">+{{ item.apps.length - 6 }}</span>
           </ListCell>

@@ -1,7 +1,8 @@
 """What the web UI makes of what a remote host sends, executed under node: the page
 prefills the Add host form from a pairing string (webui/src/data/hosts.js; the daemon
-validates it again), and it renders a remote site's icon (webui/src/data/site-icons.js)
-from a URL that remote chose.
+validates it again), it renders a remote site's icon (webui/src/data/site-icons.js)
+from a URL that remote chose, and a remote host's app row never opens this machine's
+app panel (webui/src/data/app-panel.js).
 
 The real modules are imported; only their browser-side imports (vue, the session
 store) are stubbed, the way tests/test_webui_start_gate.py loads the page's data modules."""
@@ -23,7 +24,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is no
 
 STUBS = {
     "vue": "export const reactive = (o) => o\nexport const computed = (fn) => ({ get value() { return fn() } })",
-    "./session": "export const session = {}",
+    "./session": "export const session = {}\nexport const refuseBelow = () => false",
 }
 
 HOOKS = """
@@ -110,3 +111,18 @@ def test_a_remote_icon_can_name_only_the_remotes_own_logo_route(node):
     assert seen.pop("/api/v1/apps/logo/0123abcd4567ef89.png") == "/api/v1/hosts/build%20box/apps/logo/0123abcd4567ef89.png"
     assert seen.pop("local") == "/api/v1/apps/logo/a.png"  # this machine's own daemon, as it sent it
     assert seen == {url: None for url in urls[1:]}
+
+
+def test_a_remote_hosts_app_row_never_opens_this_machines_app_panel(node):
+    """The app panel is a view over this machine's apps catalog, and its buttons act on this
+    machine's instances: a remote host's app row gets no opener (no pointer, nothing that
+    opens it), while a local row still opens the panel on that app."""
+    seen = node(
+        f"const panel = await import({json.dumps((DATA / 'app-panel.js').as_uri())})\n"
+        "const remote = panel.appOpener('build box', 'frappe')\n"
+        "const local = panel.appOpener(null, 'frappe')\n"
+        "const before = panel.appPanel.open\n"
+        "local()\n"
+        "return { remote: remote ?? null, before, open: panel.appPanel.open, app: panel.appPanel.app.name }"
+    )
+    assert seen == {"remote": None, "before": False, "open": True, "app": "frappe"}
