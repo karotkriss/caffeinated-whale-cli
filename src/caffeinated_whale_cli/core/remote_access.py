@@ -239,8 +239,9 @@ def allow(
     """Grant ``hub``: write (or replace) its restricted line and build the pairing string.
 
     Every field the hub will check in the pairing string is checked here first, so
-    nothing is written for a grant the hub would refuse to add. Replacing a hub's line
-    ends the bridges it still runs under the old one, as ``revoke`` does.
+    nothing is written for a grant the hub would refuse to add, and neither is a grant
+    another line carrying the same key would shadow. Replacing a hub's line ends the
+    bridges it still runs under the old one, as ``revoke`` does.
     """
     hub = check_hub_name(hub)
     cap = check_role(cap)
@@ -262,6 +263,23 @@ def allow(
     )
     line = grant_line(key_type=key_type, key_blob=key_blob, hub=hub, command=command)
     lines = _read_lines(path)
+    for number, existing in enumerate(lines, 1):
+        stripped = existing.strip()
+        if (
+            stripped
+            and not stripped.startswith("#")
+            and key_blob in stripped.split()
+            and not _is_grant_for(existing, hub)
+        ):
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "remote.key_in_use",
+                f"Line {number} of {path} already carries this key. sshd applies the first line "
+                "that matches a key, so that line, not the restricted grant, would decide what "
+                "the hub's key may do here.",
+                hint="Remove that line (or give the hub a key of its own), then run cwcli remote "
+                "allow again.",
+            )
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
     _write_lines(path, kept + [line])

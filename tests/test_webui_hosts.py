@@ -1,8 +1,10 @@
-"""The web UI's reading of a pairing string (webui/src/data/hosts.js), executed under
-node: the page prefills the Add host form from it and the daemon validates it again.
+"""What the web UI makes of what a remote host sends, executed under node: the page
+prefills the Add host form from a pairing string (webui/src/data/hosts.js; the daemon
+validates it again), and it renders a remote site's icon (webui/src/data/site-icons.js)
+from a URL that remote chose.
 
-The real module is imported; only its browser-side imports (vue, the api module) are
-stubbed, the way tests/test_webui_start_gate.py loads the page's data modules."""
+The real modules are imported; only their browser-side imports (vue, the session
+store) are stubbed, the way tests/test_webui_start_gate.py loads the page's data modules."""
 
 from __future__ import annotations
 
@@ -15,19 +17,21 @@ import pytest
 
 from caffeinated_whale_cli.core import hosts
 
-MODULE = Path(__file__).resolve().parents[1] / "webui" / "src" / "data" / "hosts.js"
+DATA = Path(__file__).resolve().parents[1] / "webui" / "src" / "data"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 STUBS = {
     "vue": "export const reactive = (o) => o\nexport const computed = (fn) => ({ get value() { return fn() } })",
-    "./api": "export const getJson = async () => ({})\nexport const postJson = async () => ({})",
+    "./session": "export const session = {}",
 }
 
 HOOKS = """
 const STUBS = %s
 export async function resolve(specifier, context, next) {
   if (specifier in STUBS) return { url: `stub:${specifier}`, shortCircuit: true }
+  // Vite resolves the page's extensionless imports; node needs the file name.
+  if (specifier.startsWith('.') && !/\\.\\w+$/.test(specifier)) specifier += '.js'
   return next(specifier, context)
 }
 export async function load(url, context, next) {
@@ -38,18 +42,17 @@ export async function load(url, context, next) {
 
 
 @pytest.fixture
-def read(tmp_path):
+def node(tmp_path):
+    """Run ``body`` (the inside of an async function) with the stubs registered and
+    return what it returns, through JSON."""
     hooks = tmp_path / "hooks.mjs"
     hooks.write_text(HOOKS % json.dumps(STUBS))
     register = tmp_path / "register.mjs"
     register.write_text(f"import {{ register }} from 'node:module'\nregister({json.dumps(hooks.as_uri())})\n")
 
-    def _read(text: str):
-        script = (
-            f"const {{ readPairing }} = await import({json.dumps(MODULE.as_uri())})\n"
-            f"console.log(JSON.stringify(readPairing({json.dumps(text)})))\n"
-        )
-        out = subprocess.run(
+    def _run(body: str):
+        script = f"const out = await (async () => {{ {body} }})()\nconsole.log(JSON.stringify(out ?? null))\n"
+        done = subprocess.run(
             ["node", "--import", register.as_uri(), "--input-type=module"],
             input=script,
             capture_output=True,
@@ -57,16 +60,53 @@ def read(tmp_path):
             check=True,
             timeout=30,
         )
-        return json.loads(out.stdout)
+        return json.loads(done.stdout)
 
-    return _read
+    return _run
 
 
-def test_the_page_reads_what_the_remote_printed(read):
+def _read(node, text: str):
+    return node(
+        f"const {{ readPairing }} = await import({json.dumps((DATA / 'hosts.js').as_uri())})\n"
+        f"return readPairing({json.dumps(text)})"
+    )
+
+
+def test_the_page_reads_what_the_remote_printed(node):
     fields = {"v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "10.9.8.7", "port": 2222, "name": "Build box", "host_key": "ssh-ed25519 AAAA"}
-    assert read(hosts.make_pairing(fields)) == fields
+    assert _read(node, hosts.make_pairing(fields)) == fields
 
 
 @pytest.mark.parametrize("text", ["", "cwcli-remote:v1:", "cwcli-remote:v1:!!!", "words", "cwcli-remote:v2:e30"])
-def test_anything_else_reads_as_nothing(read, text):
-    assert read(text) is None
+def test_anything_else_reads_as_nothing(node, text):
+    assert _read(node, text) is None
+
+
+def test_a_remote_icon_can_name_only_the_remotes_own_logo_route(node):
+    """A remote chooses its icon URLs. Rewritten under the hub's forward as they came, a
+    path that climbs out of it (`..` the browser resolves) would have this page fetch a
+    route of the hub itself, with the signed-in user's cookie, whenever Sites renders."""
+    urls = [
+        "/api/v1/apps/logo/0123abcd4567ef89.png",
+        "/api/v1/../../../../api/v1/apps/refs?url=https://attacker.example/x",
+        "/api/v1/apps/logo/../../hosts/other/backups/download?key=k",
+        "/api/v1/apps/logo/..",
+        "/api/v1/apps/logo/%2e%2e",
+        "/api/v1/backups/download?key=k",
+        "https://attacker.example/x.png",
+        "",
+    ]
+    seen = node(
+        f"const icons = await import({json.dumps((DATA / 'site-icons.js').as_uri())})\n"
+        "const seen = {}\n"
+        f"for (const url of {json.dumps(urls)}) {{\n"
+        "  icons.siteIconsLanded({ icons: { 'p/s.localhost': { logo: { url, kind: 'favicon' } } } }, 'build box')\n"
+        "  seen[url] = icons.siteIcon('p', 's.localhost', 'build box')?.url ?? null\n"
+        "}\n"
+        "icons.siteIconsLanded({ icons: { 'p/s.localhost': { logo: { url: '/api/v1/apps/logo/a.png' } } } })\n"
+        "seen.local = icons.siteIcon('p', 's.localhost')?.url ?? null\n"
+        "return seen"
+    )
+    assert seen.pop("/api/v1/apps/logo/0123abcd4567ef89.png") == "/api/v1/hosts/build%20box/apps/logo/0123abcd4567ef89.png"
+    assert seen.pop("local") == "/api/v1/apps/logo/a.png"  # this machine's own daemon, as it sent it
+    assert seen == {url: None for url in urls[1:]}

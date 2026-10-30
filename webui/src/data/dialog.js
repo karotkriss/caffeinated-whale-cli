@@ -105,7 +105,7 @@ async function openSite(ctx) {
   if (ctx.site) query.set('site', ctx.site)
   try {
     const probe = await getJsonUrl(ctx.project, query, ctx.host)
-    if (!probe.url) {
+    if (!/^https?:\/\/[^/]/i.test(probe.url || '')) {
       toast.warning(`${ctx.site} is not serving`, { description: 'No published port resolves for this bench; nothing was guessed.' })
       return null
     }

@@ -166,6 +166,25 @@ class TestSshArgv:
         with pytest.raises(CwcliError):
             t.argv(self._rec(user="-oProxyCommand=x"))
 
+    def test_a_stream_ended_from_another_thread_is_closed_by_its_reader(self):
+        """Closing the pipe from another thread frees its descriptor while the reader
+        still selects on it, and a new pipe or socket can take that number; cancel only
+        ends ssh, the reader sees the end of the stream, and the pipe stays its to close."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        channel = hosts.SshChannel(proc)
+        got = []
+        reader = threading.Thread(target=lambda: got.append(channel.read(10, 20)))
+        reader.start()
+        time.sleep(0.1)
+        channel.cancel()
+        reader.join(5)
+        try:
+            assert got == [b""] and not proc.stdout.closed
+        finally:
+            channel.close()
+
     def test_a_failed_ssh_is_classified_from_its_own_stderr_through_a_real_pipe(self):
         """A regression the fakes could not see: the channel's stderr was read AFTER the
         channel was closed, so every ssh failure read as a message-less ``unreachable``
@@ -204,6 +223,8 @@ class FakeChannel:
         self.chunks = list(chunks)
         self.sent = b""
         self.closed = False
+        self.cancelled = False
+        self.timeouts = []
         self._failure = failure
         self._hang_after = hang_after
         self._reads = 0
@@ -215,6 +236,7 @@ class FakeChannel:
         pass
 
     def read(self, size, timeout):
+        self.timeouts.append(timeout)
         if self._hang_after is not None and self._reads >= self._hang_after:
             return None
         self._reads += 1
@@ -222,6 +244,10 @@ class FakeChannel:
 
     def failure(self):
         return self._failure
+
+    def cancel(self):
+        self.cancelled = True
+        self.chunks.clear()
 
     def close(self):
         self.closed = True
@@ -502,6 +528,10 @@ class HeldChannel(FakeChannel):
             return self.chunks.pop(0)
         return b"" if self._gone.wait(timeout) else None
 
+    def cancel(self):
+        super().cancel()
+        self._gone.set()
+
     def close(self):
         super().close()
         self._gone.set()
@@ -561,6 +591,19 @@ class TestManager:
             manager.request("build-box", "GET", "/api/v1/instances", [])
         assert e.value.state == hosts.UNREACHABLE and link.status.state == hosts.CONNECTED
 
+    def test_a_forwarded_request_waits_as_long_as_the_bridge_waits_for_its_daemon(self):
+        """A remote writes a backup's whole tar before its head; the probe's 25 seconds
+        would cut that download off while the remote finished it for nobody."""
+        forwarded = FakeChannel([_http(200, b"{}")])
+        transport = FakeTransport([forwarded])
+        manager = self._manager(transport, [])
+        self._linked(manager, transport)
+        manager.request("build-box", "GET", "/api/v1/backups/download?key=k", [])
+        assert forwarded.timeouts[0] > hosts.CONNECT_TIMEOUT_S + 100
+        probe = FakeChannel([_bridge_answer()])
+        hosts.probe_host(FakeTransport([probe]), _rec())
+        assert probe.timeouts[0] <= hosts.CONNECT_TIMEOUT_S
+
     def test_a_request_on_a_connection_whose_grant_changed_is_asked_again_on_a_fresh_one(self):
         first, fresh = FakeChannel([_revoked()]), FakeChannel([_http(200, b'{"data": 1}')])
         transport = FakeTransport([first, fresh])
@@ -588,7 +631,8 @@ class TestManager:
                 assert time.monotonic() < deadline, link.status
                 time.sleep(0.01)
             view = manager.check("build-box", timeout=5)
-            assert view["state"] == hosts.CONNECTED and held.closed
+            assert view["state"] == hosts.CONNECTED and held.cancelled
+            assert held.closed  # by the link's own thread, once its read saw the end
         finally:
             link.stop()
             link.thread.join(3)
@@ -642,13 +686,15 @@ class TestManager:
         link._current = hosts.HttpResponse(stale, 200, "OK", [], b"")
         view = manager.check("build-box")
         assert view["state"] == hosts.DAEMON_DOWN and view["reason"] == "not running"
-        assert stale.closed is True and transport.opened == 1
+        # Ended, never closed from this thread: the link's own thread closes what it reads.
+        assert stale.cancelled is True and stale.closed is False and transport.opened == 1
         assert published[0][0] == "host_link"
         # Still connected according to a fresh probe: nothing is touched.
         transport.channels.append(FakeChannel([_bridge_answer()]))
         link.status.state = hosts.CONNECTED
         link._current = hosts.HttpResponse(FakeChannel([]), 200, "OK", [], b"")
-        assert manager.check("build-box")["state"] == hosts.CONNECTED and not link._current._channel.closed
+        assert manager.check("build-box")["state"] == hosts.CONNECTED
+        assert not link._current._channel.cancelled and not link._current._channel.closed
 
     def test_resync_starts_links_for_stored_hosts_and_stops_removed_ones(self):
         published = []
