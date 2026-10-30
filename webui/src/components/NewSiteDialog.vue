@@ -15,6 +15,7 @@ import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, 
 import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
+import { inventoryState, splitBenchApps } from '../data/bench-apps'
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
@@ -73,8 +74,11 @@ watch(() => newSiteDialog.open, (open) => {
   project.value = first?.project || newSiteDialog.project || null
   host.value = first?.host || newSiteDialog.host || null
   bench.value = newSiteDialog.bench
+  // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
+  if (project.value) loadDetail(project.value, { host: host.value, force: true })
+  loadCatalog({ fresh: true })
 })
-watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h }) })
+watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
 const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
@@ -85,16 +89,25 @@ const benches = computed(() => detailOf(project.value, host.value)?.data?.benche
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${benchName(b)} · ${b.sites.length} ${b.sites.length === 1 ? 'site' : 'sites'}`, value: String(b.index) })))
 watch(benchOptions, (opts) => { if (opts.length && (bench.value == null || !opts.some((o) => o.value === bench.value))) bench.value = opts[0].value }, { immediate: true })
 const theBench = computed(() => benches.value.find((b) => String(b.index) === String(bench.value)))
-const benchApps = computed(() => (theBench.value?.available_apps || []).filter((a) => a !== 'frappe'))
 // Captain note 49: the picker lists the bench's apps AND the catalog's remote apps; a
 // remote pick is fetched onto the bench first (`cwcli apps install --fetch-only`), then
 // installed on the new site like any other. Remote picks are keyed `remote:<catalog key>`.
-const remoteApps = computed(() => catalogApps.value.filter((a) => a.source?.url && a.name !== 'frappe' && !benchApps.value.includes(a.name)))
+// An app the bench already holds (by name or by repository) is never a remote pick.
+const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [], project: project.value, bench: bench.value, host: host.value }))
+const benchApps = computed(() => split.value.onBench)
+const remoteApps = computed(() => split.value.remote)
+const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
 const remoteApp = (v) => (String(v).startsWith('remote:') ? remoteApps.value.find((a) => a.key === v.slice(7)) : null)
 const pickerOptions = computed(() => [
   ...benchApps.value.map((a) => ({ value: a, label: catalogApp(a).title, app: catalogApp(a), hint: catalogApp(a).description || '', section: 'On this bench' })),
   ...remoteApps.value.map((a) => ({ value: `remote:${a.key}`, name: a.name, label: a.title, app: a, hint: `fetched from ${hostLabel(a.source.host)} first · ${a.source.url}`, section: 'From app sources' })),
 ])
+// A fresh read can move a remote pick onto the bench: keep it, by its app name.
+watch(pickerOptions, (opts) => {
+  const ok = new Set(opts.map((o) => o.value))
+  const kept = apps.value.map((v) => (ok.has(v) ? v : catalogApps.value.find((a) => `remote:${a.key}` === v)?.name)).filter((v) => ok.has(v))
+  if (kept.length !== apps.value.length || kept.some((v, i) => v !== apps.value[i])) apps.value = [...new Set(kept)]
+})
 const chipApp = (v) => remoteApp(v) || catalogApp(v)
 const appNames = computed(() => apps.value.map((v) => remoteApp(v)?.name || v))
 const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url).filter(Boolean))
@@ -251,8 +264,10 @@ async function start() {
               <AppIcon :app="chipApp(a)" size="xs" />{{ chipApp(a).title }}<span v-if="remoteApp(a)" class="text-xs text-ink-gray-4">fetch</span>
               <button type="button" class="rounded p-0.5 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-gray-7" :aria-label="`Remove ${a}`" @click="toggleApp(a, false)"><span class="lucide-x size-3.5" aria-hidden="true" /></button>
             </span>
-            <Button size="sm" variant="subtle" icon-left="lucide-plus" :label="apps.length ? 'Change' : 'Choose apps'" :disabled="!pickerOptions.length" @click="pickerOpen = true" />
-            <span v-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
+            <Button size="sm" variant="subtle" icon-left="lucide-plus" :label="apps.length ? 'Change' : 'Choose apps'" :disabled="!pickerOptions.length || inventory === 'reading'" @click="pickerOpen = true" />
+            <span v-if="inventory === 'reading'" class="text-xs text-ink-gray-5">reading the bench's apps…</span>
+            <span v-else-if="inventory !== 'live'" class="text-xs text-ink-gray-5">the bench's apps could not be read live; an app it already holds is not fetched again</span>
+            <span v-else-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
           </div>
           <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" @update:model-value="(v) => (apps = v)" @update:open="pickerOpen = $event" />
         </div>

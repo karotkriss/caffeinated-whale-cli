@@ -100,6 +100,13 @@ class FakeContainer:
             dirname = self._derive_dir(shlex.split(cmd_str)[-1])
             if dirname not in self.available:
                 self.available.append(dirname)
+            # Then bench renames apps/<repo slug> to the app's real name, which fails
+            # when that directory already exists (bench/utils/app.py:get_app_name).
+            real = getattr(self, "repo_app_names", {}).get(dirname, dirname)
+            if real != dirname:
+                if real in self.available:
+                    return 1, f"OSError: [Errno 39] Directory not empty: 'apps/{dirname}'"
+                self.available[self.available.index(dirname)] = real
         if cmd_str.startswith("rm -rf apps/"):
             dirname = cmd_str[len("rm -rf apps/") :].strip().strip("'\"")
             if dirname in self.available:
@@ -114,6 +121,15 @@ class FakeContainer:
             return 0, getattr(self, "dirty", "")
         if cmd_str.strip() == "git remote":
             return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
+        if "/.git/config" in cmd_str:
+            # The remotes read: one "apps/<dir>/.git/config<TAB>url" line per remote.
+            remotes = getattr(self, "app_remotes", {})
+            return 0, "".join(
+                f"apps/{d}/.git/config\t{url}\n"
+                for d, urls in remotes.items()
+                if d in self.available
+                for url in urls
+            )
         if cmd_str.strip() == "cat sites/apps.txt":
             registered = self.available if self.apps_txt is None else self.apps_txt
             return 0, "\n".join(registered) + "\n"
@@ -491,6 +507,73 @@ def test_a_present_dir_proceeds_when_apps_txt_is_unreadable(monkeypatch, contain
 
     assert result.data.ok is True
     assert any("install-app payments" in c for c in container.calls)
+
+
+SW_URL = "https://gitlab.example.com/ministry-of-housing-and-water/chpa/single-window"
+
+
+@pytest.mark.parametrize(
+    "target, repo, app",
+    [
+        (SW_URL, "single-window", "single_window"),  # hyphen slug, underscore app
+        (f"{SW_URL}.git", "single-window", "single_window"),  # the web UI's .git spelling
+        ("https://example.com/org/housing-portal", "housing-portal", "chpa_portal"),
+    ],
+)
+@pytest.mark.parametrize("fetch_only", [True, False])
+def test_an_app_already_on_the_bench_is_not_refetched_when_its_repo_has_another_name(
+    monkeypatch, container, target, repo, app, fetch_only
+):
+    """bench get-app clones into apps/<repo slug> then renames it to the app name, so
+    a slug that is not the app name slips past bench's own "already exists" check
+    and dies on the rename (Errno 39). The app is matched by its checkout's remote,
+    the fetch is skipped, and the install uses the real app name."""
+    container.available = ["frappe", app]
+    container.app_remotes = {app: [target.replace("https://", "https://oauth2:tok@")]}
+    container.repo_app_names = {repo: app}
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", [target], sites=["a.localhost"], fetch_only=fetch_only)
+
+    assert result.data.ok is True
+    assert not any(c.startswith("bench get-app") for c in container.calls)
+    assert not any(c.startswith("rm -rf") for c in container.calls)
+    assert container.available == ["frappe", app]
+    assert any(f"install-app {app}" in c for c in container.calls) is not fetch_only
+    assert ("get-app", None, True) in [(r.action, r.site, r.ok) for r in result.data.results]
+
+
+def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, container):
+    """The bug itself, pinned through the fake: a bench copy with a DIFFERENT remote
+    is not the requested repository, so it is fetched, and bench's rename fails."""
+    container.available = ["frappe", "single_window"]
+    container.app_remotes = {"single_window": ["https://elsewhere.example/fork/single-window"]}
+    container.repo_app_names = {"single-window": "single_window"}
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", [SW_URL], fetch_only=True)
+
+    assert result.data.ok is False
+    assert any(c.startswith("bench get-app") for c in container.calls)
+    # The failed clone is cleaned up; the app already on the bench is untouched.
+    assert container.available == ["frappe", "single_window"]
+
+
+def test_a_remote_matched_dir_missing_from_apps_txt_is_refused_by_its_real_name(
+    monkeypatch, container
+):
+    container.available = ["frappe", "single_window"]
+    container.apps_txt = ["frappe"]
+    container.app_remotes = {"single_window": [SW_URL]}
+    container.fail_on = ["get-app"]
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", [SW_URL], fetch_only=True)
+
+    assert result.data.ok is False
+    assert not any(c.startswith("bench get-app") for c in container.calls)
+    w = next(w for w in result.warnings if w.code == "app.present_not_installed")
+    assert "apps/single_window" in w.text
 
 
 def test_install_partial_failure_is_a_warning_envelope_carrying_ok_false(monkeypatch, container):

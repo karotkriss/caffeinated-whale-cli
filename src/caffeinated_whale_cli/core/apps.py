@@ -43,6 +43,7 @@ from docker.errors import DockerException
 
 from ..utils import bench_sites
 from . import bench_read, credbridge, resolvers, supervision
+from .app_catalog import remote_key
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -212,6 +213,50 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     if exit_code != 0:
         return command, []
     return command, [a for a in _decode(output).split("\n") if a.strip()]
+
+
+def _app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
+    """``apps/<dir> -> {normalized remote, ...}`` for every git checkout on the bench.
+
+    Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
+    would refuse as "dubious ownership" still answers. One exec for the whole bench;
+    a failed read is an empty map (the caller falls back to the directory name).
+    """
+    script = (
+        'for f in apps/*/.git/config; do [ -f "$f" ] && '
+        'awk -v f="$f" \'$1 == "url" && $2 == "=" { print f "\\t" $3 }\' "$f"; done; true'
+    )
+    exit_code, output = frappe_container.exec_run(["sh", "-c", script], workdir=bench_path)
+    remotes: dict[str, set[str]] = {}
+    if exit_code not in (0, None):
+        return remotes
+    for line in _decode(output).splitlines():
+        path, _, url = line.partition("\t")
+        parts = path.split("/")
+        key = remote_key(url)
+        if len(parts) == 4 and key:
+            remotes.setdefault(parts[1], set()).add(key)
+    return remotes
+
+
+def _bench_copy_of(frappe_container, bench_path: str, target: str, before: set[str]) -> str | None:
+    """The ``apps/`` directory that already holds ``target``, or None to fetch it.
+
+    ``bench get-app`` clones into ``apps/<repo slug>`` and only then renames the
+    clone to the app's real name, so a repository whose slug is not its app name
+    (``single-window`` holding ``single_window``) dodges bench's own "already
+    exists" check and dies on the rename (``Directory not empty``) when the app is
+    already on the bench. Match by the checkout's remote first, so the real app
+    name is found whatever the repository is called; the slug is only a fallback
+    for a checkout whose remote cannot be read.
+    """
+    key = remote_key(target)
+    if key:
+        for name, keys in sorted(_app_remotes(frappe_container, bench_path).items()):
+            if name in before and key in keys:
+                return name
+    name = derive_app_name(target)
+    return name if name in before else None
 
 
 def _app_registered(frappe_container, bench_path: str, app_name: str) -> bool | None:
@@ -708,6 +753,7 @@ def install_apps(
             app_name = derive_app_name(target)
             command, before_apps = _available_apps(frappe_container, path)
             before = set(before_apps)
+            present = _bench_copy_of(frappe_container, path, target, before)
 
             # Idempotent fetch: if the app is already on the BENCH (its apps/ dir
             # exists), `bench get-app` fails on the existing directory, which used to
@@ -716,7 +762,8 @@ def install_apps(
             # from the per-site installed-apps guard (`_read_installed_apps` /
             # `_refuse_if_installed`): that gates a double SITE-install, this gates the
             # bench FETCH. The install-app phase below is unchanged either way.
-            if app_name in before:
+            if present is not None:
+                app_name = present
                 emit(AppsCommand(command=command))
                 # A dir under apps/ is NOT proof the app is a valid install: a leftover
                 # from an earlier fetch that cloned but failed at pip-install satisfies

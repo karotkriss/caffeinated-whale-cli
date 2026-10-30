@@ -37,7 +37,7 @@ watch(() => installSheet.open, (open) => {
 watch(project, (p) => {
   bench.value = null
   sites.value = []
-  if (p) loadDetail(p)
+  if (p) loadDetail(p, { force: true }) // the bench may have gained an app since the page loaded
 })
 const projectOptions = computed(() => localInstances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped, asks to start)`, value: i.project })))
 const benches = computed(() => details[project.value]?.data?.benches || [])
