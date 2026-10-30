@@ -85,7 +85,7 @@ watch(() => newSiteDialog.open, (open) => {
   if (!retry) return
   const a = retry.args || {}
   site.value = retry.site || ''
-  apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
+  apps.value = [...(a.apps || [])]
   makeDefault.value = !!a.default
   devMode.value = !!a.developer_mode
   publishing.value = !!a.publish && publishable.value
