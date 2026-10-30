@@ -468,6 +468,8 @@ class TestPresenceIsReportedNeverActedOn:
         (host,) = json.loads(line[6:])["hosts"]
         assert host["state"] == "daemon_down"
         assert host["instances"] and {i["overall"] for i in host["instances"]} == {"unknown"}
+        # ... down to every bench, with the reason a page shows over the last readings.
+        assert all(i["probe_error"] and {b["overall"] for b in i["benches"]} <= {"unknown"} for i in host["instances"])
         status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", {"verb": "start", "target": {"project": "p"}}, token=HUB_TOKEN)
         assert status == 409 and _code(body) == "host.not_connected"
         # Back up: the link recovers on its own and no job appeared on the remote meanwhile.

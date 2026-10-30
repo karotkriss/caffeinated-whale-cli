@@ -645,7 +645,8 @@ class TestManager:
         manager._links[link.host.id] = link
         link.status.state = hosts.CONNECTED
         link.touch()
-        manager._frame(link, "snapshot", {"instances": [{"project": "p", "overall": "running", "web_probed": True}], "jobs": [{"id": "j1"}]})
+        running = {"project": "p", "overall": "running", "web_probed": True, "container_running": True, "probe_error": None, "benches": [{"index": 0, "overall": "running", "web_http_code": "200"}]}
+        manager._frame(link, "snapshot", {"instances": [running], "jobs": [{"id": "j1"}]})
         manager._frame(link, "delta", {"project": "q", "instance": {"project": "q", "overall": "degraded"}, "removed": False})
         manager._frame(link, "job", {"id": "j2", "state": "running"})
         manager._frame(link, "metrics", {"x": 1})
@@ -659,7 +660,14 @@ class TestManager:
         snap = events["host_snapshot"]
         assert snap["stale"] is True and {i["overall"] for i in snap["instances"]} == {"unknown"}
         assert {i["project"] for i in snap["instances"]} == {"p", "q"} and [j["id"] for j in snap["jobs"]] == ["j1", "j2"]
-        assert {i["overall"] for i in manager.snapshot()[0]["instances"]} == {"unknown"}
+        # Marked the way a failed probe is, so no page reads a bench's last readings as live.
+        for listed in (snap["instances"], manager.snapshot()[0]["instances"]):
+            p = next(i for i in listed if i["project"] == "p")
+            assert p["overall"] == "unknown" and p["probe_error"] == "Build box: gone"
+            assert [b["overall"] for b in p["benches"]] == ["unknown"] and p["benches"][0]["web_http_code"] == "200"
+            assert {i["overall"] for i in listed} == {"unknown"} and all(i["probe_error"] for i in listed)
+        link._set(hosts.CONNECTING, None)
+        assert {i["probe_error"] for i in dict(published)["host_snapshot"]["instances"]} == {"Build box is connecting"}
 
     def test_a_host_whose_transport_is_off_is_shown_as_such_and_never_dialled(self):
         published = []
