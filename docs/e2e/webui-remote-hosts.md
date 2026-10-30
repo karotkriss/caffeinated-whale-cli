@@ -28,16 +28,4 @@ The same sequence is the committed real-SSH E2E, `tests/e2e/test_remote_hosts_e2
 
 ## Screenshots
 
-1280 px wide, light and dark:
-
-![Instances: both machines in one list, the host strip, the machine filter, remote cards labelled by host](webui-remote-hosts/instances-1280-light.png)
-![The same in dark](webui-remote-hosts/instances-1280-dark.png)
-![Settings > Remote hosts: the hub, the linked host with its pinned key, cap and state](webui-remote-hosts/settings-hosts-1280-light.png)
-![Settings > Remote hosts in dark](webui-remote-hosts/settings-hosts-1280-dark.png)
-![Add a remote host: the two-step pairing](webui-remote-hosts/add-host-1280-light.png)
-![A remote instance's page, routed to its own daemon](webui-remote-hosts/instance-remote-1280-light.png)
-
-390 px wide, light and dark:
-
-![Instances at 390](webui-remote-hosts/instances-390-light.png)
-![Instances at 390, dark](webui-remote-hosts/instances-390-dark.png)
+The screenshots of this run are no longer kept in the repository.

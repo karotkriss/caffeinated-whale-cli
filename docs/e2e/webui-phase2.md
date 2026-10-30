@@ -18,12 +18,6 @@ The browser was driven with `chrome-devtools-axi`; one screenshot at a time; the
 
 ## Screenshots
 
-1280 px wide:
-
-![Jobs](webui-phase2/jobs-1280.png)
-![Interrupted migrate job](webui-phase2/job-interrupted-1280.png)
-![New instance wizard](webui-phase2/init-wizard-1280.png)
-
 390 px wide:
 
 ![Jobs at 390](webui-phase2/jobs-390.png)
