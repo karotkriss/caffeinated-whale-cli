@@ -19,20 +19,26 @@ MODULE = Path(__file__).resolve().parents[1] / "webui" / "src" / "premium" / "sc
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
-# A document with (or without) the View Transitions API that records what the module does.
+# A document with (or without) the View Transitions API that records what the module does. A skipped
+# transition rejects `ready`, as the browser does when a newer transition replaces it before it animates.
 FAKE_DOC = """
-const calls = { animate: [], applied: 0, started: 0 }
+const calls = { animate: [], applied: 0, started: 0, unhandled: [] }
+process.on('unhandledRejection', (reason) => calls.unhandled.push(String(reason)))
 const doc = {
   documentElement: { dataset: {}, animate: (frames, opts) => { calls.animate.push({ frames, opts }); return {} } },
 }
-if (SUPPORTED) doc.startViewTransition = (cb) => { calls.started += 1; cb(); return { ready: Promise.resolve() } }
+if (SUPPORTED) doc.startViewTransition = (cb) => {
+  calls.started += 1
+  cb()
+  return { ready: SKIPPED ? Promise.reject(new Error('AbortError: Transition was skipped')) : Promise.resolve() }
+}
 """
 
 
-def _run(choice, supported=True):
+def _run(choice, supported=True, skipped=False):
     script = (
         f"import {{ transitionScheme, WIPE_MS }} from {json.dumps(MODULE.as_uri())};\n"
-        f"const SUPPORTED = {json.dumps(supported)};\n{FAKE_DOC}\n"
+        f"const SUPPORTED = {json.dumps(supported)};\nconst SKIPPED = {json.dumps(skipped)};\n{FAKE_DOC}\n"
         f"const dir = transitionScheme(() => {{ calls.applied += 1 }}, {json.dumps(choice)}, doc);\n"
         "await new Promise((r) => setTimeout(r, 0));\n"  # let `ready.then` run
         "console.log(JSON.stringify({ dir, vt: doc.documentElement.dataset.vt ?? null, ...calls, WIPE_MS }));\n"
@@ -73,6 +79,17 @@ def test_the_fallbacks_play_the_cross_fade_not_the_wipe(choice):
     assert got["dir"] == "fade" and got["vt"] == "fade"
     assert got["started"] == 1 and got["applied"] == 1
     assert got["animate"] == []  # the fade is premium.css's 200 ms rule, no JS animation
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [pytest.param(PRESS, id="wipe"), pytest.param({**PRESS, "reduced": True}, id="fade")],
+)
+def test_a_skipped_transition_leaves_no_unhandled_rejection(choice):
+    got = _run(choice, skipped=True)
+    assert got["started"] == 1 and got["applied"] == 1
+    assert got["animate"] == []
+    assert got["unhandled"] == []
 
 
 def test_without_view_transitions_the_swap_is_instant():

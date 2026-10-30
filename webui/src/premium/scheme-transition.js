@@ -28,14 +28,14 @@ export function transitionScheme(apply, choice, doc = document) {
   const root = doc.documentElement
   root.dataset.vt = dir
   const vt = doc.startViewTransition(apply)
-  if (dir === 'wipe') {
-    // The new snapshot sweeps in under the feathered 105deg mask (premium.css) while the old one holds still.
-    vt.ready
-      .then(() => root.animate(
+  vt.ready
+    .then(() => {
+      // The new snapshot sweeps in under the feathered 105deg mask (premium.css) while the old one holds still.
+      if (dir === 'wipe') root.animate(
         { maskPosition: ['100% 0', '0 0'], webkitMaskPosition: ['100% 0', '0 0'] },
         { duration: WIPE_MS, easing: EASE, pseudoElement: '::view-transition-new(root)' },
-      ))
-      .catch(() => {}) // a transition skipped by a newer one rejects `ready`; nothing to undo
-  }
+      )
+    })
+    .catch(() => {}) // a transition skipped by a newer one rejects `ready`; nothing to undo
   return dir
 }
