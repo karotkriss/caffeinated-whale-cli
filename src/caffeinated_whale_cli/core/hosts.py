@@ -31,8 +31,10 @@ page disables actions on it, and nothing here starts, stops or retries work
 because a host went quiet. The version rule: actions are allowed only while the
 remote's ``protocol`` equals this daemon's; a different one keeps the read-only
 views and names the side to update. On a shared install only the cwcli service
-account's daemon runs links, because it alone can read the hub key: a group member's
-own web UI lists every host as ``service_account_only`` and dials none of them.
+account's daemon runs links in the shared home, because it alone can read the hub key:
+a group member's own web UI there lists every host as ``service_account_only`` and
+dials none of them. A member opted back to a private home (``CWCLI_HOME``) owns that
+home's key and store, so it runs a hub of its own as a per-user install does.
 """
 
 from __future__ import annotations
@@ -510,9 +512,13 @@ def repin_host(host_id: str, host_key: str) -> HostRecord:
 
 
 def not_service_account() -> bool:
-    """On a shared install, whether this process is someone other than the cwcli service
-    account, whose daemon holds the links (its key, its pins, its control sockets)."""
-    if not shared_home.shared_mode() or not hasattr(os, "getuid"):
+    """On a shared install, whether this process works in the shared home as someone other
+    than the cwcli service account, whose daemon holds the links there (its key, its pins,
+    its control sockets). A private home (``CWCLI_HOME`` always wins) is its owner's own."""
+    state = shared_home.state_dir()
+    if state is None or not hasattr(os, "getuid"):
+        return False
+    if config_utils.cwcli_home().resolve() != state.resolve():
         return False
     service_uid = shared_home.service_uid()
     return service_uid is not None and os.getuid() != service_uid
@@ -1443,28 +1449,42 @@ class HostManager:
                 self.resync()
 
     def resync(self) -> None:
-        """Make the running links match the store and the transports that are on. On a
-        shared install a daemon that is not the service account's runs none: it cannot
-        read the hub key, so every host is listed with the reason and nothing is dialled."""
+        """Make the running links match the store and the transports that are on, reading
+        the store under this manager's lock so concurrent resyncs never apply a stale one.
+
+        A host that left the store, or whose id a new enrollment took (a different
+        ``added_at``; a re-pin keeps it), is announced removed and its last-known
+        instances and jobs are dropped, with or without a running link. On a shared
+        install a daemon working in the shared home as someone other than the service
+        account runs no link: it cannot read the hub key, so every host is listed with
+        the reason and nothing is dialled."""
         if self._stop.is_set():
             return
-        try:
-            records = {r.id: r for r in list_hosts()}
-        except CwcliError:
-            return
-        self._mtime = store_mtime()
-        member = not_service_account()
-        try:
-            available = self._transports_fn()
-        except Exception:
-            available = {}
         with self._lock:
+            try:
+                records = {r.id: r for r in list_hosts()}
+            except CwcliError:
+                return
+            self._mtime = store_mtime()
+            member = not_service_account()
+            try:
+                available = self._transports_fn()
+            except Exception:
+                available = {}
             self._transports = available
             self._off_state = (
                 (SERVICE_ACCOUNT_ONLY, SERVICE_ACCOUNT_REASON)
                 if member
                 else (TRANSPORT_OFF, TRANSPORT_OFF_REASON)
             )
+            known = {host_id: link.host for host_id, link in self._links.items()}
+            known.update(self._off)
+            for host_id in set(known) | set(self._instances) | set(self._jobs):
+                rec, old = records.get(host_id), known.get(host_id)
+                if rec is None or (old is not None and rec.added_at != old.added_at):
+                    self._instances.pop(host_id, None)
+                    self._jobs.pop(host_id, None)
+                    self._publish("host_removed", {"host": host_id})
             for host_id, link in list(self._links.items()):
                 rec = records.get(host_id)
                 if member or rec is None or rec != link.host or rec.transport not in available:
@@ -1474,10 +1494,6 @@ class HostManager:
                         link.transport.close(link.host)
                     except Exception:
                         pass
-                    if rec is None:
-                        self._instances.pop(host_id, None)
-                        self._jobs.pop(host_id, None)
-                        self._publish("host_removed", {"host": host_id})
             self._off = {}
             for host_id, rec in records.items():
                 if host_id in self._links:
@@ -1573,56 +1589,52 @@ class HostManager:
         return self.get(link.host.id) is link
 
     def _state_changed(self, link: HostLink) -> None:
-        if not self._current_link(link):
-            return
-        view = link.view()
-        self._publish("host_link", view)
-        if view["state"] not in READABLE_STATES:
-            with self._lock:
-                instances = _unknownify(self._instances.get(link.host.id, []), view)
-                jobs = list(self._jobs.get(link.host.id, []))
-            self._publish(
-                "host_snapshot",
-                {
-                    "host": link.host.id,
-                    "instances": instances,
-                    "jobs": jobs,
-                    "stale": True,
-                    "last_seen": view["last_seen"],
-                },
-            )
+        with self._lock:
+            if not self._current_link(link):
+                return
+            view = link.view()
+            self._publish("host_link", view)
+            if view["state"] not in READABLE_STATES:
+                self._publish(
+                    "host_snapshot",
+                    {
+                        "host": link.host.id,
+                        "instances": _unknownify(self._instances.get(link.host.id, []), view),
+                        "jobs": list(self._jobs.get(link.host.id, [])),
+                        "stale": True,
+                        "last_seen": view["last_seen"],
+                    },
+                )
 
     def _frame(self, link: HostLink, event: str, data: Any) -> None:
-        if not self._current_link(link):
-            return
         host_id = link.host.id
-        if event == "snapshot" and isinstance(data, dict):
-            instances = [i for i in data.get("instances") or [] if isinstance(i, dict)]
-            jobs = [j for j in data.get("jobs") or [] if isinstance(j, dict)]
-            with self._lock:
+        with self._lock:
+            if not self._current_link(link):
+                return
+            if event == "snapshot" and isinstance(data, dict):
+                instances = [i for i in data.get("instances") or [] if isinstance(i, dict)]
+                jobs = [j for j in data.get("jobs") or [] if isinstance(j, dict)]
                 self._instances[host_id] = instances
                 self._jobs[host_id] = jobs
-            self._publish(
-                "host_snapshot",
-                {"host": host_id, "instances": instances, "jobs": jobs, "stale": False},
-            )
-        elif event == "delta" and isinstance(data, dict):
-            project = data.get("project")
-            with self._lock:
+                self._publish(
+                    "host_snapshot",
+                    {"host": host_id, "instances": instances, "jobs": jobs, "stale": False},
+                )
+            elif event == "delta" and isinstance(data, dict):
+                project = data.get("project")
                 rows = [i for i in self._instances.get(host_id, []) if i.get("project") != project]
                 if not data.get("removed") and isinstance(data.get("instance"), dict):
                     rows.append(data["instance"])
                 self._instances[host_id] = rows
-            self._publish("host_delta", {**data, "host": host_id})
-        elif event == "job" and isinstance(data, dict):
-            with self._lock:
+                self._publish("host_delta", {**data, "host": host_id})
+            elif event == "job" and isinstance(data, dict):
                 jobs = [j for j in self._jobs.get(host_id, []) if j.get("id") != data.get("id")]
                 if not data.get("removed"):
                     jobs.append(data)
                 self._jobs[host_id] = jobs
-            self._publish("host_job", {**data, "host": host_id})
-        else:
-            self._publish("host_event", {"host": host_id, "event": event, "data": data})
+                self._publish("host_job", {**data, "host": host_id})
+            else:
+                self._publish("host_event", {"host": host_id, "event": event, "data": data})
 
     # -- requests ---------------------------------------------------------
 

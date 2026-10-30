@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -216,6 +217,38 @@ class TestHostsRoutes:
         assert core_hosts.known_hosts_path().read_text() == f"cwcli-host-build-box {HOST_KEY}\n"
         status, body, _ = _req(daemon, "/api/v1/hosts", {"op": "remove", "id": "build-box"}, bearer=True)
         assert status == 200 and body["data"]["removed"] == "build-box" and core_hosts.list_hosts() == []
+
+    def test_a_host_check_waiting_on_a_slow_transport_never_holds_up_a_settings_write(self, daemon):
+        """Check now on a host that just went dark waits on the network for a probe's
+        length; a settings or integration write must not queue behind it."""
+        entered, release = threading.Event(), threading.Event()
+
+        class Slow:
+            id = "ssh"
+
+            def open(self, host):
+                entered.set()
+                release.wait(10)
+                raise core_hosts.LinkError(core_hosts.UNREACHABLE, "timed out")
+
+            def close(self, host):
+                pass
+
+        rec = core_hosts.add_host(PAIRING)
+        link = core_hosts.HostLink(rec, Slow(), on_state=daemon.manager._state_changed, on_frame=daemon.manager._frame)
+        link.status.state = core_hosts.CONNECTED
+        daemon.manager._links[rec.id] = link
+        checking = threading.Thread(target=_req, args=(daemon, "/api/v1/hosts", {"op": "check", "id": rec.id}), kwargs={"bearer": True})
+        checking.start()
+        try:
+            assert entered.wait(5)
+            started = time.monotonic()
+            status, body, _ = _req(daemon, "/api/v1/settings", {"setting": "tips.disable"}, bearer=True)
+            assert status == 200, body
+            assert time.monotonic() - started < 3
+        finally:
+            release.set()
+            checking.join(10)
 
     def test_an_unknown_op_is_a_usage_error(self, daemon):
         status, body, _ = _req(daemon, "/api/v1/hosts", {"op": "explode", "id": "x"}, bearer=True)

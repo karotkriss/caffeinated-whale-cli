@@ -669,6 +669,53 @@ class TestManager:
         link._set(hosts.CONNECTING, None)
         assert {i["probe_error"] for i in dict(published)["host_snapshot"]["instances"]} == {"Build box is connecting"}
 
+    def _off_after_a_link(self, published):
+        """A host that had a running link with a snapshot, then the integration was turned
+        off: the link stops, and its last-known state stays (a quiet host's rule)."""
+        available = {"ssh": FakeTransport([])}
+        manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: dict(available))
+        rec = hosts.add_host(hosts.make_pairing(PAIRING_FIELDS), now=1.0)
+        manager.resync()
+        manager._frame(manager.get(rec.id), "snapshot", {"instances": [{"project": "p", "overall": "running"}], "jobs": [{"id": "j1"}]})
+        available.clear()
+        manager.resync()
+        (off,) = manager.snapshot()
+        assert manager.get(rec.id) is None and off["state"] == hosts.TRANSPORT_OFF
+        assert [i["project"] for i in off["instances"]] == ["p"] and [j["id"] for j in off["jobs"]] == ["j1"]
+        return manager, rec
+
+    def test_a_host_removed_while_it_has_no_link_is_announced_and_its_last_known_state_dropped(self):
+        """With the integration off, or on a group member's web UI, a host has no running
+        link; its removal must still reach every page and take its cached state with it."""
+        published = []
+        manager, rec = self._off_after_a_link(published)
+        try:
+            published.clear()
+            hosts.remove_host(rec.id)
+            manager.resync()
+            assert published == [("host_removed", {"host": rec.id})]
+            assert manager.view()["hosts"] == [] and manager.snapshot() == []
+        finally:
+            manager.stop()
+
+    @pytest.mark.parametrize("one_resync", [False, True], ids=["resync-each", "one-resync"])
+    def test_a_host_added_later_under_the_same_id_inherits_nothing(self, one_resync):
+        """A different machine added under the same label reuses the freed id, also when
+        the removal and the add land in one resync (two CLI commands within one watch)."""
+        published = []
+        manager, rec = self._off_after_a_link(published)
+        try:
+            hosts.remove_host(rec.id)
+            if not one_resync:
+                manager.resync()
+            again = hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.8"}), now=2.0)
+            manager.resync()
+            assert again.id == rec.id and ("host_removed", {"host": rec.id}) in published
+            (snap,) = manager.snapshot()
+            assert snap["address"] == "10.9.8.8" and snap["instances"] == [] and snap["jobs"] == []
+        finally:
+            manager.stop()
+
     def test_a_host_whose_transport_is_off_is_shown_as_such_and_never_dialled(self):
         published = []
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
@@ -812,9 +859,11 @@ class TestSharedInstall:
 
     @pytest.fixture
     def shared(self, tmp_path, monkeypatch):
+        """A shared install whose shared home is the one in use (no private CWCLI_HOME)."""
         marker = tmp_path / "shared.toml"
         marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "state"}"\n')
         monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+        monkeypatch.delenv("CWCLI_HOME", raising=False)
 
     def test_the_pins_are_shared_with_the_group_like_the_store(self, shared):
         hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
@@ -850,6 +899,23 @@ class TestSharedInstall:
             manager.request("build-box", "GET", "/api/v1/instances", [])
         assert (e.value.state, e.value.reason) == (hosts.SERVICE_ACCOUNT_ONLY, hosts.SERVICE_ACCOUNT_REASON)
         assert transport.opened == 0
+
+    def test_a_member_opted_back_to_a_private_home_runs_a_hub_of_its_own(self, shared, tmp_path, monkeypatch):
+        """CWCLI_HOME always wins on a shared box, and that home's key, pins and store are
+        the member's own: its links run as on a per-user install, with no note."""
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid() + 1)
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "mine"))
+        assert hosts.not_service_account() is False and hosts.shared_mode_note() is None
+        if shutil.which("ssh-keygen") is not None:
+            assert hosts.ensure_hub_key("hub-mine").startswith("ssh-ed25519 ")
+            assert hosts.hub_key_path().is_relative_to(tmp_path / "mine")
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
+        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager.resync()
+        try:
+            assert manager.get("build-box") is not None
+        finally:
+            manager.stop()
 
     def test_the_service_accounts_own_web_ui_still_runs_its_links(self, shared, monkeypatch):
         monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid())
