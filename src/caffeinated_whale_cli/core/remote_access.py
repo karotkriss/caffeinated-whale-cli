@@ -307,8 +307,9 @@ def _owner_name(uid: int) -> str:
         return f"uid {uid}"
 
 
-def _write_lines(path: Path, lines: list[str]) -> None:
-    """Rewrite ``authorized_keys`` atomically without changing who can read it.
+def _write_lines(path: Path, lines: list[str]) -> int:
+    """Rewrite ``authorized_keys`` atomically without changing who can read it, and return
+    the uid that owned it before (this process's, for a file this call creates).
 
     sshd opens the file as its owner, so the rewrite keeps every other line byte for byte,
     the file's mode and, under root, its owner and group; a file another account owns is
@@ -352,6 +353,14 @@ def _write_lines(path: Path, lines: list[str]) -> None:
         if tmp is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
+    return st.st_uid if st is not None else (me or 0)
+
+
+def _bridge_uids(rewritten: set[int]) -> set[int]:
+    """Whose bridges a revoke or a replaced grant ends: this account's own, or under root
+    exactly the owners of the grant files it rewrote, never every account's."""
+    me = os.getuid() if hasattr(os, "getuid") else 0
+    return set(rewritten) if me == 0 else {me}
 
 
 def read_host_key(path: str | None = None) -> tuple[str, str] | None:
@@ -455,7 +464,7 @@ def allow(
             )
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
-    _write_lines(path, kept + [line])
+    owner = _write_lines(path, kept + [line])
     _record_grant(
         cwcli_home,
         hub,
@@ -469,7 +478,7 @@ def allow(
             "at": time.time(),
         },
     )
-    ended = end_bridges(hub, proc_root=proc_root) if replaced else []
+    ended = end_bridges(hub, uids=_bridge_uids({owner}), proc_root=proc_root) if replaced else []
 
     warnings: list[str] = []
     host_key = read_host_key(host_key_file)
@@ -581,18 +590,16 @@ def _grants_in(keys_path: Path, lines: list[str]) -> list[HubGrant]:
     return out
 
 
-def bridge_pids(hub: str, *, proc_root: Path = Path("/proc")) -> list[int]:
-    """This user's running bridge processes for ``hub`` (every user's under root, which may
-    rewrite any user's grant), matched on exact argv tokens (never a name pattern that could
-    catch another hub's process, or another user's for anyone but root)."""
-    uid = (os.getuid() or None) if hasattr(os, "getuid") else None
+def bridge_pids(hub: str, *, uids: set[int], proc_root: Path = Path("/proc")) -> list[int]:
+    """The running bridge processes for ``hub`` of the accounts in ``uids``, matched on exact
+    argv tokens (never a name pattern that could catch another hub's process)."""
     found: list[int] = []
     if proc_root.is_dir():
         for entry in proc_root.iterdir():
             if not entry.name.isdigit():
                 continue
             try:
-                if uid is not None and entry.stat().st_uid != uid:
+                if entry.stat().st_uid not in uids:
                     continue
                 argv = (entry / "cmdline").read_bytes().split(b"\0")
             except OSError:
@@ -609,9 +616,9 @@ def bridge_pids(hub: str, *, proc_root: Path = Path("/proc")) -> list[int]:
         return found
     for row in listing.splitlines():
         parts = row.split(None, 2)
-        if len(parts) < 3 or not parts[0].isdigit():
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
-        if uid is not None and parts[1].isdigit() and int(parts[1]) != uid:
+        if int(parts[1]) not in uids:
             continue
         # ``ps args`` joins argv with spaces, unquoted: a plain split is the exact-token
         # read (shlex would raise on another process's stray quote).
@@ -629,18 +636,21 @@ def _is_bridge_argv(tokens: list[str], hub: str) -> bool:
         return False
 
 
-def end_bridges(hub: str, *, proc_root: Path = Path("/proc"), grace: float = 2.0) -> list[int]:
-    """SIGTERM every running bridge of ``hub``, then SIGKILL what is still there."""
-    pids = bridge_pids(hub, proc_root=proc_root)
+def end_bridges(
+    hub: str, *, uids: set[int], proc_root: Path = Path("/proc"), grace: float = 2.0
+) -> list[int]:
+    """SIGTERM the running bridges of ``hub`` of the accounts in ``uids``, then SIGKILL what
+    is still there."""
+    pids = bridge_pids(hub, uids=uids, proc_root=proc_root)
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
     deadline = time.monotonic() + grace
-    while time.monotonic() < deadline and bridge_pids(hub, proc_root=proc_root):
+    while time.monotonic() < deadline and bridge_pids(hub, uids=uids, proc_root=proc_root):
         time.sleep(0.1)
-    for pid in bridge_pids(hub, proc_root=proc_root):
+    for pid in bridge_pids(hub, uids=uids, proc_root=proc_root):
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
@@ -657,8 +667,9 @@ def revoke(
     (``removed == 0``), never an error. A record that cannot be read never blocks a revoke:
     the default file is then searched. A recorded file this account cannot read, or
     another account's file it may not rewrite (anyone but root), is an error naming the
-    account to run it as (its line stays, and so does its record); the hub's bridges are
-    ended whatever happens."""
+    account to run it as (its line stays, and so does its record). This account's bridges
+    for the hub are ended whatever happens; under root, exactly those of the accounts whose
+    files it rewrote."""
     hub = check_hub_name(hub)
     home = config_utils.cwcli_home()
     try:
@@ -671,17 +682,18 @@ def revoke(
     else:
         paths = _grant_files([recorded] if recorded else [])
     files: dict[str, int] = {}
+    rewritten: set[int] = set()
     try:
         for path in paths:
             lines = _lines_of(path, hub, entry)
             kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
             if len(kept) != len(lines):
-                _write_lines(path, kept)
+                rewritten.add(_write_lines(path, kept))
             files[str(path)] = len(lines) - len(kept)
         if recorded is not None and str(recorded) in files:
             _record_grant(home, hub, None)
     finally:
-        ended = end_bridges(hub, proc_root=proc_root)
+        ended = end_bridges(hub, uids=_bridge_uids(rewritten), proc_root=proc_root)
     return Revocation(hub=hub, removed=sum(files.values()), ended_pids=ended, files=files)
 
 
