@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 
 from docker.errors import DockerException
@@ -1123,6 +1123,137 @@ def checkout_app(
 # ------------------------------------------------------------------------- uninstall
 
 
+def _requires(required_apps: list[str], app: str) -> bool:
+    """Frappe's own test for "one of these ``required_apps`` entries is ``app``".
+
+    Mirrors ``frappe.installer.parse_required_app_name``: an entry may be ``app``,
+    ``org/app``, a git URL, or any of those with ``@branch``, and only the parsed
+    name is compared. Older Frappe matched the raw string as a substring and so
+    refuses a little more; the after-check in :func:`_verify_uninstalled` reports
+    those refusals as failures.
+    """
+    for entry in required_apps:
+        name = entry.rstrip("/").split("#")[0]
+        name = name.rsplit("/", 1)[-1].rsplit(":", 1)[-1].split("@")[0]
+        if name.removesuffix(".git") == app:
+            return True
+    return False
+
+
+def _refuse_required_uninstall(
+    frappe_container, bench_path: str, apps: list[str], sites: list[str], *, emit: OnEvent
+) -> None:
+    """Refuse, before anything runs, an uninstall Frappe would refuse.
+
+    ``bench uninstall-app`` will not remove an app another installed app lists in
+    its ``required_apps`` hook, but it only prints a warning and exits 0, so the
+    refusal cannot be read from the exit code. Asked here in ONE exec for every
+    target site, with the apps removed in the order given: an app requested
+    earlier in ``apps`` is gone by the time a later one runs, so it does not count
+    as a dependent. An unreadable site fails closed, the install guard's rule.
+    """
+    try:
+        batch = bench_read.read_benches(
+            frappe_container, [bench_path], sites=sites, installed=True, required=True
+        )
+    except DockerException as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "exec.start_failed",
+            f"Could not start the command in the container: {e}",
+        ) from e
+    emit(
+        AppsCommand(
+            command=(
+                f"read installed and required apps of {', '.join(sites)} in {bench_path} "
+                f"-> exit {batch.exit_code}"
+            )
+        )
+    )
+    read = batch.benches.get(bench_path)
+    by_site = {site.name: site for site in (read.sites or [])} if read is not None else {}
+    blocked: list[str] = []
+    for site in sites:
+        found = by_site.get(site)
+        # Empty is unreadable too: every real site has at least frappe.
+        if found is None or not found.installed or found.required is None:
+            cause = batch.errors.get(bench_path) or (found.error if found else None)
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "app.uninstall_state_unknown",
+                f"Could not read the installed apps and their required apps on site "
+                f"'{site}' ({bench_path}: {cause or 'no answer'}), so it cannot be "
+                "confirmed that no installed app still requires the app(s) to uninstall.",
+                hint=(
+                    f"Check the site exists and is readable: 'cwcli apps list <project> "
+                    f"--site {site}'."
+                ),
+            )
+        removed: set[str] = set()
+        for app in apps:
+            dependents = [
+                other
+                for other in found.installed
+                if other != app
+                and other not in removed
+                and _requires(found.required.get(other, []), app)
+            ]
+            if dependents and app in found.installed:
+                blocked.append(f"'{app}' is required by {', '.join(dependents)} on {site}")
+            removed.add(app)
+    if blocked:
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "app.required_by_installed",
+            f"Cannot uninstall: {'; '.join(blocked)}. Frappe refuses to remove an app "
+            "another installed app requires.",
+            hint="Uninstall the dependent app(s) first, or list them before it in the same call.",
+        )
+
+
+def _verify_uninstalled(
+    frappe_container,
+    bench_path: str,
+    results: list[AppResult],
+    warnings: list[Message],
+    *,
+    emit: OnEvent,
+) -> list[AppResult]:
+    """Fail every ``uninstall-app`` row whose app is still installed on its site.
+
+    The exit code alone is not the truth: Frappe declines some uninstalls with a
+    printed warning and exit 0. A site whose installed apps cannot be read leaves
+    its rows unconfirmed, which is reported as a failure too, never as success.
+    """
+    sites = list(dict.fromkeys(r.site for r in results if r.ok and r.site is not None))
+    if not sites:
+        return results
+    installed = _read_installed_apps(frappe_container, bench_path, sites, emit=emit)
+    verified: list[AppResult] = []
+    for r in results:
+        if r.ok and r.site is not None:
+            site_apps, cause = installed.get(r.site, (None, "no answer"))
+            if site_apps is None:
+                warnings.append(
+                    Message(
+                        "app.uninstall_unverified",
+                        f"Could not confirm '{r.app}' left site '{r.site}' ({cause}).",
+                    )
+                )
+                r = replace(r, ok=False)
+            elif r.app in site_apps:
+                warnings.append(
+                    Message(
+                        "app.still_installed",
+                        f"'{r.app}' is still installed on site '{r.site}': "
+                        "bench uninstall-app exited 0 but did not remove it.",
+                    )
+                )
+                r = replace(r, ok=False)
+        verified.append(r)
+    return verified
+
+
 def uninstall_apps(
     project_name: str,
     apps: list[str],
@@ -1162,6 +1293,9 @@ def uninstall_apps(
             warnings=warnings,
         )
 
+    # Before the consent gate: there is nothing to consent to if Frappe would refuse.
+    _refuse_required_uninstall(frappe_container, path, apps, target_sites, emit=emit)
+
     if not consent:
         return Result(
             status=Status.NEEDS_CHOICE,
@@ -1191,6 +1325,7 @@ def uninstall_apps(
             )
             results.append(AppResult(app=app_name, site=site, action="uninstall-app", ok=code == 0))
 
+    results = _verify_uninstalled(frappe_container, path, results, warnings, emit=emit)
     changed_sites = [
         r.site for r in results if r.action == "uninstall-app" and r.ok and r.site is not None
     ]

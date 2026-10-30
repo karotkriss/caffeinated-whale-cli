@@ -520,6 +520,8 @@ def uninstall_apps(
 
     report = result.data
     assert report is not None  # OK/WARNING always carries a report
+    for warning in result.warnings:
+        stderr_console.print(f"[bold yellow]Warning:[/bold yellow] {warning.text}")
     if any(r.ok for r in report.results):
         _refresh_cache(project_name, verbose, report.bench_path)
 
