@@ -6,6 +6,7 @@ import { ensureRunning } from './start-gate'
 import { JOB_LABEL } from './jobs'
 import { refuseBelow } from './session'
 import { hostRefusal } from './dialog'
+import { onHost } from './hosts'
 
 export const jobDialog = reactive({
   open: false,
@@ -16,6 +17,20 @@ export const jobDialog = reactive({
   running: false,
   error: null,
 })
+
+const titles = {
+  init: 'Create an instance',
+  'apps-install': 'Install apps',
+  'apps-update': 'Update apps',
+  backup: 'Back up site',
+  migrate: 'Migrate site',
+  'run-tests': 'Run tests',
+  build: 'Build assets',
+  'setup-wizard': 'Complete setup wizard',
+  'self-update': 'Update cwcli',
+}
+// The dialog's title names the machine the job runs on when it is not this one.
+export const jobDialogTitle = () => (titles[jobDialog.verb] || 'Start job') + onHost(jobDialog.context.host)
 
 const defaults = {
   init: {

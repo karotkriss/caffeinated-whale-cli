@@ -12,6 +12,8 @@ export const hostList = computed(() => Object.values(hosts.byId).sort((a, b) => 
 export const hasHosts = computed(() => hostList.value.length > 0)
 export const host = (id) => (id ? hosts.byId[id] || null : null)
 export const hostName = (id) => hosts.byId[id]?.name || id || 'this machine'
+// How a dialog names the machine it acts on: " on <host>" for a remote one, "" for this one.
+export const onHost = (id) => (id ? ` on ${hostName(id)}` : '')
 // Actions on a remote need its link `connected`, which includes an equal protocol.
 export const actionsAllowed = (id) => !id || !!hosts.byId[id]?.actions_allowed
 export const hostReadable = (id) => !id || !!hosts.byId[id]?.readable

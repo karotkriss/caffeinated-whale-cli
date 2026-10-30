@@ -6,7 +6,8 @@
 //          'typed'   the dialog's confirm stays disabled until the exact name of the
 //                    target is typed back (confirmTarget, else site > bench > instance)
 // fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox',
-//          show?: (ctx) => bool (only then is it shown and sent), default?: its value when shown }
+//          show?: (ctx) => bool (only then is it shown and sent), default?: its value when shown (or (ctx) => value),
+//          note?: (ctx) => a one-line note under a checkbox, or nothing }
 // danger:  a destructive verb - the confirm button and the menu entry render red
 // Every entry shows its cwcli command (the design system's "show the command" rule).
 //
@@ -221,8 +222,8 @@ export const ACTIONS = {
     cli: (c) => `cwcli rm-site ${q(c.project)} ${q(c.site)}${benchFlag(c)}`,
     says: (c) =>
       `Backs up ${c.site} (database and files) into cwcli's backup store, then drops it: its database and files are deleted. If the backup fails, nothing is dropped. The instance and its other sites keep running.`,
-    fields: [DB_ROOT_FIELD, { name: 'unpublish', type: 'checkbox', default: true, show: (c) => !!c.published, label: 'Also unpublish it: remove the DNS record, proxy host and certificate cwcli made for it, once the site is dropped' }],
-    request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: c.published && v?.unpublish ? { unpublish: true } : {}, consent: true, ...secrets(v) }),
+    fields: [DB_ROOT_FIELD, { name: 'unpublish', type: 'checkbox', default: (c) => !!c.published, show: (c) => c.published !== false, note: (c) => (c.published === null ? `Whether ${c.site} is published could not be read from its machine; tick this if it is.` : null), label: 'Also unpublish it: remove the DNS record, proxy host and certificate cwcli made for it, once the site is dropped' }],
+    request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: c.published !== false && v?.unpublish ? { unpublish: true } : {}, consent: true, ...secrets(v) }),
     done: (c) => `${c.site} dropped`,
   },
   'site.publish': {
