@@ -30,7 +30,9 @@ with its last-known instances kept (each shown ``unknown``) and a last-seen time
 page disables actions on it, and nothing here starts, stops or retries work
 because a host went quiet. The version rule: actions are allowed only while the
 remote's ``protocol`` equals this daemon's; a different one keeps the read-only
-views and names the side to update.
+views and names the side to update. On a shared install only the cwcli service
+account's daemon runs links, because it alone can read the hub key: a group member's
+own web UI lists every host as ``service_account_only`` and dials none of them.
 """
 
 from __future__ import annotations
@@ -76,6 +78,7 @@ HOST_KEY_CHANGED = "host_key_changed"
 DAEMON_DOWN = "daemon_down"
 VERSION_MISMATCH = "version_mismatch"
 TRANSPORT_OFF = "transport_off"
+SERVICE_ACCOUNT_ONLY = "service_account_only"
 LINK_STATES = (
     CONNECTING,
     CONNECTED,
@@ -85,6 +88,11 @@ LINK_STATES = (
     DAEMON_DOWN,
     VERSION_MISMATCH,
     TRANSPORT_OFF,
+    SERVICE_ACCOUNT_ONLY,
+)
+TRANSPORT_OFF_REASON = "The Remote hosts over SSH integration is off."
+SERVICE_ACCOUNT_REASON = (
+    "Remote hosts run from the cwcli service account's web UI; only it can read the hub key."
 )
 # The states in which the hub forwards a request at all; actions need CONNECTED.
 READABLE_STATES = (CONNECTED, VERSION_MISMATCH)
@@ -498,20 +506,6 @@ def repin_host(host_id: str, host_key: str) -> HostRecord:
     return out
 
 
-def rename_host(host_id: str, name: str) -> HostRecord:
-    final = check_name(name)
-    with _lock:
-        data = _load()
-        rec = data["hosts"].get(host_id)
-        if rec is None:
-            raise CwcliError(ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'.")
-        rec["name"] = final
-        _save(data)
-        out = _record(host_id, rec)
-    notify_change()
-    return out
-
-
 # ------------------------------------------------------------ hub identity
 
 
@@ -529,9 +523,9 @@ def shared_mode_note() -> str | None:
     if not not_service_account():
         return None
     return (
-        "This is a shared install: the web UI's links run as the cwcli service account, with "
-        "its key. A check from this account is not what the web UI sees; run hub commands as "
-        "the service account, or use Settings > Remote hosts."
+        "This is a shared install: remote hosts run from the cwcli service account's web UI, "
+        "with its key. A check from this account is not what that web UI sees; run hub "
+        "commands as the service account, or use Settings > Remote hosts in its web UI."
     )
 
 
@@ -570,8 +564,8 @@ def ensure_hub_key(name: str | None = None) -> str:
             "hosts.not_service_account",
             "This is a shared install: the hub key belongs to the cwcli service account, whose "
             "daemon dials the remotes, and ssh refuses a key that account cannot read alone.",
-            hint="Turn on the Remote hosts over SSH integration in the web UI (it creates the "
-            "key), or run this command as the service account.",
+            hint="Run this command as the cwcli service account, or turn on the Remote hosts "
+            "over SSH integration in that account's web UI (its test creates the key).",
         )
     keygen = shutil.which("ssh-keygen")
     if keygen is None:
@@ -1187,7 +1181,6 @@ class HostLink:
             "added_at": host.added_at,
             "added_by": host.added_by,
             **asdict(status),
-            "protocol_ok": status.state == CONNECTED,
             "actions_allowed": status.state == CONNECTED,
             "readable": status.state in READABLE_STATES,
         }
@@ -1414,7 +1407,8 @@ class HostManager:
         self._transports_fn = transports_fn
         self._lock = threading.RLock()
         self._links: dict[str, HostLink] = {}
-        self._off: dict[str, HostRecord] = {}  # hosts whose transport is off
+        self._off: dict[str, HostRecord] = {}  # hosts this daemon runs no link for
+        self._off_state = (TRANSPORT_OFF, TRANSPORT_OFF_REASON)
         self._instances: dict[str, list[dict]] = {}
         self._jobs: dict[str, list[dict]] = {}
         self._transports: dict[str, Transport] = {}
@@ -1449,7 +1443,9 @@ class HostManager:
                 self.resync()
 
     def resync(self) -> None:
-        """Make the running links match the store and the transports that are on."""
+        """Make the running links match the store and the transports that are on. On a
+        shared install a daemon that is not the service account's runs none: it cannot
+        read the hub key, so every host is listed with the reason and nothing is dialled."""
         if self._stop.is_set():
             return
         try:
@@ -1457,15 +1453,21 @@ class HostManager:
         except CwcliError:
             return
         self._mtime = store_mtime()
+        member = not_service_account()
         try:
             available = self._transports_fn()
         except Exception:
             available = {}
         with self._lock:
             self._transports = available
+            self._off_state = (
+                (SERVICE_ACCOUNT_ONLY, SERVICE_ACCOUNT_REASON)
+                if member
+                else (TRANSPORT_OFF, TRANSPORT_OFF_REASON)
+            )
             for host_id, link in list(self._links.items()):
                 rec = records.get(host_id)
-                if rec is None or rec != link.host or rec.transport not in available:
+                if member or rec is None or rec != link.host or rec.transport not in available:
                     del self._links[host_id]
                     link.stop()
                     try:
@@ -1480,7 +1482,7 @@ class HostManager:
             for host_id, rec in records.items():
                 if host_id in self._links:
                     continue
-                transport = available.get(rec.transport)
+                transport = None if member else available.get(rec.transport)
                 if transport is None:
                     self._off[host_id] = rec
                     self._publish("host_link", self._off_view(rec))
@@ -1498,6 +1500,7 @@ class HostManager:
     # -- views ------------------------------------------------------------
 
     def _off_view(self, rec: HostRecord) -> dict[str, Any]:
+        state, reason = self._off_state
         return {
             "id": rec.id,
             "name": rec.name,
@@ -1508,14 +1511,13 @@ class HostManager:
             "host_key_fingerprint": rec.fingerprint(),
             "added_at": rec.added_at,
             "added_by": rec.added_by,
-            "state": TRANSPORT_OFF,
-            "reason": "The Remote hosts over SSH integration is off.",
+            "state": state,
+            "reason": reason,
             "since": None,
             "last_seen": None,
             "cap": None,
             "remote": None,
             "drops_10m": 0,
-            "protocol_ok": False,
             "actions_allowed": False,
             "readable": False,
         }
@@ -1637,8 +1639,9 @@ class HostManager:
         later); any other failure is this request's, never the link's."""
         link = self.get(host_id)
         if link is None:
-            if self.link_view(host_id) is not None:
-                raise LinkError(TRANSPORT_OFF, "the Remote hosts over SSH integration is off")
+            view = self.link_view(host_id)
+            if view is not None:
+                raise LinkError(view["state"], view["reason"])
             raise CwcliError(ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'.")
         try:
             return _ask(

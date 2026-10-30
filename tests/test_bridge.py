@@ -317,7 +317,7 @@ class TestTheRealExchange:
         assert seen["headers"]["authorization"] == f"Bearer {TOKEN}"
         assert seen["headers"]["x-cwcli-delegated-user"] == f"alice@{HUB}"
         assert seen["headers"]["x-cwcli-delegated-role"] == "operator"
-        assert seen["headers"]["x-cwcli-via"] == "hub"
+        assert seen["headers"]["x-cwcli-hub"] == HUB
         assert seen["headers"]["host"].startswith("127.0.0.1:")
         assert "cookie" not in seen["headers"]
         # The daemon's own bytes come back untouched; the hub decides what to relay.

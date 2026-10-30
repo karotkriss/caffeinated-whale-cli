@@ -52,7 +52,6 @@ export const addHost = (fields) => post({ op: 'add', ...fields })
 export const removeHost = (id) => post({ op: 'remove', id })
 export const checkHost = (id) => post({ op: 'check', id })
 export const repinHost = (id, host_key) => post({ op: 'repin', id, host_key })
-export const renameHost = (id, name) => post({ op: 'rename', id, name })
 
 // The link states (core/hosts.py). Machine words keep their spelling in tooltips; the
 // label is the short human form the page shows beside the host's name.
@@ -65,6 +64,7 @@ export const LINK = {
   daemon_down: { label: 'cwcli not running there', theme: 'amber', dot: 'bg-surface-amber-7' },
   version_mismatch: { label: 'different cwcli version', theme: 'amber', dot: 'bg-surface-amber-7' },
   transport_off: { label: 'integration off', theme: 'gray', dot: 'bg-surface-gray-5' },
+  service_account_only: { label: 'service account only', theme: 'gray', dot: 'bg-surface-gray-5' },
 }
 export const linkLook = (state) => LINK[state] || LINK.connecting
 
