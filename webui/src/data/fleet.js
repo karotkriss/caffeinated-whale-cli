@@ -17,7 +17,7 @@
 import { reactive, computed, watch } from 'vue'
 import { apiBase, getJson } from './api'
 import { session, recheckMeta } from './session'
-import { applyJob, seedJobs, dropHostJobs } from './jobs'
+import { applyJob, seedJobs, dropHostJobs, keepHostJobs } from './jobs'
 import { catalogLanded } from './catalog'
 import { applyMetricsFrame } from './metrics'
 import { siteIconsLanded } from './site-icons'
@@ -25,7 +25,7 @@ import { updatesLanded } from './updates'
 import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
 import { loadPublications, publicationsLanded } from './publish'
-import { seedHost, applyHostLink, dropHost, hostName } from './hosts'
+import { replaceHosts, applyHostLink, dropHost, hostName } from './hosts'
 
 export const fleet = reactive({
   instances: {},
@@ -78,8 +78,10 @@ function openStream() {
     const body = JSON.parse(e.data)
     if (fleet.connection === 'reconnecting') recheckMeta()
     const next = Object.fromEntries(body.instances.map((i) => [i.project, tag(i, null)]))
-    for (const h of body.hosts || []) {
-      seedHost(h)
+    const listed = body.hosts || []
+    replaceHosts(listed)
+    keepHostJobs(new Set(listed.map((h) => h.id)))
+    for (const h of listed) {
       for (const i of h.instances || []) next[ikey(h.id, i.project)] = tag(i, h.id)
       seedJobs(h.jobs || [], h.id)
     }
@@ -101,7 +103,7 @@ function openStream() {
     const body = JSON.parse(e.data)
     replaceHost(body.host, body.instances)
     if (body.jobs) seedJobs(body.jobs, body.host)
-    for (const i of body.instances || []) loadDetail(i.project, { host: body.host })
+    if (!body.stale) for (const i of body.instances || []) loadDetail(i.project, { host: body.host })
   })
   source.addEventListener('host_delta', (e) => {
     const body = JSON.parse(e.data)

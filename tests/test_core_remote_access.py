@@ -41,6 +41,7 @@ def _allow(keys, host_key_file, **kw):
         home=kw.pop("home", keys.parent.parent / ".cwcli"),
         state_path=kw.pop("state_path", "/home/u/.cwcli/run/ui.json"),
         host_key_file=str(host_key_file),
+        proc_root=kw.pop("proc_root", keys.parent),
         **kw,
     )
 
@@ -53,7 +54,9 @@ class TestAllow:
         assert line.endswith(" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm cwcli-hub:hub-office")
         assert "hub comment" not in line  # the hub's own comment is dropped
         assert f"--keys {keys}" in line and "--state /home/u/.cwcli/run/ui.json" in line
-        assert grant.cap == "operator" and grant.replaced is False
+        # The command names the key it serves, so the bridge can require this exact line.
+        assert f"--key-fp {hosts.fingerprint(*KEY.split()[:2])}\"" in line
+        assert grant.cap == "operator" and grant.replaced is False and grant.ended_pids == []
 
     def test_the_files_get_the_modes_sshd_insists_on(self, keys, host_key_file):
         _allow(keys, host_key_file)
@@ -115,6 +118,19 @@ class TestAllow:
         assert grant.fields["host_key_fingerprint"].startswith("SHA256:")
         assert grant.warnings == []
 
+    def test_a_label_or_user_the_hub_would_refuse_is_refused_before_anything_is_written(self, keys, host_key_file, monkeypatch):
+        """The hub validates every pairing field before applying any override, so a label
+        it refuses would make the printed pairing useless after the line was written."""
+        for label in ("Chris's Mac", "build (EU)"):
+            with pytest.raises(CwcliError) as e:
+                _allow(keys, host_key_file, name=label)
+            assert e.value.code == "host.name"
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "DOMAIN\\someone")
+        with pytest.raises(CwcliError) as e:
+            _allow(keys, host_key_file, name="Build box")
+        assert e.value.code == "host.user"
+        assert not keys.exists()
+
     def test_a_missing_host_key_is_a_loud_warning_and_an_empty_pin(self, keys, tmp_path):
         grant = _allow(keys, tmp_path / "nope.pub", address="10.0.0.1")
         assert hosts.parse_pairing(grant.pairing)["host_key"] is None
@@ -174,6 +190,26 @@ class TestGrantsAndRevocation:
         assert done.ended_pids == [4001]
         assert sent == [(4001, signal.SIGTERM)]
         assert (proc / "4002").exists() and (proc / "4003").exists()
+
+    def test_replacing_a_hubs_line_ends_the_bridges_it_still_runs_under_the_old_one(self, keys, host_key_file, tmp_path, monkeypatch):
+        """A new cap or key reaches new channels through the bridge's own check; the
+        stream a hub already holds is a bridge started under the old line, so it ends."""
+        proc = tmp_path / "proc"
+        self._proc(proc, 4001, [sys.executable, "-m", "caffeinated_whale_cli.bridge", "--hub", HUB, "--max-role", "admin"])
+        self._proc(proc, 4002, [sys.executable, "-m", "caffeinated_whale_cli.bridge", "--hub", "hub-home", "--max-role", "admin"])
+        sent: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            sent.append((pid, sig))
+            import shutil
+
+            shutil.rmtree(proc / str(pid))
+
+        monkeypatch.setattr(os, "kill", fake_kill)
+        assert _allow(keys, host_key_file, cap="admin", proc_root=proc).ended_pids == []  # nothing replaced
+        grant = _allow(keys, host_key_file, cap="viewer", proc_root=proc)
+        assert grant.replaced is True and grant.ended_pids == [4001]
+        assert sent == [(4001, signal.SIGTERM)] and (proc / "4002").exists()
 
     def test_bridge_pids_match_exact_argv_tokens_not_substrings(self, tmp_path):
         proc = tmp_path / "proc"

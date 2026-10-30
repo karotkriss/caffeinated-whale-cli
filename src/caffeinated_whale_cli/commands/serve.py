@@ -1469,14 +1469,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._refuse_role(needed):
             return
         if routed is not None:
-            self._forward(
-                routed[0],
-                routed[1],
-                parsed.query,
-                method="POST",
-                body=raw,
-                content_type=self.headers.get("Content-Type") or "application/json",
-            )
+            self._forward(routed[0], routed[1], parsed.query, method="POST", body=raw)
             return
         try:
             if parsed.path == "/api/v1/actions":
@@ -2598,22 +2591,16 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _forward(
-        self,
-        host_id: str,
-        rest: str,
-        query: str,
-        *,
-        method: str,
-        body: bytes = b"",
-        content_type: str | None = None,
+        self, host_id: str, rest: str, query: str, *, method: str, body: bytes = b""
     ) -> None:
         """One request to ``/api/v1/<rest>`` on a remote host, through its transport.
 
         The hub builds the forwarded headers itself: the signed-in user and their
-        role (the bridge appends ``@<hub>`` and lowers the role to the cap), the
-        content type and nothing the browser sent. An action (POST) needs the host
-        ``connected``, which includes an equal protocol; a read is attempted while
-        the link is readable. The answer is relayed as data only (``_relay``).
+        role (the bridge appends ``@<hub>`` and lowers the role to the cap), the one
+        content type the hub admits, and nothing the browser sent. An action (POST)
+        needs the host ``connected``, which includes an equal protocol; a read needs
+        the link readable. Neither dials a host that is not. The answer is relayed as
+        data only (``_relay``).
         """
         first = rest.split("/", 1)[0]
         if first in _NOT_FORWARDED_FIRST or rest in _NOT_FORWARDED:
@@ -2627,17 +2614,19 @@ class _Handler(BaseHTTPRequestHandler):
                 404, ErrorKind.NOT_FOUND.value, "host.unknown", f"No remote host '{host_id}'."
             )
             return
-        if method == "POST" and view["state"] != core_hosts.CONNECTED:
+        allowed = view["state"] == core_hosts.CONNECTED if method == "POST" else view["readable"]
+        if not allowed:
             code = (
                 "host.version_mismatch"
                 if view["state"] == core_hosts.VERSION_MISMATCH
                 else "host.not_connected"
             )
+            what = "actions on it are" if method == "POST" else "reading it is"
             self._send_error(
                 409,
                 ErrorKind.CONFLICT.value,
                 code,
-                f"{view['name']} is {view['state'].replace('_', ' ')}; actions on it are not available."
+                f"{view['name']} is {view['state'].replace('_', ' ')}; {what} not available."
                 + (f" {view['reason']}" if view.get("reason") else ""),
                 host=host_id,
                 state=view["state"],
@@ -2650,7 +2639,7 @@ class _Handler(BaseHTTPRequestHandler):
             ("User-Agent", f"cwcli-hub/{__version__}"),
         ]
         if body:
-            headers.append(("Content-Type", content_type or "application/json"))
+            headers.append(("Content-Type", "application/json"))
         target = "/api/v1/" + rest + (f"?{query}" if query else "")
         try:
             resp = self.hosts.request(host_id, method, target, headers, body)
@@ -2676,7 +2665,27 @@ class _Handler(BaseHTTPRequestHandler):
         """Send a remote's answer on as DATA: JSON or an event stream as itself, an
         image under the logo route's sandboxing policy, anything else as an
         attachment - and never a cookie, a page, or a header the remote chose.
-        A compromised remote controls these bytes, so the browser is told so."""
+        A compromised remote controls these bytes, so the browser is told so, and a
+        status the page reads as the end of ITS OWN session (a 401, or a 403 asking
+        for a password change) becomes this hub's 502 naming the host."""
+        body: bytes | None = None
+        if resp.status in (401, 403):
+            try:
+                body = resp.read(_MAX_ACTION_BODY)
+            except core_hosts.LinkError as e:
+                self._send_error(
+                    502, ErrorKind.PRECONDITION.value, f"host.{e.state}", e.reason, host=host_id
+                )
+                return
+            if resp.status == 401 or _error_title(body) == "auth.password_change_required":
+                self._send_error(
+                    502,
+                    ErrorKind.PRECONDITION.value,
+                    "host.refused",
+                    f"The remote host refused the hub's request ({resp.status}).",
+                    host=host_id,
+                )
+                return
         ctype = (
             (resp.header("content-type") or "application/octet-stream")
             .split(";", 1)[0]
@@ -2695,7 +2704,9 @@ class _Handler(BaseHTTPRequestHandler):
                 ctype = "application/octet-stream"
         self.send_response(resp.status)
         self.send_header("Content-Type", ctype)
-        if resp.content_length is not None:
+        if body is not None:
+            self.send_header("Content-Length", str(len(body)))
+        elif resp.content_length is not None:
             self.send_header("Content-Length", str(resp.content_length))
         else:
             self.send_header("Connection", "close")
@@ -2713,7 +2724,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Cwcli-Host", host_id)
         self.end_headers()
         try:
-            for chunk in resp.iter_body():
+            for chunk in [body] if body is not None else resp.iter_body():
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError, core_hosts.LinkError):
@@ -2901,6 +2912,15 @@ _POST_PATHS = {
     "/api/v1/publish/check",
     "/api/v1/hosts",
 }
+
+
+def _error_title(raw: bytes) -> str | None:
+    """The first error title of an envelope body, else None."""
+    try:
+        errors = json.loads(raw.decode("utf-8")).get("errors")
+        return str(errors[0].get("title"))
+    except (ValueError, AttributeError, TypeError, IndexError, KeyError):
+        return None
 
 
 def _host_route(path: str) -> tuple[str, str] | None:

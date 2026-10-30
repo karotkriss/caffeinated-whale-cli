@@ -4,13 +4,17 @@
 A grant is ONE line in the invoking user's ``authorized_keys``::
 
     restrict,command="<python> -m caffeinated_whale_cli.bridge --hub <name> --max-role <cap>
-        --home <cwcli home> --state <ui state file> --keys <this file>" <type> <key> cwcli-hub:<name>
+        --home <cwcli home> --state <ui state file> --keys <this file> --key-fp <SHA256:...>"
+        <type> <key> cwcli-hub:<name>
 
 ``restrict`` turns off port forwarding, agent forwarding, X11 and the pty, and the
 forced command means the key can run the bridge (``caffeinated_whale_cli.bridge``)
 and nothing else: a shell, a different command, or a forward to another port are
 all refused by sshd itself. The cap in that line is the most the hub may do here,
-however the hub's own user is ranked; the bridge lowers every claim to it.
+however the hub's own user is ranked; the bridge lowers every claim to it. The
+command names the key's fingerprint, so the bridge can require the exact line a
+channel runs under: a new cap or a new key for the hub refuses the channels of a
+connection that authenticated against the line before.
 
 The public key the hub hands over is parsed, not pasted: its options and comment
 are dropped and the blob must decode as the type it claims, so a key that arrives
@@ -20,9 +24,9 @@ it and never trusts the first connection.
 
 ``revoke`` removes the line AND ends the bridge processes that hub still has running
 (OpenSSH checks ``authorized_keys`` only when a connection authenticates, so an open
-multiplexed connection would otherwise keep working); the bridge also re-reads the
-grant on every channel, which closes the window for a channel opened after the line
-is gone.
+multiplexed connection would otherwise keep working), and ``allow`` does the same when
+it replaces a hub's line; the bridge also re-reads the grant on every channel, which
+closes the window for a channel opened after the line is gone or changed.
 """
 
 from __future__ import annotations
@@ -39,16 +43,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..utils import config_utils, shared_home
+from ..utils import config_utils
 from .errors import CwcliError, ErrorKind
 from .hosts import (
     DEFAULT_CAP,
     check_hostname,
     check_hub_name,
+    check_name,
     check_port,
     check_role,
+    check_user,
     fingerprint,
     make_pairing,
+    not_service_account,
     parse_public_key,
 )
 
@@ -72,6 +79,7 @@ class Grant:
     pairing: str
     fields: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    ended_pids: list = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +110,7 @@ def bridge_command(
     home: str,
     state: str,
     keys: str,
+    key_fp: str,
     start_daemon: bool = True,
 ) -> str:
     """The forced command. Every argument is shell-quoted (sshd runs the command
@@ -125,6 +134,7 @@ def bridge_command(
     ]
     if not start_daemon:
         argv.append("--no-start")
+    argv.extend(["--key-fp", key_fp])
     for arg in argv:
         if _ARG_BAD.search(arg):
             raise CwcliError(
@@ -224,12 +234,20 @@ def allow(
     home: Path | None = None,
     state_path: str | None = None,
     start_daemon: bool = True,
+    proc_root: Path = Path("/proc"),
 ) -> Grant:
-    """Grant ``hub``: write (or replace) its restricted line and build the pairing string."""
+    """Grant ``hub``: write (or replace) its restricted line and build the pairing string.
+
+    Every field the hub will check in the pairing string is checked here first, so
+    nothing is written for a grant the hub would refuse to add. Replacing a hub's line
+    ends the bridges it still runs under the old one, as ``revoke`` does.
+    """
     hub = check_hub_name(hub)
     cap = check_role(cap)
     key_type, key_blob = parse_public_key(key)
     port = check_port(port)
+    user = check_user(getpass.getuser())
+    label = check_name(name or socket.gethostname().split(".")[0])
     path = keys_path or authorized_keys_path()
     cwcli_home = home or config_utils.cwcli_home()
     command = bridge_command(
@@ -239,6 +257,7 @@ def allow(
         home=str(cwcli_home),
         state=state_path or _ui_state_path(),
         keys=str(path),
+        key_fp=fingerprint(key_type, key_blob),
         start_daemon=start_daemon,
     )
     line = grant_line(key_type=key_type, key_blob=key_blob, hub=hub, command=command)
@@ -246,6 +265,7 @@ def allow(
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
     _write_lines(path, kept + [line])
+    ended = end_bridges(hub, proc_root=proc_root) if replaced else []
 
     warnings: list[str] = []
     host_key = read_host_key(host_key_file)
@@ -266,10 +286,10 @@ def allow(
         "v": 1,
         "hub": hub,
         "cap": cap,
-        "user": getpass.getuser(),
+        "user": user,
         "address": final_address,
         "port": port,
-        "name": name or socket.gethostname().split(".")[0],
+        "name": label,
         "host_key": f"{host_key[0]} {host_key[1]}" if host_key else None,
     }
     return Grant(
@@ -281,6 +301,7 @@ def allow(
         pairing=make_pairing(fields),
         fields={**fields, "host_key_fingerprint": fingerprint(*host_key) if host_key else None},
         warnings=warnings,
+        ended_pids=ended,
     )
 
 
@@ -400,12 +421,9 @@ def revoke(
 def shared_mode_note() -> str | None:
     """On a shared install the bridge must run as the service account (the daemon's
     state lives in its home); say so when someone else runs ``allow``."""
-    if not shared_home.shared_mode():
+    if not not_service_account():
         return None
-    service_uid = shared_home.service_uid()
-    if service_uid is not None and hasattr(os, "getuid") and os.getuid() != service_uid:
-        return (
-            "This is a shared install: run `cwcli remote allow` as the cwcli service account "
-            "(the user whose cwcli ui daemon the hub should reach), not as yourself."
-        )
-    return None
+    return (
+        "This is a shared install: run `cwcli remote allow` as the cwcli service account "
+        "(the user whose cwcli ui daemon the hub should reach), not as yourself."
+    )

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -19,6 +21,7 @@ import pytest
 from caffeinated_whale_cli.core import community, hosts, integrations
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.protocol import BRIDGE_PROTOCOL, PROTOCOL_VERSION
+from caffeinated_whale_cli.utils import shared_home
 
 HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM"
 PAIRING_FIELDS = {
@@ -172,7 +175,7 @@ class TestSshArgv:
             [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         with pytest.raises(hosts.LinkError) as e:
-            hosts.exchange(hosts.SshChannel(proc), "GET", "/api/v1/bridge", [])
+            hosts.exchange(hosts.SshChannel(proc), hosts.encode_request("GET", "/api/v1/bridge", []))
         assert e.value.state == hosts.HOST_KEY_CHANGED
 
     @pytest.mark.parametrize(
@@ -183,6 +186,10 @@ class TestSshArgv:
             ("frappe@10.0.0.9: Permission denied (publickey).", hosts.AUTH_REFUSED),
             ("ssh: connect to host 10.0.0.9 port 2200: Connection timed out", hosts.UNREACHABLE),
             ("", hosts.UNREACHABLE),
+            ("bridge: this key is restricted to the cwcli bridge; it runs no command", hosts.AUTH_REFUSED),
+            # A request the bridge could not read is that request's failure, not a refused grant.
+            ("bridge: expected an HTTP request", hosts.UNREACHABLE),
+            ("bridge: no request arrived in time", hosts.UNREACHABLE),
         ],
     )
     def test_ssh_failures_map_to_link_states(self, stderr, state):
@@ -225,19 +232,23 @@ def _http(status, body, ctype="application/json", length=True, extra=""):
     return head.encode() + b"\r\n" + body
 
 
+def _get(target, headers=()):
+    return hosts.encode_request("GET", target, list(headers))
+
+
 class TestExchange:
     def test_a_content_length_body_is_read_exactly(self):
         ch = FakeChannel([_http(200, b'{"a":1}')[:10], _http(200, b'{"a":1}')[10:], b"trailing-garbage"])
-        resp = hosts.exchange(ch, "GET", "/api/v1/x", [("Accept", "a")])
+        resp = hosts.exchange(ch, _get("/api/v1/x", [("Accept", "a")]))
         assert resp.status == 200 and resp.read() == b'{"a":1}'
         assert ch.sent.startswith(b"GET /api/v1/x HTTP/1.1\r\nAccept: a\r\n")
 
     def test_a_stream_without_a_length_ends_at_eof_and_times_out_when_silent(self):
         ch = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"data: 1\n\n", b"data: 2\n\n"])
-        resp = hosts.exchange(ch, "GET", "/api/v1/stream", [])
+        resp = hosts.exchange(ch, _get("/api/v1/stream"))
         assert b"".join(resp.iter_body()) == b"data: 1\n\ndata: 2\n\n"
         silent = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"x"], hang_after=2)
-        resp = hosts.exchange(silent, "GET", "/api/v1/stream", [])
+        resp = hosts.exchange(silent, _get("/api/v1/stream"))
         with pytest.raises(hosts.LinkError) as e:
             list(resp.iter_body(idle_timeout=0.01))
         assert "keepalive" in e.value.reason
@@ -245,13 +256,43 @@ class TestExchange:
     def test_a_channel_that_ends_without_an_answer_raises_its_own_failure(self):
         ch = FakeChannel([], failure=hosts.LinkError(hosts.AUTH_REFUSED, "denied"))
         with pytest.raises(hosts.LinkError) as e:
-            hosts.exchange(ch, "GET", "/api/v1/bridge", [])
+            hosts.exchange(ch, _get("/api/v1/bridge"))
         assert e.value.state == hosts.AUTH_REFUSED and ch.closed
 
     def test_a_non_http_answer_is_unreachable_not_a_crash(self):
         with pytest.raises(hosts.LinkError) as e:
-            hosts.exchange(FakeChannel([b"garbage\r\n\r\n"]), "GET", "/x", [])
+            hosts.exchange(FakeChannel([b"garbage\r\n\r\n"]), _get("/api/v1/x"))
         assert e.value.state == hosts.UNREACHABLE
+
+
+class TestEncodeRequest:
+    """The one place a request to a remote becomes bytes: nothing the bridge would read
+    differently from what the hub checked is ever written."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            ("Content-Type", "application/json;\r\n X-Cwcli-Delegated-Role: admin"),
+            ("Accept", "a\nX-Cwcli-Delegated-User: alice"),
+            ("Accept", "a\rb"),
+            ("X-A\r\nX-Cwcli-Delegated-Role", "admin"),
+            ("Bad Name", "x"),
+        ],
+    )
+    def test_a_header_that_could_end_its_line_is_never_written(self, header):
+        with pytest.raises(CwcliError) as e:
+            hosts.encode_request("POST", "/api/v1/jobs", [header], b"{}")
+        assert e.value.code == "host.bad_request" and e.value.kind is ErrorKind.USAGE
+
+    @pytest.mark.parametrize("target", ["/api/v1/instances/caf\xe9", "/api/v1/a b", "/api/v1/x\x01", "/etc/passwd", "/api/v2/x"])
+    def test_a_target_the_bridge_would_not_read_is_refused(self, target):
+        with pytest.raises(CwcliError) as e:
+            hosts.encode_request("GET", target, [])
+        assert e.value.code == "host.bad_request"
+
+    def test_a_request_is_encoded_whole(self):
+        raw = hosts.encode_request("POST", "/api/v1/jobs?x=1", [("Content-Type", "application/json")], b"{}")
+        assert raw == b"POST /api/v1/jobs?x=1 HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
 
     def test_sse_frames_and_keepalives(self):
         frames, rest = hosts.parse_sse(b": keepalive\n\nid: 3\nevent: delta\ndata: {\"a\":1}\n\nevent: part")
@@ -279,6 +320,12 @@ class FakeTransport:
 
     def close(self, host):
         self.closed.append(host.id)
+
+
+def _revoked():
+    """The bridge's answer on a channel whose grant line is gone or changed."""
+    body = json.dumps({"errors": [{"title": "bridge.revoked"}]}).encode()
+    return _http(403, body, extra="X-Cwcli-Bridge-Error: bridge.revoked\r\n")
 
 
 def _bridge_answer(daemon_protocol=PROTOCOL_VERSION, cap="operator", bridge_protocol=BRIDGE_PROTOCOL, daemon=True, error=None):
@@ -311,10 +358,19 @@ class TestProbe:
         probe = hosts.probe_host(FakeTransport([FakeChannel([_bridge_answer(daemon=False, error="not running")])]), _rec())
         assert probe.state == hosts.DAEMON_DOWN and probe.reason == "not running" and probe.cap == "operator"
 
-    def test_a_revoked_grant_reads_as_auth_refused(self):
-        body = json.dumps({"errors": [{"title": "bridge.revoked"}]}).encode()
-        probe = hosts.probe_host(FakeTransport([FakeChannel([_http(403, body)])]), _rec())
+    def test_a_revoked_grant_reads_as_auth_refused_once_a_fresh_connection_agrees(self):
+        transport = FakeTransport([FakeChannel([_revoked()]), FakeChannel([_revoked()])])
+        probe = hosts.probe_host(transport, _rec())
         assert probe.state == hosts.AUTH_REFUSED
+        assert transport.closed == ["build-box"] and transport.opened == 2
+
+    def test_a_grant_changed_under_an_open_connection_is_read_afresh(self):
+        """The open connection ran the old line's command (and cap): its answer is a
+        refusal, and the fresh connection the hub makes next reads the new cap."""
+        transport = FakeTransport([FakeChannel([_revoked()]), FakeChannel([_bridge_answer(cap="viewer")])])
+        probe = hosts.probe_host(transport, _rec())
+        assert probe.state == hosts.CONNECTED and probe.cap == "viewer"
+        assert transport.closed == ["build-box"]
 
     def test_a_channel_failure_propagates_as_the_link_error(self):
         with pytest.raises(hosts.LinkError) as e:
@@ -365,6 +421,32 @@ class TestLinkStateMachine:
         link.step()
         assert states == [(hosts.CONNECTED, None)]
 
+    def test_a_stream_that_keeps_closing_as_soon_as_it_opens_backs_off(self):
+        """One immediate re-probe after a drop, then a growing backoff while every new
+        stream closes again within a keepalive; a stream that lived resets it."""
+
+        class Lived(FakeChannel):
+            def __init__(self, chunks, now):
+                super().__init__(chunks)
+                self._now = now
+
+            def read(self, size, timeout):
+                self._now[0] += hosts.KEEPALIVE_S
+                return super().read(size, timeout)
+
+        def stream():
+            return FakeChannel([_http(200, b"", "text/event-stream", length=False)])
+
+        now = [1000.0]
+        script = []
+        for _ in range(3):
+            script += [FakeChannel([_bridge_answer()]), stream()]
+        script += [FakeChannel([_bridge_answer()]), Lived([_http(200, b"", "text/event-stream", length=False)], now)]
+        script += [FakeChannel([_bridge_answer()]), stream()]
+        link, states, _, _ = self._link(FakeTransport(script), clock=lambda: now[0])
+        assert [link.step() for _ in range(5)] == [0.0, 2.0, 4.0, 0.0, 2.0]
+        assert states == [(hosts.CONNECTED, None)]  # and nothing ever flashed
+
     def test_backoff_grows_with_jitter_and_resets_on_success(self):
         transport = FakeTransport([hosts.LinkError(hosts.UNREACHABLE, "x")] * 3)
         link, _, _, _ = self._link(transport)
@@ -385,6 +467,22 @@ class TestLinkStateMachine:
         link.step()
         assert states[0][0] == hosts.VERSION_MISMATCH and frames and not link.view()["actions_allowed"] and link.view()["readable"]
 
+    def test_a_stream_frame_larger_than_the_hub_accepts_ends_the_stream(self, monkeypatch):
+        monkeypatch.setattr(hosts, "_FRAME_LIMIT", 64)
+        stream = FakeChannel([_http(200, b"", "text/event-stream", length=False), b"data: " + b"x" * 100, b'\n\nevent: delta\ndata: {"project": "p"}\n\n'])
+        link, _, frames, _ = self._link(FakeTransport([FakeChannel([_bridge_answer()]), stream]))
+        link.step()
+        assert frames == [] and stream.closed and link.view()["drops_10m"] == 1
+
+    def test_a_new_cap_is_published_even_when_the_state_stays_connected(self):
+        stream = FakeChannel([_http(200, b"", "text/event-stream", length=False)])
+        transport = FakeTransport([FakeChannel([_bridge_answer()]), stream, FakeChannel([_bridge_answer(cap="viewer")]), FakeChannel([_http(200, b"", "text/event-stream", length=False)])])
+        published = []
+        link = hosts.HostLink(_rec(), transport, on_state=lambda lk: published.append((lk.status.state, lk.status.cap)), on_frame=lambda *a: None, clock=lambda: 1.0, jitter=lambda: 0.5)
+        link.step()
+        link.step()
+        assert published == [(hosts.CONNECTED, "operator"), (hosts.CONNECTED, "viewer")]
+
     def test_the_view_carries_what_the_page_needs_and_no_secret(self):
         link, _, _, _ = self._link(FakeTransport([]))
         view = link.view()
@@ -392,9 +490,108 @@ class TestLinkStateMachine:
         assert "host_key" not in view and "token" not in json.dumps(view)
 
 
+class HeldChannel(FakeChannel):
+    """A stream that stays open until it is closed, the way a live SSE stream does."""
+
+    def __init__(self, head):
+        super().__init__([head])
+        self._gone = threading.Event()
+
+    def read(self, size, timeout):
+        if self.chunks:
+            return self.chunks.pop(0)
+        return b"" if self._gone.wait(timeout) else None
+
+    def close(self):
+        super().close()
+        self._gone.set()
+
+
 class TestManager:
     def _manager(self, transport, published):
         return hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {"ssh": transport})
+
+    def _linked(self, manager, transport, state=hosts.CONNECTED):
+        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame)
+        manager._links[link.host.id] = link
+        link.status.state = state
+        return link
+
+    def test_a_remote_frame_cannot_choose_the_host_it_is_filed_under(self):
+        published = []
+        transport = FakeTransport([])
+        manager = self._manager(transport, published)
+        link = self._linked(manager, transport)
+        manager._frame(link, "delta", {"host": None, "project": "p", "instance": {"project": "p"}, "removed": False})
+        manager._frame(link, "job", {"host": "other-box", "id": "j1", "state": "running"})
+        assert [(ev, data["host"]) for ev, data in published] == [("host_delta", "build-box"), ("host_job", "build-box")]
+
+    def test_a_link_that_was_removed_or_replaced_never_publishes_its_host_back(self):
+        """resync stops a link without waiting for its thread; a probe still in flight
+        must not re-add the host the page just removed."""
+        published = []
+        transport = FakeTransport([])
+        manager = self._manager(transport, published)
+        old = self._linked(manager, transport)
+        del manager._links[old.host.id]
+        old._set(hosts.UNREACHABLE, "the probe that was in flight")
+        manager._frame(old, "snapshot", {"instances": [{"project": "p"}], "jobs": []})
+        assert published == []
+        new = self._linked(manager, transport)  # a re-pin replaced it
+        old._set(hosts.CONNECTING, None)
+        assert published == []
+        new._set(hosts.UNREACHABLE, "x")
+        assert [ev for ev, _ in published] == ["host_link", "host_snapshot"]
+
+    def test_a_request_the_bridge_would_refuse_is_never_dialled_and_never_touches_the_link(self):
+        transport = FakeTransport([])
+        manager = self._manager(transport, [])
+        link = self._linked(manager, transport)
+        with pytest.raises(CwcliError) as e:
+            manager.request("build-box", "GET", "/api/v1/instances/caf\xe9", [])
+        assert e.value.code == "host.bad_request" and transport.opened == 0
+        assert link.status.state == hosts.CONNECTED
+
+    def test_a_request_the_bridge_could_not_read_fails_alone_and_leaves_the_link(self):
+        failure = hosts.classify_ssh_failure(2, "bridge: expected an HTTP request")
+        transport = FakeTransport([FakeChannel([], failure=failure)])
+        manager = self._manager(transport, [])
+        link = self._linked(manager, transport)
+        with pytest.raises(hosts.LinkError) as e:
+            manager.request("build-box", "GET", "/api/v1/instances", [])
+        assert e.value.state == hosts.UNREACHABLE and link.status.state == hosts.CONNECTED
+
+    def test_a_request_on_a_connection_whose_grant_changed_is_asked_again_on_a_fresh_one(self):
+        first, fresh = FakeChannel([_revoked()]), FakeChannel([_http(200, b'{"data": 1}')])
+        transport = FakeTransport([first, fresh])
+        manager = self._manager(transport, [])
+        self._linked(manager, transport)
+        resp = manager.request("build-box", "POST", "/api/v1/jobs", [("Content-Type", "application/json")], b"{}")
+        assert resp.status == 200 and resp.read() == b'{"data": 1}'
+        assert transport.closed == ["build-box"] and first.closed and first.sent == fresh.sent
+
+    def test_checking_a_host_that_holds_its_stream_without_being_connected_reaches_a_fresh_probe(self):
+        """A version mismatch keeps the stream for the read-only view; Check must still
+        end it and wait for the probe that follows, not time out on a sleeping loop."""
+        held = HeldChannel(_http(200, b"", "text/event-stream", length=False))
+        transport = FakeTransport([
+            FakeChannel([_bridge_answer(daemon_protocol=PROTOCOL_VERSION - 1)]), held,
+            FakeChannel([_bridge_answer()]), HeldChannel(_http(200, b"", "text/event-stream", length=False)),
+        ])  # fmt: skip
+        manager = self._manager(transport, [])
+        link = hosts.HostLink(_rec(), transport, on_state=manager._state_changed, on_frame=manager._frame)
+        manager._links[link.host.id] = link
+        link.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not (link.status.state == hosts.VERSION_MISMATCH and link._current is not None):
+                assert time.monotonic() < deadline, link.status
+                time.sleep(0.01)
+            view = manager.check("build-box", timeout=5)
+            assert view["state"] == hosts.CONNECTED and held.closed
+        finally:
+            link.stop()
+            link.thread.join(3)
 
     def test_a_quiet_host_keeps_its_last_snapshot_as_unknown_with_last_seen(self):
         published = []
@@ -531,6 +728,53 @@ class TestHubKey:
         d = hosts.control_dir()
         assert len(str(d / ("x" * 40))) < 108
         assert stat.S_IMODE(d.stat().st_mode) == 0o700
+
+    def test_a_control_dir_someone_else_controls_is_refused(self, tmp_path, monkeypatch):
+        """The path is predictable in a world-writable directory, so another local user
+        could create it first; ssh's mux client would then talk to their socket."""
+        real_access = os.access
+        monkeypatch.setattr(os, "access", lambda p, m, **k: False if str(p) == "/tmp" else real_access(p, m, **k))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        expected = tmp_path / f"cwcli-hub-{os.getuid()}"
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        expected.symlink_to(elsewhere)
+        with pytest.raises(hosts.LinkError):
+            hosts.control_dir()
+        expected.unlink()
+        expected.mkdir()
+        os.chmod(expected, 0o777)
+        assert hosts.control_dir() == expected and stat.S_IMODE(expected.stat().st_mode) == 0o700
+        uid = os.getuid()
+        (tmp_path / f"cwcli-hub-{uid + 1}").mkdir(mode=0o700)  # made by this uid, not by uid + 1
+        monkeypatch.setattr(os, "getuid", lambda: uid + 1)
+        with pytest.raises(hosts.LinkError):
+            hosts.control_dir()
+
+
+class TestSharedInstall:
+    """On a shared install the service account's daemon holds the links; a group
+    member's CLI must leave it files it can use, and never a key it cannot read."""
+
+    @pytest.fixture
+    def shared(self, tmp_path, monkeypatch):
+        marker = tmp_path / "shared.toml"
+        marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "state"}"\n')
+        monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+
+    def test_the_pins_are_shared_with_the_group_like_the_store(self, shared):
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
+        assert stat.S_IMODE(hosts.known_hosts_path().stat().st_mode) == shared_home.SHARED_FILE_MODE
+        assert stat.S_IMODE(hosts.store_path().stat().st_mode) == shared_home.SHARED_FILE_MODE
+
+    def test_only_the_service_account_creates_the_hub_key(self, shared, monkeypatch):
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid() + 1)
+        with pytest.raises(CwcliError) as e:
+            hosts.ensure_hub_key("hub-t")
+        assert e.value.code == "hosts.not_service_account" and not hosts.hub_key_path().exists()
+        assert hosts.shared_mode_note() is not None
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid())
+        assert hosts.shared_mode_note() is None
 
 
 def test_links_run_on_their_own_thread_and_stop_cleanly():

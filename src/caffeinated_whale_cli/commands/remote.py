@@ -124,6 +124,11 @@ def allow_cmd(
         soft_wrap=True,
     )
     console.print("  The key runs only cwcli's bridge: no shell, no port forwarding.")
+    if grant.ended_pids:
+        console.print(
+            f"  Ended {len(grant.ended_pids)} bridge process(es) still running under the old line: "
+            f"{', '.join(map(str, grant.ended_pids))}."
+        )
     fp = grant.fields.get("host_key_fingerprint")
     if fp:
         console.print(f"  This machine's host key: {escape(fp)}", soft_wrap=True)
@@ -283,10 +288,17 @@ def add_cmd(
         _fail(e)
     state = _probe_line(rec) if check else None
     on = bool(core_hosts.transports())
+    note = core_hosts.shared_mode_note()
     if as_json:
         console.print_json(
             json.dumps(
-                {**asdict(rec), "fingerprint": rec.fingerprint(), "link": state, "transport_on": on}
+                {
+                    **asdict(rec),
+                    "fingerprint": rec.fingerprint(),
+                    "link": state,
+                    "transport_on": on,
+                    "note": note,
+                }
             )
         )
         return
@@ -302,6 +314,8 @@ def add_cmd(
             "Settings > Integrations for the web UI to connect.",
             soft_wrap=True,
         )
+    if note:
+        stderr_console.print(f"[yellow]Note:[/yellow] {escape(note)}", soft_wrap=True)
 
 
 @app.command("ls")
@@ -325,6 +339,9 @@ def ls_cmd(
                 "link": _probe_line(rec) if check else None,
             }
         )
+    note = core_hosts.shared_mode_note() if check else None
+    if note:
+        stderr_console.print(f"[yellow]Note:[/yellow] {escape(note)}", soft_wrap=True)
     if as_json:
         console.print_json(json.dumps(rows))
         return

@@ -45,6 +45,9 @@ class _FakeResponse:
     def iter_body(self, **kw):
         yield self._body
 
+    def read(self, limit=None):
+        return self._body
+
     def close(self):
         self.closed = True
 
@@ -257,6 +260,45 @@ class TestForward:
         assert sent["method"] == "POST" and json.loads(sent["body"]) == payload
         assert sent["headers"]["Content-Type"] == "application/json" and sent["headers"]["X-Cwcli-Delegated-Role"] == "admin"
         assert sent["headers"]["X-Cwcli-Delegated-User"] == "api"
+
+    def test_a_folded_content_type_from_the_browser_never_reaches_the_remote(self, daemon):
+        """The browser's Content-Type is parsed with its folded continuation kept inside
+        the value; forwarded as is, the bridge would read that continuation as a
+        delegation header of its own. The hub sends the one type it admits instead."""
+        daemon.views["build-box"] = _connected()
+        folded = {"Content-Type": "application/json;\r\n X-Cwcli-Delegated-Role: admin", **DELEGATED, "X-Cwcli-Delegated-Role": "operator"}
+        status, _b, _ = _req(daemon, "/api/v1/hosts/build-box/jobs", {"verb": "start", "target": {"project": "p"}}, bearer=True, headers=folded)
+        assert status == 200
+        (sent,) = daemon.forwarded
+        assert sent["headers"]["Content-Type"] == "application/json"
+        assert sent["headers"]["X-Cwcli-Delegated-Role"] == "operator"
+        assert "admin" not in json.dumps(sent["headers"])
+
+    @pytest.mark.parametrize("state", [core_hosts.UNREACHABLE, core_hosts.AUTH_REFUSED, core_hosts.HOST_KEY_CHANGED, core_hosts.DAEMON_DOWN, core_hosts.CONNECTING, core_hosts.TRANSPORT_OFF])
+    def test_a_read_of_a_host_that_is_not_readable_never_dials(self, daemon, state):
+        daemon.views["build-box"] = _connected(state=state, reason="because")
+        status, body, _ = _req(daemon, "/api/v1/hosts/build-box/instances", bearer=True)
+        assert status == 409 and _code(body) == "host.not_connected" and daemon.forwarded == []
+
+    @pytest.mark.parametrize(
+        "status, title",
+        [(401, "auth.required"), (403, "auth.password_change_required")],
+    )
+    def test_a_remote_cannot_end_the_hubs_own_session(self, daemon, status, title):
+        """The page reads a 401, or a 403 asking for a password change, as the end of ITS
+        session with this hub; a remote answering either becomes a 502 naming the host."""
+        daemon.views["build-box"] = _connected()
+        body = json.dumps({"errors": [{"title": title, "message": "x"}]}).encode()
+        daemon.answers.append(_FakeResponse(status=status, body=body))
+        got, answer, _ = _req(daemon, "/api/v1/hosts/build-box/instances", bearer=True)
+        assert got == 502 and _code(answer) == "host.refused" and answer["errors"][0]["host"] == "build-box"
+
+    def test_a_remote_role_refusal_is_relayed_as_its_own_answer(self, daemon):
+        daemon.views["build-box"] = _connected()
+        body = json.dumps({"errors": [{"title": "auth.role_forbidden", "role": "operator"}]}).encode()
+        daemon.answers.append(_FakeResponse(status=403, body=body))
+        got, answer, headers = _req(daemon, "/api/v1/hosts/build-box/settings", {"setting": "tips.enable"}, bearer=True)
+        assert got == 403 and answer["errors"][0]["role"] == "operator" and headers["X-Cwcli-Host"] == "build-box"
 
     @pytest.mark.parametrize("state", [core_hosts.VERSION_MISMATCH, core_hosts.UNREACHABLE, core_hosts.CONNECTING, core_hosts.DAEMON_DOWN])
     def test_an_action_needs_the_host_connected_on_an_equal_protocol(self, daemon, state):
