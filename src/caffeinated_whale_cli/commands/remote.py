@@ -153,7 +153,8 @@ def revoke_cmd(
     authorized_keys: str | None = typer.Option(
         None,
         "--authorized-keys",
-        help="The authorized_keys file (default: ~/.ssh/authorized_keys).",
+        help="The authorized_keys file (default: the one `allow` wrote the hub's grant to, "
+        "else ~/.ssh/authorized_keys).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
@@ -189,7 +190,7 @@ def hubs_cmd(
     authorized_keys: str | None = typer.Option(
         None,
         "--authorized-keys",
-        help="The authorized_keys file (default: ~/.ssh/authorized_keys).",
+        help="The authorized_keys file to read (default: the ones `allow` wrote each grant to).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:

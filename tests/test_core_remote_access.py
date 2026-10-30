@@ -164,6 +164,19 @@ class TestAllow:
 
 
 class TestGrantsAndRevocation:
+    def test_the_file_each_grant_went_to_is_recorded_for_hubs_and_revoke(self, keys, host_key_file, tmp_path, monkeypatch):
+        """`allow --authorized-keys <file>` writes the line where the bridge will read it;
+        the record of that file is what `hubs`, `revoke` and the schedule check read."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "someone-else"))
+        _allow(keys, host_key_file, home=None, cap="admin")
+        assert remote_access.recorded_grants() == {HUB: str(keys)}
+        assert [(g.hub, g.cap) for g in remote_access.list_grants()] == [(HUB, "admin")]
+        assert remote_access.grant_cap(HUB) == "admin" and remote_access.grant_cap("hub-home") is None
+        done = remote_access.revoke(hub=HUB, proc_root=keys.parent)
+        assert done.removed == 1 and done.keys_path == str(keys)
+        assert remote_access.recorded_grants() == {} and remote_access.list_grants() == []
+
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
         _allow(keys, host_key_file, hub="hub-home", cap="admin", key=OTHER_KEY)

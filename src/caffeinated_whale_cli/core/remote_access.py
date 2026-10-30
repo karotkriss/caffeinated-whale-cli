@@ -27,11 +27,16 @@ it and never trusts the first connection.
 multiplexed connection would otherwise keep working), and ``allow`` does the same when
 it replaces a hub's line; the bridge also re-reads the grant on every channel, which
 closes the window for a channel opened after the line is gone or changed.
+
+``allow`` records which file holds each hub's line (``hub-grants.json`` in the cwcli
+home the bridge reaches), so ``revoke``, ``hubs`` and the schedule owner check read the
+grant the bridge enforces, whichever file and whichever account wrote it.
 """
 
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import re
 import shlex
@@ -57,7 +62,9 @@ from .hosts import (
     make_pairing,
     not_service_account,
     parse_public_key,
+    write_state,
 )
+from .schedules import StoreLock
 
 BRIDGE_MODULE = "caffeinated_whale_cli.bridge"
 HOST_KEY_FILES = (
@@ -100,6 +107,47 @@ class Revocation:
 
 def authorized_keys_path() -> Path:
     return Path.home() / ".ssh" / "authorized_keys"
+
+
+def grants_record(home: Path | None = None) -> Path:
+    return (home or config_utils.cwcli_home()) / "hub-grants.json"
+
+
+def recorded_grants(home: Path | None = None) -> dict[str, str]:
+    """Which file holds each hub's grant line (hub to ``authorized_keys`` path), as
+    ``allow`` wrote it. Raises ``CwcliError`` naming the record when it cannot be read."""
+    path = grants_record(home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION, "remote.grants_unreadable", f"{path} is unreadable: {e}"
+        ) from e
+    grants = data.get("grants") if isinstance(data, dict) else None
+    return {str(k): str(v) for k, v in grants.items()} if isinstance(grants, dict) else {}
+
+
+def _record_grant(home: Path, hub: str, keys: Path | None) -> None:
+    path = grants_record(home)
+    with StoreLock(path):
+        grants = recorded_grants(home)
+        if keys is None:
+            grants.pop(hub, None)
+        else:
+            grants[hub] = str(keys)
+        write_state(path, json.dumps({"version": 1, "grants": grants}, indent=1, sort_keys=True))
+
+
+def grant_cap(hub: str) -> str | None:
+    """The cap this machine's grant gives ``hub`` now, read from the file ``allow`` wrote
+    it to (the file the bridge reads), or None when there is no grant. Raises
+    ``CwcliError`` naming the file when it cannot be read."""
+    path = recorded_grants().get(hub)
+    if path is None:
+        return None
+    return next((g.cap for g in _grants_in(Path(path)) if g.hub == hub), None)
 
 
 def bridge_command(
@@ -249,7 +297,7 @@ def allow(
     port = check_port(port)
     user = check_user(getpass.getuser())
     label = check_name(name or socket.gethostname().split(".")[0])
-    path = keys_path or authorized_keys_path()
+    path = (keys_path or authorized_keys_path()).absolute()
     cwcli_home = home or config_utils.cwcli_home()
     command = bridge_command(
         python=python or sys.executable,
@@ -283,6 +331,7 @@ def allow(
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
     _write_lines(path, kept + [line])
+    _record_grant(cwcli_home, hub, path)
     ended = end_bridges(hub, proc_root=proc_root) if replaced else []
 
     warnings: list[str] = []
@@ -324,8 +373,21 @@ def allow(
 
 
 def list_grants(keys_path: Path | None = None) -> list[HubGrant]:
+    """The hubs this machine lets in, with each one's cap: from ``keys_path``, else from
+    the file ``allow`` wrote each hub's grant to."""
+    if keys_path is not None:
+        return _grants_in(keys_path)
+    return [
+        g
+        for hub, path in sorted(recorded_grants().items())
+        for g in _grants_in(Path(path))
+        if g.hub == hub
+    ]
+
+
+def _grants_in(keys_path: Path) -> list[HubGrant]:
     out = []
-    for line in _read_lines(keys_path or authorized_keys_path()):
+    for line in _read_lines(keys_path):
         stripped = line.strip()
         if (
             not stripped
@@ -423,15 +485,24 @@ def end_bridges(hub: str, *, proc_root: Path = Path("/proc"), grace: float = 2.0
 def revoke(
     *, hub: str, keys_path: Path | None = None, proc_root: Path = Path("/proc")
 ) -> Revocation:
-    """Remove ``hub``'s line and end its running bridges. Removing a hub that was never
-    granted is a no-op that says so (``removed == 0``), never an error."""
+    """Remove ``hub``'s line, from the file ``allow`` recorded for it unless ``keys_path``
+    names one, and end its running bridges. Removing a hub that was never granted is a
+    no-op that says so (``removed == 0``), never an error. A record that cannot be read
+    never blocks a revoke: the line is then looked for in ``keys_path`` or the default."""
     hub = check_hub_name(hub)
-    path = keys_path or authorized_keys_path()
+    home = config_utils.cwcli_home()
+    try:
+        recorded = recorded_grants(home).get(hub)
+    except CwcliError:
+        recorded = None
+    path = (keys_path or (Path(recorded) if recorded else authorized_keys_path())).absolute()
     lines = _read_lines(path)
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     removed = len(lines) - len(kept)
     if removed:
         _write_lines(path, kept)
+    if recorded == str(path):
+        _record_grant(home, hub, None)
     ended = end_bridges(hub, proc_root=proc_root)
     return Revocation(hub=hub, removed=removed, ended_pids=ended, keys_path=str(path))
 

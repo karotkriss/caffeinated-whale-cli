@@ -90,7 +90,6 @@ _DROP = {
     "referer",
     "x-cwcli-delegated-user",
     "x-cwcli-delegated-role",
-    "x-cwcli-hub",
 }
 _DROP_PREFIXES = ("proxy-", "sec-fetch-", "x-forwarded-")
 _DELEGATED_USER = "x-cwcli-delegated-user"
@@ -290,7 +289,6 @@ def rewrite(
             ("Authorization", f"Bearer {token}"),
             ("X-Cwcli-Delegated-User", _delegated_user(claimed.get(_DELEGATED_USER), hub)),
             ("X-Cwcli-Delegated-Role", _cap_role(claimed.get(_DELEGATED_ROLE), cap)),
-            ("X-Cwcli-Hub", hub),
             ("Connection", "close"),
         ]
     )

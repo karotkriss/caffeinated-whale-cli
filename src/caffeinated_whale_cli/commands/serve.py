@@ -298,9 +298,7 @@ __all__ = ["PROTOCOL_VERSION"]
 # The headers a hub's bridge sets on the REMOTE daemon (see the module docstring).
 _DELEGATED_USER = "X-Cwcli-Delegated-User"
 _DELEGATED_ROLE = "X-Cwcli-Delegated-Role"
-_DELEGATED_HUB = "X-Cwcli-Hub"
 _DELEGATED_USER_RE = re.compile(r"[A-Za-z0-9._+-]{1,80}@[A-Za-z0-9._-]{1,64}")
-_HUB_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _HOST_PREFIX = "/api/v1/hosts/"
 # What is never forwarded to a remote: its own sign-in (the bridge holds the token),
 # its stream (the hub holds one per host itself), its hosts (no hopping from one hub
@@ -1550,8 +1548,7 @@ class _Handler(BaseHTTPRequestHandler):
             "agent": (self.headers.get("User-Agent") or "")[:80],
         }
         if delegated is not None:
-            hub = (self.headers.get(_DELEGATED_HUB) or "").strip()
-            origin["hub"] = hub if _HUB_NAME_RE.fullmatch(hub) else delegated[0].rsplit("@", 1)[-1]
+            origin["hub"] = delegated[0].rsplit("@", 1)[-1]
         return origin
 
     def _create_job(self, payload: dict) -> tuple[int, dict]:

@@ -846,6 +846,8 @@ class TestHubKey:
         assert hosts.SSH_INTEGRATION.normalize({"hub_name": ""})["hub_name"] == hosts.default_hub_name()
         with pytest.raises(CwcliError):
             hosts.SSH_INTEGRATION.normalize({"hub_name": "a b"})
+        with pytest.raises(CwcliError):
+            hosts.check_hub_name("hub@elsewhere")
 
     def test_the_control_socket_dir_stays_short_and_private(self):
         d = hosts.control_dir()

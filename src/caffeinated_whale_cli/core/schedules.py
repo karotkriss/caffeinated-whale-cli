@@ -726,10 +726,10 @@ def _owner_refusal(s: dict[str, Any]) -> str | None:
 
         hub = owner.rpartition("@")[2]
         try:
-            caps = {g.hub: g.cap for g in remote_access.list_grants()}
+            cap = remote_access.grant_cap(hub)
         except CwcliError as e:
             return f"its owner {owner}'s Admin role could not be confirmed: {e.message}"
-        if caps.get(hub) == "admin":
+        if cap == "admin":
             return None
         return (
             f"its owner {owner} acts through hub {hub}, which this machine no longer lets act "
