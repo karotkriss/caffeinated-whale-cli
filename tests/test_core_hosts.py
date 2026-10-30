@@ -830,6 +830,37 @@ class TestSharedInstall:
         monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid())
         assert hosts.shared_mode_note() is None
 
+    def test_a_group_members_own_web_ui_runs_no_link_and_says_why(self, shared, monkeypatch):
+        """A member's daemon cannot read the service account's 0600 key: dialling would read
+        as `no longer accepts this hub` and send the person to the remote's owner. It lists
+        every host with the one reason instead, and no ssh is ever started."""
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid() + 1)
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
+        published = []
+        transport = FakeTransport([])
+        manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {"ssh": transport})
+        manager.resync()
+        (view,) = manager.views()
+        assert manager.get("build-box") is None
+        assert view["state"] == hosts.SERVICE_ACCOUNT_ONLY and view["reason"] == hosts.SERVICE_ACCOUNT_REASON
+        assert view["actions_allowed"] is False and view["readable"] is False
+        assert ("host_link", view) in published and manager.view()["hosts"] == [view]
+        assert manager.check("build-box")["state"] == hosts.SERVICE_ACCOUNT_ONLY
+        with pytest.raises(hosts.LinkError) as e:
+            manager.request("build-box", "GET", "/api/v1/instances", [])
+        assert (e.value.state, e.value.reason) == (hosts.SERVICE_ACCOUNT_ONLY, hosts.SERVICE_ACCOUNT_REASON)
+        assert transport.opened == 0
+
+    def test_the_service_accounts_own_web_ui_still_runs_its_links(self, shared, monkeypatch):
+        monkeypatch.setattr(shared_home, "service_uid", lambda: os.getuid())
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
+        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager.resync()
+        try:
+            assert manager.get("build-box") is not None
+        finally:
+            manager.stop()
+
 
 def test_links_run_on_their_own_thread_and_stop_cleanly():
     gate = threading.Event()

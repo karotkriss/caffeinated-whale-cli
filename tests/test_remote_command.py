@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
-from caffeinated_whale_cli.core import hosts
+from caffeinated_whale_cli.core import hosts, remote_access
 from caffeinated_whale_cli.main import app
 
 runner = CliRunner()
@@ -32,7 +32,9 @@ def _json(result):
 
 
 class TestRemoteSide:
-    def test_allow_hubs_and_revoke(self, tmp_path):
+    def test_allow_hubs_and_revoke(self, tmp_path, monkeypatch):
+        scanned = []
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: scanned.append(hub) or [])
         keys = tmp_path / "ak"
         host_key = tmp_path / "hk.pub"
         host_key.write_text(HOST_KEY + "\n")
@@ -47,6 +49,7 @@ class TestRemoteSide:
         assert human.exit_code == 0 and "Replaced hub" in human.stdout and "cwcli-remote:v1:" in human.stdout
         revoked = _json(runner.invoke(app, ["remote", "revoke", "--hub", "hub-x", "--authorized-keys", str(keys), "--json"]))
         assert revoked["removed"] == 1 and keys.read_text() == ""
+        assert scanned and set(scanned) == {"hub-x"}
 
     def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):
         keys = tmp_path / "ak"

@@ -94,9 +94,9 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   project-scoped mutation, so it is serialized under one shared lock
 * ``GET /api/v1/hosts``                     - this hub's name and public key, and
   every remote host with its link state (``core.hosts``)
-* ``POST /api/v1/hosts``                    - ``{op: add|remove|check|repin|rename}``
-  (Admin): pin a remote from its pairing string, forget it, reconnect it now, pin a
-  changed host key, or rename it
+* ``POST /api/v1/hosts``                    - ``{op: add|remove|check|repin}`` (Admin):
+  pin a remote from its pairing string, forget it, reconnect it now, or pin a changed
+  host key
 * ``/api/v1/hosts/<host>/<path>``           - forwarded to ``/api/v1/<path>`` on that
   host through its transport, GET and POST alike, as the signed-in user with their
   role (the remote lowers it to its cap). Never the remote's session, stream or
@@ -2544,7 +2544,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------ remote hosts
 
     def _hosts_post(self, payload: dict) -> tuple[int, dict]:
-        """``{op: add|remove|check|repin|rename, ...}`` over ``core.hosts`` (Admin).
+        """``{op: add|remove|check|repin, ...}`` over ``core.hosts`` (Admin).
 
         ``add`` pins a remote from the pairing string ``cwcli remote allow`` printed
         there (explicit ``address``/``port``/``user``/``host_key`` override it), starts
@@ -2582,12 +2582,8 @@ class _Handler(BaseHTTPRequestHandler):
                 core_hosts.repin_host(host_id, _required_str(payload, "host_key"))
                 self.hosts.resync()
                 return 200, {"data": {"host": self.hosts.wait_settled(host_id)}}
-            if op == "rename":
-                core_hosts.rename_host(host_id, _required_str(payload, "name"))
-                self.hosts.resync()
-                return 200, {"data": {"host": self.hosts.link_view(host_id)}}
         raise CwcliError(
-            ErrorKind.USAGE, "host.op_invalid", "op must be add, remove, check, repin or rename."
+            ErrorKind.USAGE, "host.op_invalid", "op must be add, remove, check or repin."
         )
 
     def _forward(

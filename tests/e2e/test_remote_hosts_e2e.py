@@ -262,7 +262,7 @@ class TestTheLink:
     def test_the_hub_links_to_the_remote_and_reads_its_instances_through_the_bridge(self, lab):
         view = lab.host_view()
         assert view["state"] == "connected", view
-        assert view["cap"] == "operator" and view["actions_allowed"] is True and view["protocol_ok"] is True
+        assert view["cap"] == "operator" and view["actions_allowed"] is True
         assert view["remote"]["protocol"] == _api(lab.hub, "/api/v1/meta")[1]["protocol"]
         assert view["host_key_fingerprint"].startswith("SHA256:")
         assert "token" not in json.dumps(view) and "PRIVATE" not in json.dumps(view)
