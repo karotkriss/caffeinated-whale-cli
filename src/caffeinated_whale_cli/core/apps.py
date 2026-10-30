@@ -1141,7 +1141,13 @@ def _requires(required_apps: list[str], app: str) -> bool:
 
 
 def _refuse_required_uninstall(
-    frappe_container, bench_path: str, apps: list[str], sites: list[str], *, emit: OnEvent
+    frappe_container,
+    bench_path: str,
+    apps: list[str],
+    sites: list[str],
+    warnings: list[Message],
+    *,
+    emit: OnEvent,
 ) -> None:
     """Refuse, before anything runs, an uninstall Frappe would refuse.
 
@@ -1150,7 +1156,8 @@ def _refuse_required_uninstall(
     refusal cannot be read from the exit code. Asked here in ONE exec for every
     target site, with the apps removed in the order given: an app requested
     earlier in ``apps`` is gone by the time a later one runs, so it does not count
-    as a dependent. An unreadable site fails closed, the install guard's rule.
+    as a dependent. An unreadable site is skipped with a warning: the after-check
+    in :func:`_verify_uninstalled` still decides whether its uninstall happened.
     """
     try:
         batch = bench_read.read_benches(
@@ -1178,17 +1185,14 @@ def _refuse_required_uninstall(
         # Empty is unreadable too: every real site has at least frappe.
         if found is None or not found.installed or found.required is None:
             cause = batch.errors.get(bench_path) or (found.error if found else None)
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "app.uninstall_state_unknown",
-                f"Could not read the installed apps and their required apps on site "
-                f"'{site}' ({bench_path}: {cause or 'no answer'}), so it cannot be "
-                "confirmed that no installed app still requires the app(s) to uninstall.",
-                hint=(
-                    f"Check the site exists and is readable: 'cwcli apps list <project> "
-                    f"--site {site}'."
-                ),
+            warnings.append(
+                Message(
+                    "app.required_check_skipped",
+                    f"Skipped the required-apps check on site '{site}' "
+                    f"({cause or 'no answer'}).",
+                )
             )
+            continue
         removed: set[str] = set()
         for app in apps:
             dependents = [
@@ -1300,7 +1304,7 @@ def uninstall_apps(
         )
 
     # Before the consent gate: there is nothing to consent to if Frappe would refuse.
-    _refuse_required_uninstall(frappe_container, path, apps, target_sites, emit=emit)
+    _refuse_required_uninstall(frappe_container, path, apps, target_sites, warnings, emit=emit)
 
     if not consent:
         return Result(
