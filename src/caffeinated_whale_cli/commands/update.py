@@ -553,6 +553,9 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             "[bold red]✗[/bold red] bench setup requirements failed, so no site was "
             "migrated onto the new code"
         )
+        tail = (pull_tails or {}).get("bench", "").strip()
+        for text_line in tail.splitlines()[-4:]:
+            console.print("      " + text_line, markup=False, highlight=False, style="dim")
 
     if report.failed_maintenance_enable:
         console.print(
