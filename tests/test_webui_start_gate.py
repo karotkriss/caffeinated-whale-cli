@@ -184,12 +184,23 @@ def test_open_site_starts_the_sites_bench_then_opens_it(run):
 
 @pytest.mark.parametrize(
     "url",
-    ["/api/v1/apps/refs?url=https://attacker.example/x", "javascript:alert(1)", "//attacker.example/x", ""],
+    [
+        "/api/v1/apps/refs?url=https://attacker.example/x",
+        "javascript:alert(1)",
+        "//attacker.example/x",
+        "",
+    ],
 )
 def test_open_site_opens_only_an_http_address(run, url):
     """A remote host answers the site's address; anything but an http(s) URL would send
     this page to a route of the hub itself (or run as script), so nothing is opened."""
-    up = {"acme": {"project": "acme", "container_running": True, "benches": [{"index": 0, "overall": "running"}, {"index": 1, "overall": "running"}]}}
+    up = {
+        "acme": {
+            "project": "acme",
+            "container_running": True,
+            "benches": [{"index": 0, "overall": "running"}, {"index": 1, "overall": "running"}],
+        }
+    }
     out = run(
         f"globalThis.__t.probeUrl = {json.dumps(url)}\n"
         f"return {{ probe: await dialog.runAction('site.open', {json.dumps(SITE)}, {{}}) }}",
@@ -386,11 +397,21 @@ def test_dropping_a_published_site_offers_also_unpublish_ticked(run, bench_path,
     assert out["published"] is published
     assert out["values"] == ({"unpublish": True} if published else {})
     assert out["notes"] == []
-    assert out["calls"][-1] == {"job": {"verb": "rm-site", "target": {"project": "acme", "bench": "1", "site": "b.localhost"}, "args": {"unpublish": True} if published else {}, "consent": True}}
+    assert out["calls"][-1] == {
+        "job": {
+            "verb": "rm-site",
+            "target": {"project": "acme", "bench": "1", "site": "b.localhost"},
+            "args": {"unpublish": True} if published else {},
+            "consent": True,
+        }
+    }
     assert out["reads"] == []
 
 
-PUBLISHED_THERE = {"sites": {"b.localhost": {"project": "acme", "bench_path": "/srv/bench-b"}}, "dns": {"name": "Box DNS"}}
+PUBLISHED_THERE = {
+    "sites": {"b.localhost": {"project": "acme", "bench_path": "/srv/bench-b"}},
+    "dns": {"name": "Box DNS"},
+}
 
 
 @pytest.mark.parametrize(
@@ -398,13 +419,19 @@ PUBLISHED_THERE = {"sites": {"b.localhost": {"project": "acme", "bench_path": "/
     [
         (PUBLISHED_THERE, True, True),
         # The same name published on that host from a different bench is not this site.
-        ({"sites": {"b.localhost": {"project": "acme", "bench_path": "/workspace/bench-b"}}}, True, False),
+        (
+            {"sites": {"b.localhost": {"project": "acme", "bench_path": "/workspace/bench-b"}}},
+            True,
+            False,
+        ),
         (None, True, None),  # the host could not be read
         # The remote's bench detail has not arrived (or failed), so its path is not known.
         (PUBLISHED_THERE, False, None),
     ],
 )
-def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, answer, detail, published):
+def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(
+    run, answer, detail, published
+):
     """Publishing is each machine's own: a remote site's drop dialog reads that host's
     publications once, through the hub's forward, and sends the job's unpublish to the
     daemon that made them. This machine's store (which here names the same site) is never
@@ -413,7 +440,11 @@ def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, a
     remote = {**SITE, "host": "box"}
     out = run(
         "publish.publicationsLanded({ sites: { 'b.localhost': { project: 'acme', bench_path: '/srv/bench-b' } } })\n"
-        + (f"globalThis.__t.answers['/api/v1/hosts/box/publications'] = {json.dumps(answer)}\n" if answer else "")
+        + (
+            f"globalThis.__t.answers['/api/v1/hosts/box/publications'] = {json.dumps(answer)}\n"
+            if answer
+            else ""
+        )
         + ("" if detail else "delete (await import('./fleet')).details['box/acme']\n")
         + f"await dialog.openAction('site.remove', {json.dumps(remote)})\n"
         + DROP,
@@ -422,8 +453,17 @@ def test_dropping_a_remote_site_asks_its_own_host_whether_it_is_published(run, a
     assert out["reads"] == (["/api/v1/hosts/box/publications"] if detail else [])
     assert out["published"] is published
     assert ("unpublish" in out["shown"]) is (published is not False)
-    assert out["values"] == {True: {"unpublish": True}, False: {}, None: {"unpublish": False}}[published]
-    assert out["notes"] == ([] if published is not None else ["Whether b.localhost is published could not be read from its machine; tick this if it is."])
+    assert (
+        out["values"]
+        == {True: {"unpublish": True}, False: {}, None: {"unpublish": False}}[published]
+    )
+    assert out["notes"] == (
+        []
+        if published is not None
+        else [
+            "Whether b.localhost is published could not be read from its machine; tick this if it is."
+        ]
+    )
     assert out["ticked"] == ({} if published is False else {"unpublish": True})
     job = out["calls"][-1]
     assert job["host"] == "box" and job["job"]["verb"] == "rm-site"

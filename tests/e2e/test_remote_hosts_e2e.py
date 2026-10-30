@@ -51,7 +51,9 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _api(base: str, path: str, payload=None, *, token: str | None = None, headers=None, method=None):
+def _api(
+    base: str, path: str, payload=None, *, token: str | None = None, headers=None, method=None
+):
     """``(status, body, headers)``; a JSON body is decoded, anything else kept as bytes."""
     h = {"Content-Type": "application/json"}
     if token:
@@ -102,7 +104,16 @@ class Lab:
     # -- the private sshd -------------------------------------------------
     def start_sshd(self) -> None:
         subprocess.run(
-            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(self.ssh_dir / "host_ed25519")],
+            [
+                "ssh-keygen",
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-f",
+                str(self.ssh_dir / "host_ed25519"),
+            ],
             check=True,
         )
         self.keys.parent.mkdir(mode=0o700, exist_ok=True)
@@ -134,7 +145,14 @@ class Lab:
         pid_file = self.ssh_dir / "sshd.pid"
         pid_file.unlink(missing_ok=True)
         self.sshd_proc = subprocess.Popen(
-            [SSHD, "-f", str(self.ssh_dir / "sshd_config"), "-D", "-E", str(self.ssh_dir / "sshd.log")],
+            [
+                SSHD,
+                "-f",
+                str(self.ssh_dir / "sshd_config"),
+                "-D",
+                "-E",
+                str(self.ssh_dir / "sshd.log"),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -152,7 +170,9 @@ class Lab:
         assert self.sshd_proc is not None
         pid = self.sshd_proc.pid
         os.kill(pid, signal.SIGSTOP)
-        held = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+        held = subprocess.run(
+            ["pgrep", "-P", str(pid)], capture_output=True, text=True
+        ).stdout.split()
         for child in held:
             os.kill(int(child), signal.SIGTERM)
         self.sshd_proc.terminate()
@@ -161,10 +181,17 @@ class Lab:
 
     # -- the daemons -------------------------------------------------------
     def env(self, home: Path, token: str) -> dict:
-        return {**os.environ, "CWCLI_HOME": str(home), "CWCLI_SERVE_TOKEN": token, "CWCLI_NO_UPDATE_CHECK": "1"}
+        return {
+            **os.environ,
+            "CWCLI_HOME": str(home),
+            "CWCLI_SERVE_TOKEN": token,
+            "CWCLI_NO_UPDATE_CHECK": "1",
+        }
 
     def _daemon(self, home: Path, port: int, token: str) -> subprocess.Popen:
-        log = open(self.root / f"{home.name}.log", "ab")  # noqa: SIM115 - lives as long as the daemon
+        log = open(
+            self.root / f"{home.name}.log", "ab"
+        )  # noqa: SIM115 - lives as long as the daemon
         proc = subprocess.Popen(
             [harness.CWCLI, "ui", "--foreground", "--no-browser", "--port", str(port)],
             stdin=subprocess.DEVNULL,
@@ -174,7 +201,12 @@ class Lab:
         )
         self.procs.append(proc)
         base = f"http://127.0.0.1:{port}"
-        harness.wait_until(lambda: _api(base, "/api/v1/meta")[0] == 200, timeout=90, interval=0.5, desc=f"daemon on {port}")
+        harness.wait_until(
+            lambda: _api(base, "/api/v1/meta")[0] == 200,
+            timeout=90,
+            interval=0.5,
+            desc=f"daemon on {port}",
+        )
         return proc
 
     def start_remote(self) -> None:
@@ -228,7 +260,9 @@ class Lab:
         return view
 
     def check(self) -> dict:
-        status, body, _ = _api(self.hub, "/api/v1/hosts", {"op": "check", "id": self.host_id}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            self.hub, "/api/v1/hosts", {"op": "check", "id": self.host_id}, token=HUB_TOKEN
+        )
         assert status == 200, body
         return body["data"]["host"]
 
@@ -269,7 +303,9 @@ def _teardown_backstop():
 @pytest.fixture(scope="module")
 def lab(tmp_path_factory):
     if SSHD is None:
-        pytest.skip("SSHD UNAVAILABLE - no sshd binary on this machine; the real-SSH leg cannot run")
+        pytest.skip(
+            "SSHD UNAVAILABLE - no sshd binary on this machine; the real-SSH leg cannot run"
+        )
     if shutil.which("ssh") is None or shutil.which("ssh-keygen") is None:
         pytest.skip("SSH CLIENT UNAVAILABLE - ssh/ssh-keygen missing")
     harness.enforce_isolation()
@@ -286,7 +322,9 @@ def lab(tmp_path_factory):
         )  # fmt: skip
         assert status == 200 and body["data"]["integration"]["state"] == "on", body
         pairing = lab.allow()
-        status, body, _ = _api(lab.hub, "/api/v1/hosts", {"op": "add", "pairing": pairing}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub, "/api/v1/hosts", {"op": "add", "pairing": pairing}, token=HUB_TOKEN
+        )
         assert status == 200, body
         lab.host_id = body["data"]["host"]["id"]
         yield lab
@@ -303,17 +341,23 @@ class TestTheLink:
         assert view["host_key_fingerprint"].startswith("SHA256:")
         assert "token" not in json.dumps(view) and "PRIVATE" not in json.dumps(view)
         # The forward answers what the remote itself answers.
-        status, through, headers = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/instances", token=HUB_TOKEN)
+        status, through, headers = _api(
+            lab.hub, f"/api/v1/hosts/{lab.host_id}/instances", token=HUB_TOKEN
+        )
         direct = _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]
         assert status == 200
-        assert sorted(i["project"] for i in through["data"]) == sorted(i["project"] for i in direct["data"])
+        assert sorted(i["project"] for i in through["data"]) == sorted(
+            i["project"] for i in direct["data"]
+        )
         # ... as data only.
         assert headers["X-Content-Type-Options"] == "nosniff"
         assert headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
         assert headers.get("Set-Cookie") is None
 
     def test_the_hubs_stream_carries_the_remotes_snapshot(self, lab):
-        req = urllib.request.Request(lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"})
+        req = urllib.request.Request(
+            lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"}
+        )
         with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310
             line = b""
             while not line.startswith(b"data: "):
@@ -322,7 +366,8 @@ class TestTheLink:
         (host,) = snapshot["hosts"]
         assert host["id"] == lab.host_id and host["state"] == "connected"
         assert sorted(i["project"] for i in host["instances"]) == sorted(
-            i["project"] for i in _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]["data"]
+            i["project"]
+            for i in _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]["data"]
         )
 
     def test_the_remotes_session_stream_and_hosts_are_never_forwarded(self, lab):
@@ -332,7 +377,9 @@ class TestTheLink:
 
 class TestTheKeyReachesOnlyTheApi:
     def test_the_restricted_key_runs_no_shell(self, lab):
-        done = lab.ssh_with_hub_key("--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", "cat /etc/hostname; id")
+        done = lab.ssh_with_hub_key(
+            "--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", "cat /etc/hostname; id"
+        )
         assert done.returncode == 2, done
         assert b"restricted to the cwcli bridge" in done.stderr
         assert b"uid=" not in done.stdout
@@ -342,11 +389,30 @@ class TestTheKeyReachesOnlyTheApi:
         # -N: no command; the forward is the only request, and `restrict` refuses it.
         proc = subprocess.Popen(
             [
-                "ssh", "-F", "/dev/null", "-i", str(lab.hub_home / "keys" / "hub_ed25519"),
-                "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null", "-o", "ExitOnForwardFailure=yes", "-o", "ControlMaster=no",
-                "-N", "-L", f"{local}:127.0.0.1:{lab.remote_port}", "-p", str(lab.ssh_port),
-                "--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1",
+                "ssh",
+                "-F",
+                "/dev/null",
+                "-i",
+                str(lab.hub_home / "keys" / "hub_ed25519"),
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ControlMaster=no",
+                "-N",
+                "-L",
+                f"{local}:127.0.0.1:{lab.remote_port}",
+                "-p",
+                str(lab.ssh_port),
+                "--",
+                f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1",
             ],  # fmt: skip
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -373,28 +439,45 @@ class TestTheKeyReachesOnlyTheApi:
             proc.wait(timeout=10)
 
     def test_stdin_that_is_not_an_http_request_is_refused(self, lab):
-        done = lab.ssh_with_hub_key("--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", stdin=b"id\n")
+        done = lab.ssh_with_hub_key(
+            "--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", stdin=b"id\n"
+        )
         assert done.returncode == 2 and b"expected an HTTP request" in done.stderr
 
 
 class TestTheRemoteCapsTheHub:
     def test_an_admin_at_the_hub_is_an_operator_on_the_remote(self, lab):
         # The hub's bearer is Admin at the hub; the remote granted Operator.
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/settings", {"setting": "tips.enable"}, token=HUB_TOKEN)
-        assert status == 403 and _code(body) == "auth.role_forbidden" and body["errors"][0]["role"] == "operator"
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/integrations", token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            f"/api/v1/hosts/{lab.host_id}/settings",
+            {"setting": "tips.enable"},
+            token=HUB_TOKEN,
+        )
+        assert (
+            status == 403
+            and _code(body) == "auth.role_forbidden"
+            and body["errors"][0]["role"] == "operator"
+        )
+        status, body, _ = _api(
+            lab.hub, f"/api/v1/hosts/{lab.host_id}/integrations", token=HUB_TOKEN
+        )
         assert status == 403 and _code(body) == "auth.role_forbidden"
         # The remote's own settings are untouched.
         assert _api(lab.remote, "/api/v1/config", token=REMOTE_TOKEN)[0] == 200
 
-    def test_even_the_remotes_real_token_and_an_admin_claim_through_the_bridge_stay_capped(self, lab):
+    def test_even_the_remotes_real_token_and_an_admin_claim_through_the_bridge_stay_capped(
+        self, lab
+    ):
         request = (
             "POST /api/v1/settings HTTP/1.1\r\nHost: evil\r\n"
             f"Authorization: Bearer {REMOTE_TOKEN}\r\nX-Cwcli-Delegated-Role: admin\r\nX-Cwcli-Delegated-User: root\r\n"
             "Content-Type: application/json\r\nContent-Length: 25\r\n\r\n"
             '{"setting":"tips.enable"}'
         ).encode()
-        done = lab.ssh_with_hub_key("--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", stdin=request)
+        done = lab.ssh_with_hub_key(
+            "--", f"{os.environ.get('USER') or os.getlogin()}@127.0.0.1", stdin=request
+        )
         assert done.returncode == 0, done.stderr
         head, _, body = done.stdout.partition(b"\r\n\r\n")
         assert head.startswith(b"HTTP/1.1 403")
@@ -405,64 +488,117 @@ class TestTheRemoteCapsTheHub:
         authenticates, and the hub keeps that connection open: re-granting at a lower
         cap must still take effect for it, not wait for the connection to drop."""
         assert lab.ensure_connected()["cap"] == "operator"
-        start = {"verb": "start", "target": {"project": "cwe2e-no-such-instance-remote"}, "args": {}}
+        start = {
+            "verb": "start",
+            "target": {"project": "cwe2e-no-such-instance-remote"},
+            "args": {},
+        }
 
         def cap_is(cap):
-            return lambda: (lambda v: v if v["state"] == "connected" and v["cap"] == cap else None)(lab.host_view())
+            return lambda: (lambda v: v if v["state"] == "connected" and v["cap"] == cap else None)(
+                lab.host_view()
+            )
 
         try:
             lab.allow(cap="viewer")
-            harness.wait_until(cap_is("viewer"), timeout=60, interval=0.5, desc="the hub to read the lowered cap")
-            status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", start, token=HUB_TOKEN)
-            assert status == 403 and _code(body) == "auth.role_forbidden" and body["errors"][0]["role"] == "viewer", body
+            harness.wait_until(
+                cap_is("viewer"), timeout=60, interval=0.5, desc="the hub to read the lowered cap"
+            )
+            status, body, _ = _api(
+                lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", start, token=HUB_TOKEN
+            )
+            assert (
+                status == 403
+                and _code(body) == "auth.role_forbidden"
+                and body["errors"][0]["role"] == "viewer"
+            ), body
         finally:
             lab.allow()
-        harness.wait_until(cap_is("operator"), timeout=60, interval=0.5, desc="the hub to read the restored cap")
+        harness.wait_until(
+            cap_is("operator"), timeout=60, interval=0.5, desc="the hub to read the restored cap"
+        )
 
     def test_a_job_started_through_the_hub_runs_on_the_remote_and_records_the_hub(self, lab):
-        payload = {"verb": "start", "target": {"project": "cwe2e-no-such-instance-remote"}, "args": {}}
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", payload, token=HUB_TOKEN)
+        payload = {
+            "verb": "start",
+            "target": {"project": "cwe2e-no-such-instance-remote"},
+            "args": {},
+        }
+        status, body, _ = _api(
+            lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", payload, token=HUB_TOKEN
+        )
         assert status == 202, body
         job_id = body["data"]["id"]
         # The remote's own store holds it, attributed to the hub's user.
         record = harness.wait_until(
-            lambda: (lambda r: r if r[0] == 200 and r[1]["data"]["state"] not in ("queued", "running") else None)(
-                _api(lab.remote, f"/api/v1/jobs/{job_id}", token=REMOTE_TOKEN)
-            ),
+            lambda: (
+                lambda r: (
+                    r
+                    if r[0] == 200 and r[1]["data"]["state"] not in ("queued", "running")
+                    else None
+                )
+            )(_api(lab.remote, f"/api/v1/jobs/{job_id}", token=REMOTE_TOKEN)),
             timeout=120,
             interval=1,
             desc="the remote job to finish",
         )[1]["data"]
         assert record["origin"]["via"] == "hub" and record["origin"]["hub"] == HUB
-        assert record["origin"]["account"] == f"api@{HUB}" and record["origin"]["account_source"] == "hub"
+        assert (
+            record["origin"]["account"] == f"api@{HUB}"
+            and record["origin"]["account_source"] == "hub"
+        )
         assert record["state"] == "failed"  # no such instance there: the remote's own answer
         # ... and the hub reads it back through the forward, as a remote job.
-        status, through, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs/{job_id}", token=HUB_TOKEN)
+        status, through, _ = _api(
+            lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs/{job_id}", token=HUB_TOKEN
+        )
         assert status == 200 and through["data"]["id"] == job_id
         # Only an Admin at the hub may ask for a removal there, and the remote refuses it anyway.
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", {"verb": "rm", "target": {"project": "x"}, "consent": True}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            f"/api/v1/hosts/{lab.host_id}/jobs",
+            {"verb": "rm", "target": {"project": "x"}, "consent": True},
+            token=HUB_TOKEN,
+        )
         assert status == 403 and _code(body) == "auth.role_forbidden"
 
 
 class TestTrustIsPinnedBothWays:
     def test_a_changed_host_key_is_a_hard_stop_until_an_admin_repins(self, lab):
         real = lab.host_view()
-        status, body, _ = _api(lab.hub, "/api/v1/hosts", {"op": "repin", "id": lab.host_id, "host_key": OTHER_KEY}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            "/api/v1/hosts",
+            {"op": "repin", "id": lab.host_id, "host_key": OTHER_KEY},
+            token=HUB_TOKEN,
+        )
         assert status == 200, body
         view = body["data"]["host"]
         if view["state"] == "connecting":
             view = lab.check()
         assert view["state"] == "host_key_changed", view
         assert view["actions_allowed"] is False
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", {"verb": "start", "target": {"project": "p"}}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            f"/api/v1/hosts/{lab.host_id}/jobs",
+            {"verb": "start", "target": {"project": "p"}},
+            token=HUB_TOKEN,
+        )
         assert status == 409 and _code(body) == "host.not_connected"
         # It never reconnects by itself: a check later still says so.
         assert lab.check()["state"] == "host_key_changed"
         # The Admin pins the real key again.
         host_key = (lab.ssh_dir / "host_ed25519.pub").read_text()
-        status, body, _ = _api(lab.hub, "/api/v1/hosts", {"op": "repin", "id": lab.host_id, "host_key": host_key}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            "/api/v1/hosts",
+            {"op": "repin", "id": lab.host_id, "host_key": host_key},
+            token=HUB_TOKEN,
+        )
         assert status == 200, body
-        view = body["data"]["host"] if body["data"]["host"]["state"] != "connecting" else lab.check()
+        view = (
+            body["data"]["host"] if body["data"]["host"]["state"] != "connecting" else lab.check()
+        )
         assert view["state"] == "connected", view
         assert view["host_key_fingerprint"] == real["host_key_fingerprint"]
 
@@ -493,9 +629,14 @@ class TestPresenceIsReportedNeverActedOn:
         assert before["state"] == "connected", before
         # What the remote lists before it goes quiet: every check on its instances below
         # is over this list, and holds with nothing to check on an empty fleet.
-        captured = sorted(i["project"] for i in _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]["data"])
+        captured = sorted(
+            i["project"]
+            for i in _api(lab.remote, "/api/v1/instances", token=REMOTE_TOKEN)[1]["data"]
+        )
         jobs_before = _api(lab.remote, "/api/v1/jobs", token=REMOTE_TOKEN)[1]["data"]
-        req = urllib.request.Request(lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"})
+        req = urllib.request.Request(
+            lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"}
+        )
         with urllib.request.urlopen(req, timeout=60) as stream:  # noqa: S310
             _next_frame(stream, "snapshot")
             lab.stop_sshd()
@@ -503,16 +644,25 @@ class TestPresenceIsReportedNeverActedOn:
             assert view["state"] == "unreachable", view
             assert view["last_seen"] is not None and view["actions_allowed"] is False
             # An open page is told at once: the remote's last-known instances, each unknown.
-            stale = _next_frame(stream, "host_snapshot", lambda d: d.get("host") == lab.host_id and d.get("stale"))
+            stale = _next_frame(
+                stream, "host_snapshot", lambda d: d.get("host") == lab.host_id and d.get("stale")
+            )
         assert sorted(i["project"] for i in stale["instances"]) == captured
         # ... down to every bench, with the reason a page shows over the last readings.
         assert all(
-            i["overall"] == "unknown" and i["probe_error"] and {b["overall"] for b in i["benches"]} <= {"unknown"}
+            i["overall"] == "unknown"
+            and i["probe_error"]
+            and {b["overall"] for b in i["benches"]} <= {"unknown"}
             for i in stale["instances"]
         )
         # Asking again reaches nothing new: the last-seen time stays where it went quiet.
         assert stale["last_seen"] == view["last_seen"] == lab.check()["last_seen"]
-        status, body, _ = _api(lab.hub, f"/api/v1/hosts/{lab.host_id}/jobs", {"verb": "start", "target": {"project": "p"}}, token=HUB_TOKEN)
+        status, body, _ = _api(
+            lab.hub,
+            f"/api/v1/hosts/{lab.host_id}/jobs",
+            {"verb": "start", "target": {"project": "p"}},
+            token=HUB_TOKEN,
+        )
         assert status == 409 and _code(body) == "host.not_connected"
         # Back up: the link recovers on its own and no job appeared on the remote meanwhile.
         lab.run_sshd()

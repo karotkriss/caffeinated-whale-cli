@@ -13,7 +13,6 @@ import json
 import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -407,7 +406,6 @@ class TestInstall:
         assert check is not None and check.ok and check.message == "hello from 1"
         assert view["state"] == "on"
 
-
     def test_two_packages_that_ship_the_same_module_cannot_both_install(self, home, repo):
         community.install(_url(repo), commit=_write(repo))
         other = _second_repo(home, "other")
@@ -432,7 +430,9 @@ class TestInstall:
             _write(path, iid=iid)
             text = (path / "pyproject.toml").read_text()
             (path / "pyproject.toml").write_text(
-                text.replace("[project.entry-points", 'dependencies = ["shared"]\n\n[project.entry-points')
+                text.replace(
+                    "[project.entry-points", 'dependencies = ["shared"]\n\n[project.entry-points'
+                )
             )
             _git(path, "commit", "-qam", "depends on shared")
             community.install(_url(path), commit=_git(path, "rev-parse", "HEAD"))
@@ -901,7 +901,7 @@ class TestHookPoints:
         target = store.offsite_target("erp")
         assert target.location == "Hello"
         with pytest.raises(CwcliError) as e:
-            target.bucket
+            _ = target.bucket
         assert e.value.code == "offsite.target_failed"
         assert serve._offsite_summary() == {"id": "hello", "name": "Hello", "location": "Hello"}
 
