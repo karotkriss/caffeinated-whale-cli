@@ -66,6 +66,7 @@ from ..utils import config_utils, shared_home
 from . import integrations
 from .errors import CwcliError, ErrorKind
 from .protocol import BRIDGE_PROTOCOL, PROTOCOL_VERSION
+from .schedules import StoreLock
 
 HOST_TRANSPORT = "host_transport"
 SSH_TRANSPORT = "ssh"
@@ -449,7 +450,7 @@ def add_host(
             "or paste that file's contents as the host key.",
         )
     kind, blob = parse_public_key(key_text)
-    with _lock:
+    with _lock, StoreLock(store_path()):
         data = _load()
         base = slugify(final_name)
         host_id, n = base, 2
@@ -483,7 +484,7 @@ def add_host(
 
 
 def remove_host(host_id: str) -> HostRecord:
-    with _lock:
+    with _lock, StoreLock(store_path()):
         data = _load()
         rec = data["hosts"].pop(host_id, None)
         if rec is None:
@@ -496,7 +497,7 @@ def remove_host(host_id: str) -> HostRecord:
 def repin_host(host_id: str, host_key: str) -> HostRecord:
     """Pin a new host key for a host whose key changed (an Admin's explicit act)."""
     kind, blob = parse_public_key(host_key)
-    with _lock:
+    with _lock, StoreLock(store_path()):
         data = _load()
         rec = data["hosts"].get(host_id)
         if rec is None:

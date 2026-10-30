@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from caffeinated_whale_cli.core import community, hosts, integrations
+from caffeinated_whale_cli.core import community, hosts, integrations, schedules
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.protocol import BRIDGE_PROTOCOL, PROTOCOL_VERSION
 from caffeinated_whale_cli.utils import shared_home
@@ -134,6 +134,28 @@ class TestStore:
         assert hosts.known_hosts_path().read_text() == "" and hosts.list_hosts() == []
         with pytest.raises(CwcliError):
             hosts.get_host(rec.id)
+
+    def test_a_write_from_another_process_is_never_lost(self):
+        """The web UI daemon and `cwcli remote add` both rewrite hosts.json and the pins.
+        Each holds the store's cross-process lock across its read and its write, so an add
+        that lands while another process is mid-write waits for it, then keeps its host."""
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS), now=1.0)
+        done = threading.Event()
+
+        def add_second():
+            hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.9", "name": "Second"}), now=2.0)
+            done.set()
+
+        worker = threading.Thread(target=add_second)
+        with schedules.StoreLock(hosts.store_path()):
+            data = json.loads(hosts.store_path().read_text())
+            worker.start()
+            assert not done.wait(0.3), "an add must not read the store while another writer holds it"
+            data["hosts"]["other"] = {"name": "Other", "transport": "ssh", "address": "10.9.8.10", "port": 22, "user": "frappe", "host_key": HOST_KEY, "added_at": 3.0, "added_by": "cli:other"}
+            hosts.store_path().write_text(json.dumps(data))
+        worker.join(5)
+        assert done.is_set() and [r.id for r in hosts.list_hosts()] == ["build-box", "other", "second"]
+        assert hosts.known_hosts_path().read_text().count("cwcli-host-") == 3
 
     def test_store_changes_notify_a_running_manager(self):
         seen = []

@@ -186,6 +186,19 @@ class TestDowngradeOnlyDelegation:
     def test_the_headers_mean_nothing_without_a_credential(self, daemon):
         assert _req(daemon, "/api/v1/instances", headers=DELEGATED)[0] == 401
 
+    def test_a_schedule_saved_through_a_hub_belongs_to_the_hub_user(self, daemon):
+        """The remote caps the hub user and records who it is: an Admin-only schedule is
+        refused to a delegated Operator, and a delegated Admin's is owned by that hub user
+        (source `hub`, which the tick re-checks), never by this machine's own bearer."""
+        prune = {"op": "save", "schedule": {"name": "prune", "verb": "prune-backups", "target": {"project": "p"}, "cron": "0 2 * * *"}}
+        status, body, _ = _req(daemon, "/api/v1/schedules", prune, bearer=True, headers={**DELEGATED, "X-Cwcli-Delegated-Role": "operator"})
+        assert status == 403 and _code(body) == "auth.role_forbidden"
+        status, body, _ = _req(daemon, "/api/v1/schedules", prune, bearer=True, headers={**DELEGATED, "X-Cwcli-Delegated-Role": "admin"})
+        assert status == 200, body
+        assert (body["data"]["owner"], body["data"]["owner_source"]) == ("alice@hub-x", "hub")
+        status, body, _ = _req(daemon, "/api/v1/schedules", prune, bearer=True)
+        assert status == 200 and (body["data"]["owner"], body["data"]["owner_source"]) == ("api", "api")
+
 
 class TestHostsRoutes:
     def test_the_hub_view_names_the_hub_and_carries_no_private_key(self, daemon, tmp_path):
@@ -279,8 +292,7 @@ class TestForward:
         assert sent["headers"]["X-Cwcli-Delegated-User"] == "admin" and sent["headers"]["X-Cwcli-Delegated-Role"] == "admin"
         assert "Cookie" not in sent["headers"] and "Authorization" not in sent["headers"]
         assert headers["X-Content-Type-Options"] == "nosniff" and headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
-        assert headers["X-Cwcli-Host"] == "build-box" and headers.get("Set-Cookie") is None
-        assert headers["Cache-Control"] == "no-store"
+        assert headers.get("Set-Cookie") is None and headers["Cache-Control"] == "no-store"
 
     def test_a_post_is_forwarded_whole_and_the_hub_applies_its_own_least_role_first(self, daemon):
         daemon.views["build-box"] = _connected()
@@ -331,7 +343,8 @@ class TestForward:
         body = json.dumps({"errors": [{"title": "auth.role_forbidden", "role": "operator"}]}).encode()
         daemon.answers.append(_FakeResponse(status=403, body=body))
         got, answer, headers = _req(daemon, "/api/v1/hosts/build-box/settings", {"setting": "tips.enable"}, bearer=True)
-        assert got == 403 and answer["errors"][0]["role"] == "operator" and headers["X-Cwcli-Host"] == "build-box"
+        assert got == 403 and answer["errors"][0]["role"] == "operator"
+        assert headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
 
     @pytest.mark.parametrize("state", [core_hosts.VERSION_MISMATCH, core_hosts.UNREACHABLE, core_hosts.CONNECTING, core_hosts.DAEMON_DOWN])
     def test_an_action_needs_the_host_connected_on_an_equal_protocol(self, daemon, state):

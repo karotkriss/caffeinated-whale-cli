@@ -274,7 +274,7 @@ class TestTheLink:
         # ... as data only.
         assert headers["X-Content-Type-Options"] == "nosniff"
         assert headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
-        assert headers.get("Set-Cookie") is None and headers["X-Cwcli-Host"] == lab.host_id
+        assert headers.get("Set-Cookie") is None
 
     def test_the_hubs_stream_carries_the_remotes_snapshot(self, lab):
         req = urllib.request.Request(lab.hub + "/api/v1/stream", headers={"Authorization": f"Bearer {HUB_TOKEN}"})

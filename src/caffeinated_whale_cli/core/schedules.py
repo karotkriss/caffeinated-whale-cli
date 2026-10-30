@@ -14,8 +14,9 @@ job (``origin.schedule = <id>``), so history, logs and Retry work unchanged.
   Removals are never schedulable (``SCHEDULABLE`` is the whole list). A schedule
   running an Admin-only verb (``accounts.admin_only``: the prunes) is owned by the
   Admin who last saved it, and each run is skipped, with the reason, unless that
-  owner is still an Admin (a directory owner is looked up in the directory again; an
-  owner saved before roles is the local account of that name, else this host).
+  owner is still an Admin (a directory owner is looked up in the directory again; a
+  hub's user, ``<user>@<hub>``, only while this machine's grant still caps that hub at
+  Admin; an owner saved before roles is the local account of that name, else this host).
 * Missed runs: ``missed = "run"`` (default) runs once on wake, ``"skip"`` waits
   for the next occurrence.
 * Guards at fire time: the instance's maintenance window (when the schedule
@@ -446,7 +447,8 @@ def save(
 ) -> dict[str, Any]:
     """Create (no ``id``) or update a schedule; validated first. Returns the public row.
     ``by_source`` is where ``by`` signed in: ``local`` or ``ldap`` (a web UI account),
-    ``api`` (the bearer token) or ``host`` (the CLI on this machine)."""
+    ``api`` (the bearer token), ``hub`` (a hub's user, through this machine's grant) or
+    ``host`` (the CLI on this machine)."""
     now = now or _now()
     validate(sched)
     with _lock, StoreLock(store_path()):
@@ -719,6 +721,20 @@ def _owner_refusal(s: dict[str, Any]) -> str | None:
         source = "local" if accounts.account(owner) else "host"
     if source in ("host", "api") or (source == "local" and accounts.account(owner)):
         return None
+    if source == "hub":
+        from . import remote_access
+
+        hub = owner.rpartition("@")[2]
+        try:
+            caps = {g.hub: g.cap for g in remote_access.list_grants()}
+        except CwcliError as e:
+            return f"its owner {owner}'s Admin role could not be confirmed: {e.message}"
+        if caps.get(hub) == "admin":
+            return None
+        return (
+            f"its owner {owner} acts through hub {hub}, which this machine no longer lets act "
+            "as an Admin; an Admin must save it again to run it"
+        )
     if source != "local":  # signed in through a sign-in integration (LDAP, community)
         from . import directory
 
