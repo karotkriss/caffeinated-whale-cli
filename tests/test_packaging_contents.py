@@ -171,26 +171,18 @@ class TestTheSdistShipsWhatABuildNeeds:
 
 
 def test_no_artifact_names_private_infrastructure(sdist_archive, wheel_archive):
-    """The published files, README-as-package-page included.
-
-    The built web UI bundles are compiled from the tracked `webui/` sources the
-    tree scan already covers, so they are not scanned again here.
-    """
+    """The published files, README-as-package-page and built web UI included."""
     pattern = denylist()
     hits: list[str] = []
     with tarfile.open(sdist_archive) as tar:
         members = [m for m in tar.getmembers() if m.isfile()]
         assert members, "sdist is empty; the scan would be vacuous"
         for m in members:
-            if "/webui/dist/assets/" in m.name:
-                continue
             data = tar.extractfile(m).read()  # type: ignore[union-attr]
             hits += find_private_refs(f"sdist/{m.name}", data, pattern)
     with zipfile.ZipFile(wheel_archive) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         assert names, "wheel is empty; the scan would be vacuous"
         for n in names:
-            if "/webui/dist/assets/" in n:
-                continue
             hits += find_private_refs(f"wheel/{n}", zf.read(n), pattern)
     assert not hits, "replace with a neutral placeholder:\n" + "\n".join(hits)
