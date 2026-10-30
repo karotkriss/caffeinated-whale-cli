@@ -117,6 +117,14 @@ class FakeContainer:
         for sub in self.fail_on:
             if sub in cmd_str:
                 return 1, f"boom: {cmd_str}"
+        if " uninstall-app " in cmd_str and not getattr(self, "uninstall_noop", False):
+            # A real uninstall leaves the site's installed list; ``uninstall_noop``
+            # models Frappe declining it with a printed warning and exit 0.
+            parts = shlex.split(cmd_str)
+            site, app = parts[parts.index("--site") + 1], parts[parts.index("uninstall-app") + 1]
+            self.installed[site] = [
+                line for line in self.installed.get(site, []) if line.split()[0] != app
+            ]
         if cmd_str.startswith("git status"):
             return 0, getattr(self, "dirty", "")
         if cmd_str.strip() == "git remote":
@@ -152,6 +160,11 @@ class FakeContainer:
 
 @pytest.fixture()
 def container(monkeypatch):
+    return wire_fake_bench(monkeypatch)
+
+
+def wire_fake_bench(monkeypatch):
+    """A running one-site fake bench, wired in as the project's frappe container."""
     c = FakeContainer(installed={"a.localhost": ["frappe 15.0.0 version-15"]})
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost"])
@@ -1178,6 +1191,111 @@ def test_uninstall_consent_is_independent_of_auto_start(monkeypatch, container):
 
     assert result.status is Status.NEEDS_CHOICE
     assert result.choice.kind == "confirm_uninstall"
+
+
+def _with_dependent(container):
+    """``a.localhost`` has payments installed, and webshop, which requires it."""
+    container.installed = {
+        "a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main", "webshop 1.0.0 main"]
+    }
+    container.required_apps = {"webshop": ["frappe/payments"]}
+
+
+def test_uninstall_of_a_required_app_is_refused_up_front_naming_the_dependent(
+    monkeypatch, container
+):
+    """Frappe declines this with exit 0, so cwcli must refuse it before running anything."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _with_dependent(container)
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert exc.value.kind is ErrorKind.CONFLICT
+    assert exc.value.code == "app.required_by_installed"
+    assert "'payments' is required by webshop on a.localhost" in exc.value.message
+    assert not any("uninstall-app" in c for c in container.calls)
+
+
+@pytest.mark.parametrize(
+    ("entry", "required"),
+    [
+        ("payments", True),
+        ("frappe/payments", True),
+        ("https://github.com/frappe/payments.git", True),
+        ("frappe/payments@develop", True),
+        ("git@github.com:frappe/payments.git", True),
+        ("payments_extra", False),
+        ("frappe/paym", False),
+    ],
+)
+def test_required_entries_are_parsed_like_frappe_does(entry, required):
+    assert core_apps._requires([entry], "payments") is required
+
+
+def test_the_required_refusal_comes_before_the_consent_question(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _with_dependent(container)
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert exc.value.code == "app.required_by_installed"
+
+
+def test_a_dependent_uninstalled_earlier_in_the_same_call_does_not_block(monkeypatch, container):
+    """Apps go in the order given, so webshop is gone before payments is removed."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _with_dependent(container)
+
+    result = core_apps.uninstall_apps(
+        "proj", ["webshop", "payments"], sites=["a.localhost"], consent=True
+    )
+
+    assert result.data.ok is True
+    assert [(r.app, r.ok) for r in result.data.results if r.action == "uninstall-app"] == [
+        ("webshop", True),
+        ("payments", True),
+    ]
+
+
+def test_an_unreadable_site_fails_the_uninstall_closed(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    container.fail_on = ["execute frappe.get_installed_apps"]
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert exc.value.kind is ErrorKind.PRECONDITION
+    assert exc.value.code == "app.uninstall_state_unknown"
+    assert not any("uninstall-app" in c for c in container.calls)
+
+
+def test_an_uninstall_that_exits_0_but_leaves_the_app_installed_is_a_failure(
+    monkeypatch, container
+):
+    """The after-check: the exit code alone is not the truth."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main"]}
+    container.uninstall_noop = True
+
+    result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert result.status is Status.WARNING
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results] == [("uninstall-app", False)]
+    assert any(w.code == "app.still_installed" for w in result.warnings)
+
+
+def test_an_uninstall_that_removed_the_app_stays_a_success(monkeypatch, container):
+    """The success twin of the after-check."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main"]}
+
+    result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert result.data.ok is True
+    assert not any(w.code == "app.still_installed" for w in result.warnings)
 
 
 # ---------------------------------------------------------------------- the contract

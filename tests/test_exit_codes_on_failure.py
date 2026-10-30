@@ -35,9 +35,11 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import apps as apps_mod
+from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core.apps import AppResult, AppsReport
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.utils import docker_utils
+from tests import test_core_apps
 
 
 def _report(*, ok: bool) -> AppsReport:
@@ -233,4 +235,44 @@ def test_warning_status_alone_never_decides_the_exit_code(monkeypatch, no_docker
         )
 
     assert exc.value.exit_code != 0
+    capsys.readouterr()
+
+
+# ------------------------------------------------- a step that "succeeded" but did nothing
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["human", "json"])
+@pytest.mark.parametrize("declined", [True, False], ids=["declined", "removed"])
+def test_an_uninstall_that_exits_0_but_leaves_the_app_installed_exits_non_zero(
+    declined, json_output, monkeypatch, no_docker, capsys
+):
+    """Frappe declines some uninstalls with a printed warning and exit 0.
+
+    Driven through the REAL core, not a stubbed report: the defect was the core
+    reading the step's exit code as the outcome, so only the core can pin it. The
+    success twin removes the app and must still exit 0.
+    """
+    container = test_core_apps.wire_fake_bench(monkeypatch)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": test_core_apps.BENCH}])
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "custom_app 1.0.0 main"]}
+    container.uninstall_noop = declined
+
+    def _run():
+        apps_mod.uninstall_apps(
+            project_name="proj",
+            apps=["custom_app"],
+            bench=None,
+            bench_path=None,
+            sites=["a.localhost"],
+            json_output=json_output,
+            yes=True,
+            verbose=False,
+        )
+
+    if declined:
+        with pytest.raises(typer.Exit) as exc:
+            _run()
+        assert exc.value.exit_code == 1, "an uninstall that removed nothing exited 0"
+    else:
+        _run()
     capsys.readouterr()
