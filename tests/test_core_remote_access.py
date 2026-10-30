@@ -371,6 +371,7 @@ class TestGrantsAndRevocation:
             "stat",
             lambda self, *a, **k: _Stat() if self == target else real_stat(self, *a, **k),
         )
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "test-user")
         monkeypatch.setattr(os, "getuid", lambda: 4242)
         with pytest.raises(CwcliError) as refused_allow:
             _allow(keys, host_key_file, cap="admin")
