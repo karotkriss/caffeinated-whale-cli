@@ -543,6 +543,22 @@ def test_an_app_already_on_the_bench_is_not_refetched_when_its_repo_has_another_
     assert ("get-app", None, True) in [(r.action, r.site, r.ok) for r in result.data.results]
 
 
+def test_the_already_installed_refusal_checks_a_remote_matched_app_by_its_real_name(
+    monkeypatch, container
+):
+    container.available = ["frappe", "single_window"]
+    container.app_remotes = {"single_window": [SW_URL]}
+    container.installed = {"a.localhost": ["frappe", "single_window"]}
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.install_apps("proj", [SW_URL], sites=["a.localhost"], require_absent=True)
+
+    assert exc.value.code == "app.already_installed"
+    assert "'single_window'" in exc.value.message
+    assert not any("install-app" in c for c in container.calls)
+
+
 def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, container):
     """The bug itself, pinned through the fake: a bench copy with a DIFFERENT remote
     is not the requested repository, so it is fetched, and bench's rename fails."""

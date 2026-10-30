@@ -91,6 +91,7 @@ def test_a_remote_hosts_bench_ignores_this_machines_installs():
         ({"loading": False, "data": {"served_from": "cache"}}, "remembered"),
         ({"loading": False, "data": {"served_from": "partial"}}, "live"),
         ({"loading": False, "data": {"served_from": "full"}}, "live"),
+        ({"loading": False, "data": {"served_from": "full"}, "error": {}}, "remembered"),
     ],
 )
 def test_only_a_live_read_may_claim_what_the_bench_holds(detail, state):
