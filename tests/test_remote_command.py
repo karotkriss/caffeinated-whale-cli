@@ -71,12 +71,13 @@ class TestRemoteSide:
         assert _json(runner.invoke(app, ["remote", "hubs", "--json"])) == []
 
     @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
-    def test_a_grant_file_this_account_cannot_read_is_named_and_revoke_exits_1(self, tmp_path, monkeypatch):
+    def test_a_grant_this_account_cannot_read_is_listed_from_the_record_and_revoke_names_its_account(self, tmp_path, monkeypatch):
         monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: [])
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "alice")
         theirs = tmp_path / "alice" / ".ssh" / "authorized_keys"
         host_key = tmp_path / "hk.pub"
         host_key.write_text(HOST_KEY + "\n")
-        _json(runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--authorized-keys", str(theirs), "--address", "10.0.0.2", "--json"]))
+        _json(runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--max-role", "admin", "--host-key-file", str(host_key), "--authorized-keys", str(theirs), "--address", "10.0.0.2", "--json"]))
         os.chmod(theirs.parent, 0)
         try:
             listed = runner.invoke(app, ["remote", "hubs"])
@@ -84,9 +85,10 @@ class TestRemoteSide:
             revoked = runner.invoke(app, ["remote", "revoke", "--hub", "hub-x"])
         finally:
             os.chmod(theirs.parent, 0o700)
-        assert listed.exit_code == 0 and f"hub-x  not readable from this account  {theirs}" in listed.stdout
-        assert [(r["hub"], r["keys_path"], bool(r["unreadable"])) for r in rows] == [("hub-x", str(theirs), True)]
-        assert revoked.exit_code == 1 and f"could not read {theirs}" in revoked.stderr
+        alice = f"alice (uid {os.getuid()})"
+        assert listed.exit_code == 0 and f"hub-x  recorded by {alice}, not readable from this account  cap admin" in listed.stdout
+        assert [(r["hub"], r["cap"], r["keys_path"], r["recorded_by"]) for r in rows] == [("hub-x", "admin", str(theirs), alice)]
+        assert revoked.exit_code == 1 and str(theirs) in revoked.stderr and "Run this as alice." in revoked.stderr
         assert "cwcli-hub:hub-x" in theirs.read_text()
 
     def test_on_a_shared_install_a_member_grants_under_their_own_login(self, tmp_path, monkeypatch):
@@ -105,7 +107,8 @@ class TestRemoteSide:
         mine = tmp_path / "userhome" / ".ssh" / "authorized_keys"
         (line,) = mine.read_text().splitlines()
         assert f" --home {shared} --state {shared / 'run' / f'ui-{os.getuid()}.json'} " in line
-        assert grant["keys_path"] == str(mine) and remote_access.recorded_grants() == {"hub-x": str(mine)}
+        entry = remote_access.recorded_grants()["hub-x"]
+        assert grant["keys_path"] == entry["keys"] == str(mine) and entry["home"] == str(shared)
         assert str(shared) in grant["note"] and "revoke` as this same account" in grant["note"]
 
     def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):

@@ -4,6 +4,7 @@ bridge processes still running."""
 
 from __future__ import annotations
 
+import getpass
 import os
 import signal
 import stat
@@ -166,11 +167,14 @@ class TestAllow:
 class TestGrantsAndRevocation:
     def test_the_file_each_grant_went_to_is_recorded_for_hubs_and_revoke(self, keys, host_key_file, tmp_path, monkeypatch):
         """`allow --authorized-keys <file>` writes the line where the bridge will read it;
-        the record of that file is what `hubs`, `revoke` and the schedule check read."""
+        the record of that grant is what `hubs`, `revoke` and the schedule check go by."""
         monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
         monkeypatch.setenv("HOME", str(tmp_path / "someone-else"))
         _allow(keys, host_key_file, home=None, cap="admin")
-        assert remote_access.recorded_grants() == {HUB: str(keys)}
+        entry = remote_access.recorded_grants()[HUB]
+        assert (entry["keys"], entry["home"], entry["cap"]) == (str(keys), str(tmp_path / "cw"), "admin")
+        assert entry["key_fp"] == hosts.fingerprint(*KEY.split()[:2])
+        assert (entry["user"], entry["uid"]) == (getpass.getuser(), os.getuid()) and entry["at"] > 0
         assert [(g.hub, g.cap) for g in remote_access.list_grants()] == [(HUB, "admin")]
         assert remote_access.grant_cap(HUB) == "admin" and remote_access.grant_cap("hub-home") is None
         done = remote_access.revoke(hub=HUB, proc_root=keys.parent)
@@ -185,35 +189,85 @@ class TestGrantsAndRevocation:
         gone.unlink()
         assert remote_access.list_grants() == [] and remote_access.grant_cap(HUB) is None
         _allow(keys, host_key_file, home=None, hub="hub-home", key=OTHER_KEY)
-        assert remote_access.recorded_grants() == {"hub-home": str(keys)}
+        assert {hub: e["keys"] for hub, e in remote_access.recorded_grants().items()} == {"hub-home": str(keys)}
 
     @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
-    def test_a_recorded_file_this_account_cannot_read_is_named_never_a_traceback(self, keys, host_key_file, tmp_path, monkeypatch):
+    def test_a_recorded_file_this_account_cannot_read_is_listed_from_the_record_and_named(self, keys, host_key_file, tmp_path, monkeypatch):
         """Another account's grant recorded in a shared home sits behind that account's 0700
-        .ssh, which this account cannot even look into: every scan names the file as
-        unreadable, the record keeps it, and a revoke still does all it can."""
+        .ssh, which this account cannot even look into: `hubs` lists it from the record, the
+        schedule check and `revoke` name the account that wrote it, and the record keeps it
+        while `revoke` still cleans this account's own file and ends the hub's bridges."""
         monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         scanned = []
         monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: scanned.append(hub) or [])
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "alice")
         theirs = tmp_path / "alice" / ".ssh" / "authorized_keys"
         _allow(theirs, host_key_file, home=None, cap="admin")
         _allow(keys, host_key_file, home=tmp_path / "elsewhere")  # the same hub, recorded elsewhere
         os.chmod(theirs.parent, 0)
         try:
-            listed = {(g.keys_path, g.hub, g.cap, bool(g.unreadable)) for g in remote_access.list_grants()}
-            assert listed == {(str(keys), HUB, "operator", False), (str(theirs), HUB, "", True)}
-            with pytest.raises(CwcliError) as e:
+            listed = {g.keys_path: g for g in remote_access.list_grants()}
+            with pytest.raises(CwcliError) as checked:
                 remote_access.grant_cap(HUB)
-            assert str(theirs) in e.value.message
             _allow(keys, host_key_file, home=None, hub="hub-home", key=OTHER_KEY)
-            assert remote_access.recorded_grants() == {HUB: str(theirs), "hub-home": str(keys)}
-            done = remote_access.revoke(hub=HUB, proc_root=keys.parent)
+            with pytest.raises(CwcliError) as revoked:
+                remote_access.revoke(hub=HUB, proc_root=keys.parent)
         finally:
             os.chmod(theirs.parent, 0o700)
-        assert done.files == {str(keys): 1} and str(theirs) in done.unreadable[str(theirs)]
+        assert (listed[str(keys)].cap, listed[str(keys)].unreadable) == ("operator", "")
+        recorded = listed[str(theirs)]
+        assert (recorded.hub, recorded.cap, recorded.recorded_by) == (HUB, "admin", f"alice (uid {os.getuid()})")
+        assert recorded.unreadable and recorded.home == str(tmp_path / "cw")
+        for e in (checked, revoked):
+            assert str(theirs) in e.value.message and "alice" in e.value.message
+        assert "alice" in revoked.value.hint
+        assert [g.hub for g in remote_access.list_grants(keys)] == ["hub-home"]
         assert scanned and set(scanned) == {HUB}
-        assert remote_access.recorded_grants()[HUB] == str(theirs) and HUB in theirs.read_text()
+        assert remote_access.recorded_grants()[HUB]["keys"] == str(theirs) and HUB in theirs.read_text()
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_on_a_shared_install_a_members_check_never_reads_another_hubs_file(self, host_key_file, tmp_path, monkeypatch):
+        """Alice grants hub-x and Bob grants hub-y, each in their own 0700 .ssh, both recorded
+        in the one shared home. Alice's check of hub-x reads only her file, so Bob's file,
+        which she cannot read, never blocks it, and `hubs` lists Bob's grant from the record."""
+        marker = tmp_path / "shared.toml"
+        marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "state"}"\n')
+        monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+        monkeypatch.delenv("CWCLI_HOME", raising=False)
+        for user, hub, key in (("alice", "hub-x", KEY), ("bob", "hub-y", OTHER_KEY)):
+            monkeypatch.setenv("HOME", str(tmp_path / user))
+            monkeypatch.setattr(remote_access.getpass, "getuser", lambda user=user: user)
+            remote_access.allow(
+                hub=hub, key=key, cap="admin", python="/opt/py/bin/python3", state_path=str(tmp_path / "ui.json"),
+                host_key_file=str(host_key_file), proc_root=tmp_path,
+            )  # fmt: skip
+        bobs = tmp_path / "bob" / ".ssh"
+        monkeypatch.setenv("HOME", str(tmp_path / "alice"))
+        os.chmod(bobs, 0)
+        try:
+            cap = remote_access.grant_cap("hub-x")
+            listed = {g.hub: g for g in remote_access.list_grants()}
+        finally:
+            os.chmod(bobs, 0o700)
+        assert cap == "admin" and listed["hub-x"].unreadable == ""
+        bob = listed["hub-y"]
+        assert (bob.cap, bob.keys_path, bob.recorded_by) == ("admin", str(bobs / "authorized_keys"), f"bob (uid {os.getuid()})")
+        assert bob.unreadable and bob.home == str(tmp_path / "state")
+
+    def test_a_comment_that_is_not_utf8_on_another_key_is_kept_byte_for_byte(self, keys, host_key_file, tmp_path, monkeypatch):
+        """OpenSSH treats a key's comment as opaque bytes: a Latin-1 one on the owner's own
+        key neither stops a scan nor changes when a grant is written and revoked."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        theirs = b"ssh-rsa AAAAB3NzaC1yc2E= Jos\xe9's laptop\r\n"
+        keys.parent.mkdir(parents=True)
+        keys.write_bytes(theirs)
+        _allow(keys, host_key_file, home=None, cap="admin")
+        assert [(g.hub, g.cap) for g in remote_access.list_grants()] == [(HUB, "admin")]
+        assert remote_access.grant_cap(HUB) == "admin"
+        assert remote_access.revoke(hub=HUB, proc_root=keys.parent).removed == 1
+        assert keys.read_bytes() == theirs
 
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)

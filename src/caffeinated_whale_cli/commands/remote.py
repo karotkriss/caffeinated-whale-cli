@@ -153,15 +153,15 @@ def revoke_cmd(
     authorized_keys: str | None = typer.Option(
         None,
         "--authorized-keys",
-        help="The authorized_keys file (default: ~/.ssh/authorized_keys and every file `allow` "
-        "wrote a grant to).",
+        help="The authorized_keys file (default: ~/.ssh/authorized_keys and the file `allow` "
+        "recorded for the hub).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
     """Withdraw a hub's access: remove its line and end its running bridge processes.
 
-    Exits 1 when a file that may hold a grant could not be read from this account (another
-    account's authorized_keys): its lines stay until that account runs revoke.
+    When the hub's recorded grant is in a file this account cannot read (another account's
+    authorized_keys), it exits 1 naming the account to run it as.
     """
     try:
         done = remote_access.revoke(
@@ -172,31 +172,22 @@ def revoke_cmd(
         _fail(e)
     if as_json:
         console.print_json(json.dumps(asdict(done)))
+        return
+    if done.removed:
+        changed = ", ".join(path for path, n in done.files.items() if n)
+        console.print(
+            f"Revoked hub [bold]{escape(done.hub)}[/bold]: removed {done.removed} line(s) from {escape(changed)}.",
+            soft_wrap=True,
+        )
     else:
-        if done.removed:
-            changed = ", ".join(path for path, n in done.files.items() if n)
-            console.print(
-                f"Revoked hub [bold]{escape(done.hub)}[/bold]: removed {done.removed} line(s) from {escape(changed)}.",
-                soft_wrap=True,
-            )
-        elif done.files:
-            console.print(
-                f"Hub {escape(done.hub)} had no line in {escape(', '.join(done.files))}; nothing to remove.",
-                soft_wrap=True,
-            )
-        if done.ended_pids:
-            console.print(
-                f"  Ended {len(done.ended_pids)} running bridge process(es): {', '.join(map(str, done.ended_pids))}."
-            )
-        for path in done.unreadable:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] could not read {escape(path)} (not readable from this "
-                f"account), so any line for hub {escape(done.hub)} there is still in place; run "
-                f"`cwcli remote revoke --hub {escape(done.hub)}` as the account that owns it.",
-                soft_wrap=True,
-            )
-    if done.unreadable:
-        raise typer.Exit(code=1)
+        console.print(
+            f"Hub {escape(done.hub)} had no line in {escape(', '.join(done.files))}; nothing to remove.",
+            soft_wrap=True,
+        )
+    if done.ended_pids:
+        console.print(
+            f"  Ended {len(done.ended_pids)} running bridge process(es): {', '.join(map(str, done.ended_pids))}."
+        )
 
 
 @app.command("hubs")
@@ -210,7 +201,7 @@ def hubs_cmd(
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
     """The hubs this machine lets in, with each one's role cap and the cwcli home its bridge
-    serves. A recorded grant file this account cannot read is listed as not readable."""
+    serves. A recorded grant whose file this account cannot read is listed from the record."""
     try:
         grants = remote_access.list_grants(
             None if authorized_keys is None else Path(authorized_keys)
@@ -226,7 +217,9 @@ def hubs_cmd(
     for g in grants:
         if g.unreadable:
             console.print(
-                f"[bold]{escape(g.hub or '?')}[/bold]  not readable from this account  {escape(g.keys_path)}",
+                f"[bold]{escape(g.hub)}[/bold]  recorded by {escape(g.recorded_by)}, not readable from "
+                f"this account  cap {g.cap or '?'}  {escape(g.fingerprint)}  home {escape(g.home or '?')}  "
+                f"{escape(g.keys_path)}",
                 soft_wrap=True,
             )
             continue
