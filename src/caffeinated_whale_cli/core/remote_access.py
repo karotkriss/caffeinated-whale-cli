@@ -39,10 +39,11 @@ when its bridge serves this home; ``revoke`` cleans this account's own
 account cannot read (another account's 0700 ``.ssh``) from its record. Such a file is an
 error that names the account that wrote the grant for ``revoke``, and leaves the owner
 check unable to confirm the cap. Grant files are read and rewritten byte for byte, so
-another key's comment that is not UTF-8 survives unchanged, and a rewrite never changes who
-can read the file: it keeps the file's mode (and, under root, its owner), and a file another
-account owns is refused unless this is root, whose ``revoke`` also ends that account's
-bridges for the hub.
+another key's comment that is not UTF-8 survives unchanged. A rewrite never changes who can
+read the file: a symlinked file is rewritten where it really lives (the link stays a link),
+it keeps its mode (and, under root, its owner), and a file with other hard links is refused,
+as is a file another account owns unless this is root, whose ``revoke`` also ends that
+account's bridges for the hub.
 """
 
 from __future__ import annotations
@@ -311,17 +312,20 @@ def _write_lines(path: Path, lines: list[str]) -> int:
     """Rewrite ``authorized_keys`` atomically without changing who can read it, and return
     the uid that owned it before (this process's, for a file this call creates).
 
-    sshd opens the file as its owner, so the rewrite keeps every other line byte for byte,
-    the file's mode and, under root, its owner and group; a file another account owns is
-    refused unless this is root. The new content goes through a uniquely named file in the
-    same directory (never a planted link), removed if anything fails. Only a ``.ssh`` or a
-    file this call creates gets sshd's modes (0700, 0600).
+    A symlinked file or directory is rewritten where it really lives, so the link stays a
+    link. sshd opens the file as its owner, so the rewrite keeps every other line byte for
+    byte, the file's mode and, under root, its owner and group. A file another account owns
+    is refused unless this is root, and so is a file with other hard links (the new file
+    would leave them with the old lines). The new content goes through a uniquely named file
+    in the real file's directory (never a planted link), removed if anything fails. Only a
+    ``.ssh`` or a file this call creates gets sshd's modes (0700, 0600).
     """
+    real = Path(os.path.realpath(path))
     me = os.getuid() if hasattr(os, "getuid") else None
     tmp: str | None = None
     try:
         try:
-            st: os.stat_result | None = path.stat()
+            st: os.stat_result | None = real.stat()
         except FileNotFoundError:
             st = None
         if st is not None and me not in (None, 0, st.st_uid):
@@ -333,8 +337,16 @@ def _write_lines(path: Path, lines: list[str]) -> int:
                 "would change who can read it",
                 hint=f"Run this as {owner}.",
             )
-        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        if st is not None and st.st_nlink > 1:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "remote.keys_hard_linked",
+                f"{path} has {st.st_nlink} hard links, and rewriting it would leave the others "
+                "with the old lines",
+                hint="Edit it in place, or remove its other links, then run this again.",
+            )
+        real.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{real.name}.", dir=real.parent)
         with os.fdopen(fd, "wb") as f:
             f.write("".join(line + "\n" for line in lines).encode("utf-8", "surrogateescape"))
             if st is not None:
@@ -343,7 +355,7 @@ def _write_lines(path: Path, lines: list[str]) -> int:
                 os.fchmod(f.fileno(), stat.S_IMODE(st.st_mode))
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        os.replace(tmp, real)
         tmp = None
     except OSError as e:
         raise CwcliError(
@@ -354,13 +366,6 @@ def _write_lines(path: Path, lines: list[str]) -> int:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
     return st.st_uid if st is not None else (me or 0)
-
-
-def _bridge_uids(rewritten: set[int]) -> set[int]:
-    """Whose bridges a revoke or a replaced grant ends: this account's own, or under root
-    exactly the owners of the grant files it rewrote, never every account's."""
-    me = os.getuid() if hasattr(os, "getuid") else 0
-    return set(rewritten) if me == 0 else {me}
 
 
 def read_host_key(path: str | None = None) -> tuple[str, str] | None:
@@ -478,7 +483,7 @@ def allow(
             "at": time.time(),
         },
     )
-    ended = end_bridges(hub, uids=_bridge_uids({owner}), proc_root=proc_root) if replaced else []
+    ended = end_bridges(hub, uids={owner}, proc_root=proc_root) if replaced else []
 
     warnings: list[str] = []
     host_key = read_host_key(host_key_file)
@@ -668,8 +673,8 @@ def revoke(
     the default file is then searched. A recorded file this account cannot read, or
     another account's file it may not rewrite (anyone but root), is an error naming the
     account to run it as (its line stays, and so does its record). This account's bridges
-    for the hub are ended whatever happens; under root, exactly those of the accounts whose
-    files it rewrote."""
+    for the hub are ended whatever happens, and under root also those of each account whose
+    file it rewrote, never anyone else's."""
     hub = check_hub_name(hub)
     home = config_utils.cwcli_home()
     try:
@@ -682,18 +687,18 @@ def revoke(
     else:
         paths = _grant_files([recorded] if recorded else [])
     files: dict[str, int] = {}
-    rewritten: set[int] = set()
+    uids = {os.getuid() if hasattr(os, "getuid") else 0}
     try:
         for path in paths:
             lines = _lines_of(path, hub, entry)
             kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
             if len(kept) != len(lines):
-                rewritten.add(_write_lines(path, kept))
+                uids.add(_write_lines(path, kept))
             files[str(path)] = len(lines) - len(kept)
         if recorded is not None and str(recorded) in files:
             _record_grant(home, hub, None)
     finally:
-        ended = end_bridges(hub, uids=_bridge_uids(rewritten), proc_root=proc_root)
+        ended = end_bridges(hub, uids=uids, proc_root=proc_root)
     return Revocation(hub=hub, removed=sum(files.values()), ended_pids=ended, files=files)
 
 

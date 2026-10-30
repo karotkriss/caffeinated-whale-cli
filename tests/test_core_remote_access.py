@@ -11,6 +11,7 @@ import signal
 import stat
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -284,11 +285,12 @@ class TestGrantsAndRevocation:
         _allow(keys, host_key_file)
         before = keys.read_bytes()
         real_stat = os.stat
+        target = Path(os.path.realpath(keys))
 
         class _Stat:
-            st_uid, st_gid, st_mode = 2_147_483_641, 2_147_483_642, 0o100640
+            st_uid, st_gid, st_mode, st_nlink = 2_147_483_641, 2_147_483_642, 0o100640, 1
 
-        monkeypatch.setattr(type(keys), "stat", lambda self, *a, **k: _Stat() if self == keys else real_stat(self, *a, **k))
+        monkeypatch.setattr(type(keys), "stat", lambda self, *a, **k: _Stat() if self == target else real_stat(self, *a, **k))
         monkeypatch.setattr(os, "getuid", lambda: 4242)
         with pytest.raises(CwcliError) as refused_allow:
             _allow(keys, host_key_file, cap="admin")
@@ -304,6 +306,64 @@ class TestGrantsAndRevocation:
         _allow(keys, host_key_file, cap="admin")
         assert chowned == [(2_147_483_641, 2_147_483_642)] and stat.S_IMODE(real_stat(keys).st_mode) == 0o640
         assert "--max-role admin" in keys.read_text()
+
+    @pytest.mark.parametrize("linked", ["file", "directory"])
+    def test_a_symlinked_file_or_directory_stays_a_link_and_its_target_takes_the_change(self, keys, host_key_file, tmp_path, monkeypatch, linked):
+        """Dotfile managers keep ~/.ssh/authorized_keys (or ~/.ssh itself) as a link into a
+        managed tree: the rewrite goes to the real file behind it, in its own directory and
+        with its mode, the link stays a link, and the record and the forced command keep
+        naming the path sshd reads."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        managed = tmp_path / "dotfiles" / "ssh" / "authorized_keys"
+        managed.parent.mkdir(parents=True)
+        original = b"ssh-rsa AAAAB3NzaC1yc2E= laptop\n"
+        managed.write_bytes(original)
+        managed.chmod(0o644)
+        link = keys if linked == "file" else keys.parent
+        link.parent.mkdir(parents=True)
+        link.symlink_to(managed if linked == "file" else managed.parent)
+        grant = _allow(keys, host_key_file, home=None, cap="admin")
+        assert link.is_symlink() and f"cwcli-hub:{HUB}" in managed.read_text()
+        assert stat.S_IMODE(managed.stat().st_mode) == 0o644
+        assert grant.keys_path == str(keys) and f" --keys {keys} " in grant.line
+        assert remote_access.recorded_grants()[HUB]["keys"] == str(keys)
+        assert remote_access.revoke(hub=HUB, proc_root=tmp_path).removed == 1
+        assert link.is_symlink() and managed.read_bytes() == original
+        assert stat.S_IMODE(managed.stat().st_mode) == 0o644
+        assert sorted(os.listdir(managed.parent)) == ["authorized_keys"]
+
+    def test_a_hard_linked_file_is_refused_with_nothing_written(self, keys, host_key_file, tmp_path):
+        """A rewrite gives the file a new inode, so its other hard links would keep the old
+        lines (a revoked hub would still be there): allow and revoke refuse it instead."""
+        _allow(keys, host_key_file)
+        before = keys.read_bytes()
+        other = tmp_path / "managed-copy"
+        os.link(keys, other)
+        with pytest.raises(CwcliError) as refused_allow:
+            _allow(keys, host_key_file, cap="admin")
+        with pytest.raises(CwcliError) as refused_revoke:
+            remote_access.revoke(hub=HUB, keys_path=keys, proc_root=tmp_path)
+        for e in (refused_allow, refused_revoke):
+            assert e.value.code == "remote.keys_hard_linked" and str(keys) in e.value.message
+        assert keys.read_bytes() == other.read_bytes() == before
+        assert os.listdir(keys.parent) == ["authorized_keys"]
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes any directory")
+    def test_a_directory_this_account_cannot_write_is_a_named_error_with_nothing_written(self, keys, host_key_file):
+        """The new file has to be made next to the old one: a directory this account cannot
+        write (a root-owned keys directory holding the user's own file, say) is a named
+        error, never a traceback, and the file stays as it was."""
+        _allow(keys, host_key_file)
+        before = keys.read_bytes()
+        keys.parent.chmod(0o555)
+        try:
+            with pytest.raises(CwcliError) as e:
+                _allow(keys, host_key_file, cap="admin")
+        finally:
+            keys.parent.chmod(0o700)
+        assert e.value.code == "remote.keys_unwritable" and str(keys) in e.value.message
+        assert keys.read_bytes() == before and os.listdir(keys.parent) == ["authorized_keys"]
 
     def test_the_rewrite_never_follows_a_planted_link_and_leaves_nothing_behind(self, keys, host_key_file, tmp_path, monkeypatch):
         """The new content goes through a uniquely named file of its own: a link planted at a
@@ -434,15 +494,17 @@ class TestGrantsAndRevocation:
         monkeypatch.setattr(type(proc / "21"), "stat", lambda self, *a, **k: _Stat() if self.name == "21" else real_stat(self))
         assert remote_access.bridge_pids(HUB, uids={4242}, proc_root=proc) == []
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="the grant file's owner stands for alice, not root")
     def test_a_revoke_ends_only_the_bridges_of_the_accounts_whose_grant_it_rewrote(self, keys, host_key_file, tmp_path, monkeypatch):
-        """Two bridges of one hub run under two accounts. Root's revoke that rewrote only
-        alice's file ends only alice's bridge; a non-root revoke ends only its own account's,
-        whatever it removed."""
+        """Bridges of one hub run under root, alice and bob. Root's revoke ends its own and
+        those of each account whose file it rewrote (alice's), never bob's, and with nothing
+        rewritten its own alone; a non-root revoke ends only its own account's, whatever it
+        removed."""
         alice, bob = os.getuid(), 4243  # alice owns the grant file this test writes
         _allow(keys, host_key_file)
         proc = tmp_path / "proc"
         bridge = ["python3", "-m", "caffeinated_whale_cli.bridge", "--hub", HUB]
-        owners = {31: alice, 32: bob}
+        owners = {31: alice, 32: bob, 33: 0}
         for pid in owners:
             self._proc(proc, pid, bridge)
         real_stat = os.stat
@@ -461,8 +523,13 @@ class TestGrantsAndRevocation:
         monkeypatch.setattr(os, "kill", fake_kill)
         monkeypatch.setattr(os, "getuid", lambda: 0)
         done = remote_access.revoke(hub=HUB, keys_path=keys, proc_root=proc)
-        assert done.removed == 1 and done.ended_pids == [31] and sent == [31] and (proc / "32").exists()
-        self._proc(proc, 31, bridge)
+        assert done.removed == 1 and sorted(done.ended_pids) == sorted(sent) == [31, 33]
+        for pid in (31, 33):
+            self._proc(proc, pid, bridge)
+        done = remote_access.revoke(hub=HUB, keys_path=tmp_path / "nothing-here", proc_root=proc)
+        assert done.removed == 0 and done.ended_pids == [33] and os.path.isdir(proc / "31")
+        self._proc(proc, 33, bridge)
         monkeypatch.setattr(os, "getuid", lambda: bob)
         done = remote_access.revoke(hub=HUB, keys_path=tmp_path / "bobs-keys", proc_root=proc)
-        assert done.removed == 0 and done.ended_pids == [32] and sent == [31, 32] and (proc / "31").exists()
+        assert done.removed == 0 and done.ended_pids == [32]
+        assert os.path.isdir(proc / "31") and os.path.isdir(proc / "33")
