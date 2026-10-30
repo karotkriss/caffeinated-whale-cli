@@ -568,9 +568,13 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             if lost:
                 raise lost[0]
         except Exception as e:  # every failure is a reconnect, never a dead thread
-            timeouts = timeouts + 1 if not lost and _timed_out(e) else _PING_TIMEOUTS
+            # A _Resubscribe means Docker answered again: a quiet fresh stream.
+            resubscribe = bool(lost) and isinstance(lost[0], _Resubscribe)
+            if not resubscribe:
+                timeouts = timeouts + 1 if not lost and _timed_out(e) else _PING_TIMEOUTS
             if (
-                timeouts >= _PING_TIMEOUTS
+                not resubscribe
+                and timeouts >= _PING_TIMEOUTS
                 and fleet.set_docker(False, _reason(e))
                 and on_error is not None
             ):
@@ -583,10 +587,17 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
             delay = min(delay * 2, _RECONNECT_MAX_S)
 
 
+class _Resubscribe(Exception):
+    """A late ping was followed by an answer; the stream is replaced, quietly."""
+
+
 def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
     """Ping Docker every :data:`_LIVENESS_S` while ``stream`` is open; on a failed
     ping, or :data:`_PING_TIMEOUTS` late ones in a row, record why in ``lost`` and
-    close the stream, which unblocks its reader."""
+    close the stream, which unblocks its reader. A late ping followed by an answer
+    closes it too, recording :class:`_Resubscribe`: a short silent outage can leave
+    the stream half-open with no error while the next ping already reaches a
+    returned Docker, and only a fresh stream (and re-bootstrap) sees events again."""
     timeouts = 0
     while not done.wait(_LIVENESS_S):
         try:
@@ -599,7 +610,10 @@ def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
             lost.append(e)
             _close_quietly(stream)
             return
-        timeouts = 0
+        if timeouts:
+            lost.append(_Resubscribe())
+            _close_quietly(stream)
+            return
 
 
 def _close_quietly(thing) -> None:
