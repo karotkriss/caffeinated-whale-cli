@@ -180,7 +180,16 @@ export const details = reactive({})
 export const detailOf = (project, host = null) => details[ikey(host, project)] || null
 // Ask for the instance's MariaDB root password only once its detail has loaded and
 // says cwcli holds none (a read that failed asks too). The value never reaches the page.
-export const DB_ROOT_PASSWORD_HELP = "Must match the root password this instance's MariaDB already uses; it does not set a new one. Blank tries the default, 123."
+// What a blank field means follows what cwcli holds: the saved password, else 123.
+export const dbRootPasswordHelp = (project, host = null) => {
+  const saved = detailOf(project, host)?.data?.db_root_password_saved
+  const blank = saved === true
+    ? 'Blank reuses the password cwcli saved, which MariaDB rejected; enter the current one.'
+    : saved === false
+      ? 'Blank tries the default, 123.'
+      : 'Blank uses the password cwcli saved for this instance, if any, else the default, 123.'
+  return `Must match the root password this instance's MariaDB already uses; it does not set a new one. ${blank}`
+}
 export const needsDbRootPassword = (project, host = null) => {
   const d = detailOf(project, host)
   return !!d && !d.loading && d.data?.db_root_password_saved !== true

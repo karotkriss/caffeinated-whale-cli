@@ -18,7 +18,7 @@ import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
-import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, DB_ROOT_PASSWORD_HELP } from '../data/fleet'
+import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
 import { onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
@@ -267,7 +267,7 @@ async function start() {
         </div>
         <FormControl v-model="adminPassword" label="Administrator password" type="password" autocomplete="new-password" />
         <div v-if="askDbRootPassword" class="sm:col-span-2">
-          <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="DB_ROOT_PASSWORD_HELP" />
+          <FormControl v-model="dbRootPassword" label="The instance's existing MariaDB root password" type="password" autocomplete="off" :description="dbRootPasswordHelp(project, host)" />
           <ErrorMessage class="mt-1" :message="rejection" />
         </div>
         <div class="sm:col-span-2">
