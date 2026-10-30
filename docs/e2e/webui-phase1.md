@@ -18,20 +18,7 @@ The browser was driven with `chrome-devtools-axi`; one screenshot at a time.
 
 ## Screenshots
 
-1280 px wide:
-
-![Instances](webui-phase1/instances-1280.png)
-![Instance](webui-phase1/instance-1280.png)
-![Bench](webui-phase1/bench-1280.png)
-![Site](webui-phase1/site-1280.png)
-![Health check](webui-phase1/health-1280.png)
-![Settings](webui-phase1/settings-1280.png)
-![Command palette](webui-phase1/palette-1280.png)
-
-390 px wide (the sidebar collapses to its icon rail; tables drop their secondary columns):
-
-![Instances at 390](webui-phase1/instances-390.png)
-![Bench at 390](webui-phase1/bench-390.png)
+The screenshots of this run are no longer kept in the repository.
 
 ## Real-instance proof
 

@@ -11,8 +11,6 @@ It failed at the image pull step after cwcli's own two retries.
 The job page named the cause and said "retrying the job normally works", yet offered no way to retry.
 The failed run left `projects/retrytest/conf/docker-compose.yml`, `conf/db-root-password` and `data/` behind with no containers.
 
-![Failed creation with no retry action](webui-job-retry/failed-before-1280.png)
-
 ## The fix
 
 A failed job now has a Retry button.
@@ -20,7 +18,6 @@ It posts to `POST /api/v1/jobs/<id>/retry`, which starts a NEW job with the same
 
 | Width | Failed job with Retry | Retried job succeeded |
 | --- | --- | --- |
-| 1280 | ![](webui-job-retry/failed-with-retry-1280.png) | ![](webui-job-retry/retried-succeeded-1280.png) |
 | 390 | ![](webui-job-retry/failed-with-retry-390.png) | ![](webui-job-retry/retried-succeeded-390.png) |
 
 What the run showed:
