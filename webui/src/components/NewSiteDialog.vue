@@ -71,11 +71,12 @@ watch(() => newSiteDialog.open, (open) => {
   accessList.value = '0'
   loadPublications()
   const first = newSiteDialog.project ? findInstance(newSiteDialog.project, newSiteDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
+  const before = ikey(host.value, project.value)
   project.value = first?.project || newSiteDialog.project || null
   host.value = first?.host || newSiteDialog.host || null
   bench.value = newSiteDialog.bench
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
-  if (project.value) loadDetail(project.value, { host: host.value, force: true })
+  if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
   loadCatalog({ fresh: true })
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
