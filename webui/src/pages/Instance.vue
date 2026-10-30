@@ -28,7 +28,7 @@ const project = route.params.project
 // A remote host's instance: the same page, every read and action through the hub.
 const host = route.params.host || null
 const where = { project, host }
-onMounted(() => setFocus(host ? null : project))
+onMounted(() => setFocus(project, host))
 const inst = computed(() => findInstance(project, host))
 const detail = loadDetail(project, { host })
 const tab = useTabQuery('benches')

@@ -55,7 +55,7 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   challenge and access lists (Operator)
 * ``GET /api/v1/jobs[/<id>]``               - durable detached job summaries
   and one job's resumable event log
-* ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
+* ``GET /api/v1/stream[?focus=<project>[&host=<host>]]``  - SSE: one ``snapshot`` event, then
   ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
   frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
   (a reconnect always gets a fresh snapshot, which IS the resume)
@@ -111,7 +111,10 @@ instances. On the REMOTE side a bearer request from a hub's bridge carries
 ``X-Cwcli-Delegated-User`` and ``X-Cwcli-Delegated-Role``; they are honored as a
 DOWNGRADE only (the token already means Admin, so a header can lower the role and
 never raise it), never on a cookie session, and a malformed pair is refused
-(``auth.delegation_invalid``). Jobs started that way record ``via: hub``.
+(``auth.delegation_invalid``). Jobs started that way record ``via: hub``. Whatever
+the delegated role, such a request never adds or updates a community integration or
+runs (or retries) a ``self-update`` job (``auth.code_change_refused``; the bridge
+refuses it first): only this machine's own Admin installs code here.
 
 The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps
 checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
@@ -128,7 +131,9 @@ conflict.
 open, and it is the whole mechanism behind the web-probe cadence: the SSE
 connection itself carries the answer, so closing the tab retracts focus when a
 later delta or keepalive discovers the closed response stream. See
-``core.fleet.Fleet.set_focus``.
+``core.fleet.Fleet.set_focus``. With ``&host=<host>`` the instance is a remote
+host's: that host's link holds its stream with the same focus, so the remote's
+daemon probes it live (``core.hosts.HostManager.set_focus``).
 
 **Binding.** The default is ``127.0.0.1``, and ``cwcli ui`` binds nothing else.
 Every endpoint names local projects, ports and sites, and the action endpoint
@@ -237,6 +242,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import typer
 
 from .. import __version__
+from .. import bridge as hub_bridge
 from .. import jobs as core_jobs
 from ..core import accounts as core_accounts
 from ..core import advisories as core_advisories
@@ -569,17 +575,19 @@ class _Hub:
     def __init__(self, on_focus) -> None:
         self._lock = threading.Lock()
         self._focus_lock = threading.Lock()
-        self._clients: dict[int, tuple[queue.Queue, str | None]] = {}
+        self._clients: dict[int, tuple[queue.Queue, tuple[str | None, str] | None]] = {}
         self._next = 0
         self._event_id = 0
         self._on_focus = on_focus
+        # The remote hosts' share of focus, ``{host: project}``; set by ``make_server``.
+        self.on_host_focus: Callable[[dict[str, str]], None] | None = None
 
-    def subscribe(self, focus: str | None) -> tuple[int, queue.Queue]:
+    def subscribe(self, focus: str | None, host: str | None = None) -> tuple[int, queue.Queue]:
         q: queue.Queue = queue.Queue()
         with self._lock:
             self._next += 1
             client_id = self._next
-            self._clients[client_id] = (q, focus)
+            self._clients[client_id] = (q, (host, focus) if focus else None)
         self._sync_focus()
         return client_id, q
 
@@ -590,10 +598,14 @@ class _Hub:
             self._sync_focus()
 
     def _sync_focus(self) -> None:
+        """This machine's focused instances to the fleet; a remote host's to the hosts,
+        one per host and the most recent tab's (clients are kept in the order they came)."""
         with self._focus_lock:
             with self._lock:
-                focused = {f for _q, f in self._clients.values() if f}
-            self._on_focus(focused)
+                focused = [f for _q, f in self._clients.values() if f]
+            self._on_focus({project for host, project in focused if host is None})
+            if self.on_host_focus is not None:
+                self.on_host_focus({host: project for host, project in focused if host})
 
     def next_id(self) -> int:
         with self._lock:
@@ -830,6 +842,28 @@ class _Handler(BaseHTTPRequestHandler):
         if role not in core_accounts.ROLES or not _DELEGATED_USER_RE.fullmatch(user):
             return None
         return user, role
+
+    def _refuse_delegated_code_change(self, path: str, payload: dict) -> bool:
+        """A hub's delegated request never installs or updates third-party code here or
+        replaces cwcli itself, whatever its cap (the bridge refuses it first; a retry or
+        continue of a ``self-update`` job counts too): send the 403 and return True.
+        This machine's own Admin still does both."""
+        if self._delegation() is None:
+            return False
+        job = _rerun_job(path)
+        if not (
+            hub_bridge.code_change(path, payload)
+            or (job is not None and hub_bridge.code_change("/api/v1/jobs", job))
+        ):
+            return False
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "auth.code_change_refused",
+            "A hub cannot install or update community integrations or update cwcli on this "
+            "machine, whatever its cap; this machine's own Admin does that here.",
+        )
+        return True
 
     def _refuse_bad_delegation(self) -> bool:
         """Send the 400 and return True when a bearer request carries a delegation
@@ -1081,12 +1115,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/publish/preflight":
             admin = core_accounts.admin_only("publish-site", {"address": payload.get("address")})
             return "admin" if admin else "operator"
-        if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
-            job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
-            try:
-                job = core_jobs.read_job(job_id)
-            except CwcliError:
-                job = {}
+        job = _rerun_job(path)
+        if job is not None:
             admin = any(
                 core_accounts.admin_only(job.get("verb"), args)
                 for args in (job.get("args"), payload.get("args"))
@@ -1227,7 +1257,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/instances":
             self._send_json({"data": self.fleet.snapshot()})
         elif path == "/api/v1/stream":
-            self._stream_events((query.get("focus") or [None])[0])
+            self._stream_events((query.get("focus") or [None])[0], (query.get("host") or [None])[0])
         elif path.startswith("/api/v1/instances/"):
             rest = path[len("/api/v1/instances/") :]
             project, _sep, verb = rest.partition("/")
@@ -1468,6 +1498,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if routed is not None:
             self._forward(routed[0], routed[1], parsed.query, method="POST", body=raw)
+            return
+        if self._refuse_delegated_code_change(parsed.path, payload):
             return
         try:
             if parsed.path == "/api/v1/actions":
@@ -2847,8 +2879,9 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _stream_events(self, focus: str | None) -> None:
-        client_id, q = self.hub.subscribe(focus)
+    def _stream_events(self, focus: str | None, host: str | None = None) -> None:
+        # A hub's own stream through the bridge never steers this machine's links.
+        client_id, q = self.hub.subscribe(focus, None if self._delegation() else host)
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -2959,6 +2992,20 @@ def _parse_after(raw: str) -> dict[str, int] | None:
         if sep and process and offset.isdigit():
             after[process] = int(offset)
     return after or None
+
+
+def _rerun_job(path: str) -> dict | None:
+    """The job a ``/api/v1/jobs/<id>/retry`` or ``/continue`` POST runs again (``{}``
+    when it cannot be read), else None."""
+    if not path.startswith("/api/v1/jobs/") or path.rsplit("/", 1)[-1] not in (
+        "retry",
+        "continue",
+    ):
+        return None
+    try:
+        return core_jobs.read_job(unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0])
+    except CwcliError:
+        return {}
 
 
 def _parse_action_body(raw: bytes) -> dict:
@@ -3228,6 +3275,8 @@ def make_server(
     reads the store but runs no link (the tests' shape); ``run_daemon`` starts one.
     """
     core_accounts.ensure_default()
+    manager = hosts or core_hosts.HostManager(publish=hub.publish_event)
+    hub.on_host_focus = manager.set_focus
     handler = type(
         "Handler",
         (_Handler,),
@@ -3239,7 +3288,7 @@ def make_server(
             "site_icons": site_icons or core_site_icons.SiteIconStore(),
             "updates": updates or core_updates.UpdatesStore(),
             "advisories": advisories or core_advisories.AdvisoriesStore(),
-            "hosts": hosts or core_hosts.HostManager(publish=hub.publish_event),
+            "hosts": manager,
             "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
             "token": token,
             "lockout": core_accounts.Lockout(),

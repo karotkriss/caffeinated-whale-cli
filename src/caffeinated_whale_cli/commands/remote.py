@@ -66,7 +66,8 @@ def allow_cmd(
     max_role: str = typer.Option(
         core_hosts.DEFAULT_CAP,
         "--max-role",
-        help="The most the hub may do here: viewer, operator (default) or admin.",
+        help="The most the hub may do here: viewer, operator (default) or admin. No cap lets "
+        "a hub install or update community integrations or update cwcli on this machine.",
     ),
     address: str | None = typer.Option(
         None, "--address", help="How the hub reaches this machine (default: guessed)."
@@ -96,8 +97,11 @@ def allow_cmd(
 
     Writes ONE restricted line into this user's authorized_keys: the hub's key can run
     cwcli's bridge and nothing else (no shell, no forwarding), and whatever the hub's
-    user is, this machine treats them as at most --max-role. Prints the pairing string
-    to paste into the hub, which carries this machine's SSH host key so the hub pins it.
+    user is, this machine treats them as at most --max-role. Even at the Admin cap a hub
+    never installs or updates community integrations or updates cwcli here; this
+    machine's own Admin does that. A grant this hub already had in a different file is
+    taken out of it, so the hub keeps one grant here. Prints the pairing string to paste
+    into the hub, which carries this machine's SSH host key so the hub pins it.
     """
     try:
         grant = remote_access.allow(
@@ -124,6 +128,11 @@ def allow_cmd(
         soft_wrap=True,
     )
     console.print("  The key runs only cwcli's bridge: no shell, no port forwarding.")
+    if grant.moved_from:
+        console.print(
+            f"  Took its earlier line out of {escape(grant.moved_from)}: one grant per hub here.",
+            soft_wrap=True,
+        )
     if grant.ended_pids:
         console.print(
             f"  Ended {len(grant.ended_pids)} bridge process(es) still running under the old line: "

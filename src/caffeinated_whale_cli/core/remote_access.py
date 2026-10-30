@@ -106,6 +106,7 @@ class Grant:
     fields: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     ended_pids: list = field(default_factory=list)
+    moved_from: str | None = None  # the earlier recorded file this hub's line was taken out of
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,7 +428,8 @@ def allow(
     Every field the hub will check in the pairing string is checked here first, so
     nothing is written for a grant the hub would refuse to add, and neither is a grant
     another line carrying the same key would shadow. Replacing a hub's line ends the
-    bridges it still runs under the old one, as ``revoke`` does.
+    bridges it still runs under the old one, as ``revoke`` does, and so does taking it
+    out of the different file the hub's record names (one live grant per home).
     """
     hub = check_hub_name(hub)
     cap = check_role(cap)
@@ -469,21 +471,27 @@ def allow(
             )
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
-    owner = _write_lines(path, kept + [line])
-    _record_grant(
-        cwcli_home,
-        hub,
-        {
-            "keys": str(path),
-            "home": str(cwcli_home),
-            "user": user,
-            "uid": os.getuid() if hasattr(os, "getuid") else None,
-            "cap": cap,
-            "key_fp": key_fp,
-            "at": time.time(),
-        },
-    )
-    ended = end_bridges(hub, uids={owner}, proc_root=proc_root) if replaced else []
+    ends: set[int] = set()
+    try:
+        moved_from = _clear_earlier_grant(cwcli_home, hub, path, ends)
+        owner = _write_lines(path, kept + [line])
+        if replaced:
+            ends.add(owner)
+        _record_grant(
+            cwcli_home,
+            hub,
+            {
+                "keys": str(path),
+                "home": str(cwcli_home),
+                "user": user,
+                "uid": os.getuid() if hasattr(os, "getuid") else None,
+                "cap": cap,
+                "key_fp": key_fp,
+                "at": time.time(),
+            },
+        )
+    finally:
+        ended = end_bridges(hub, uids=ends, proc_root=proc_root) if ends else []
 
     warnings: list[str] = []
     host_key = read_host_key(host_key_file)
@@ -520,7 +528,35 @@ def allow(
         fields={**fields, "host_key_fingerprint": fingerprint(*host_key) if host_key else None},
         warnings=warnings,
         ended_pids=ended,
+        moved_from=moved_from,
     )
+
+
+def _clear_earlier_grant(home: Path, hub: str, path: Path, ends: set[int]) -> str | None:
+    """Take ``hub``'s line out of the file its record names when that is not ``path``, adding
+    that file's owner to ``ends`` (whose bridges then end); returns the file when a line
+    went. A file this account cannot read or rewrite refuses the new grant before anything
+    is written, naming the account that can revoke the earlier one."""
+    entry = recorded_grants(home).get(hub)
+    if entry is None or os.path.realpath(entry["keys"]) == os.path.realpath(path):
+        return None
+    earlier = Path(entry["keys"])
+    try:
+        lines = _lines_of(earlier, hub, entry)
+        kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
+        if len(kept) == len(lines):
+            return None
+        ends.add(_write_lines(earlier, kept))
+    except CwcliError as e:
+        raise CwcliError(
+            e.kind,
+            "remote.earlier_grant",
+            f"Hub {hub}'s earlier grant is in {earlier}, which this account cannot change "
+            f"({e.message}); a new grant would leave that line working",
+            hint=f"Run `cwcli remote revoke --hub {hub}` as "
+            f"{entry.get('user') or 'the account that wrote it'}, then allow again.",
+        ) from e
+    return str(earlier)
 
 
 def list_grants(keys_path: Path | None = None) -> list[HubGrant]:

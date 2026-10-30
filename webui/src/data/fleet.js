@@ -1,7 +1,7 @@
 // The live fleet model and the cache-backed detail per instance, for this machine
 // and for every remote host the hub is linked to.
 //
-//   GET /api/v1/stream?focus=<p>     SSE: one `snapshot`, then `delta` events; the
+//   GET /api/v1/stream?focus=<p>[&host=<h>]  SSE: one `snapshot`, then `delta` events; the
 //                                    remote hosts' frames ride the same stream as
 //                                    host_snapshot / host_delta / host_job / host_link
 //   GET /api/v1/instances/<p>        cache-backed core.inspect (benches, sites, apps)
@@ -56,10 +56,10 @@ function closeStream() {
 }
 
 // Which instance the open page is looking at: the daemon turns that instance's
-// web probe on while a stream carries it (core.fleet.Fleet.set_focus). Only this
-// machine's instances are probed this way; a remote host's daemon runs its own.
-export function setFocus(project) {
-  const next = project || null
+// web probe on while a stream carries it (core.fleet.Fleet.set_focus); for a remote
+// host's instance the hub holds that host's stream with the same focus.
+export function setFocus(project, host = null) {
+  const next = project ? `focus=${encodeURIComponent(project)}${host ? `&host=${encodeURIComponent(host)}` : ''}` : null
   if (next === fleet.focus && source) return
   fleet.focus = next
   if (source) openStream()
@@ -72,7 +72,7 @@ function replaceHost(host, instances) {
 
 function openStream() {
   source?.close()
-  const url = fleet.focus ? `/api/v1/stream?focus=${encodeURIComponent(fleet.focus)}` : '/api/v1/stream'
+  const url = fleet.focus ? `/api/v1/stream?${fleet.focus}` : '/api/v1/stream'
   source = new EventSource(url)
   source.addEventListener('snapshot', (e) => {
     const body = JSON.parse(e.data)

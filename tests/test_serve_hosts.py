@@ -202,6 +202,75 @@ class TestDowngradeOnlyDelegation:
         assert status == 200 and (body["data"]["owner"], body["data"]["owner_source"]) == ("api", "api")
 
 
+class TestNoCodeChangeFromAHub:
+    """The remote daemon's own guard behind the bridge's: a delegated request never
+    installs or updates third-party code here or replaces cwcli, whatever its role,
+    while this machine's own Admin still does both."""
+
+    ADMIN = {**DELEGATED, "X-Cwcli-Delegated-Role": "admin"}
+
+    @pytest.mark.parametrize("op", ["community_add", "community_update"])
+    def test_a_delegated_community_install_or_update_is_refused(self, daemon, monkeypatch, op):
+        reached = []
+        monkeypatch.setattr(serve_cmd.core_community, "install", lambda *a, **k: reached.append(a))
+        monkeypatch.setattr(serve_cmd.core_community, "update", lambda *a, **k: reached.append(a))
+        payload = {"op": op, "url": "https://example.com/x.git", "id": "x", "commit": "abc"}
+        status, body, _ = _req(daemon, "/api/v1/integrations", payload, bearer=True, headers=self.ADMIN)
+        assert status == 403 and _code(body) == "auth.code_change_refused" and reached == []
+
+    def test_a_delegated_self_update_or_its_retry_is_refused_and_the_machines_own_admin_still_runs_both(self, daemon, monkeypatch):
+        monkeypatch.setattr(serve_cmd.core_jobs, "read_job", lambda job_id, *a, **k: {"id": job_id, "verb": "self-update", "args": {}})
+        retried = []
+        monkeypatch.setattr(serve_cmd.core_jobs, "retry_job", lambda job_id, **k: retried.append(job_id) or {"id": job_id})
+        for path, payload in (("/api/v1/jobs", {"verb": "self-update"}), ("/api/v1/jobs/j1/retry", {})):
+            status, body, _ = _req(daemon, path, payload, bearer=True, headers=self.ADMIN)
+            assert status == 403 and _code(body) == "auth.code_change_refused"
+        assert daemon.jobs == [] and retried == []
+        assert _req(daemon, "/api/v1/jobs", {"verb": "self-update"}, bearer=True)[0] == 202
+        assert _req(daemon, "/api/v1/jobs/j1/retry", {}, bearer=True)[0] == 202
+        assert [verb for verb, _origin in daemon.jobs] == ["self-update"] and retried == ["j1"]
+
+    def test_the_machines_own_admin_still_installs_and_an_ordinary_delegated_admin_op_passes(self, daemon, monkeypatch):
+        def install(*a, **k):
+            raise serve_cmd.CwcliError(serve_cmd.ErrorKind.NOT_FOUND, "community.reached", "reached the install")
+
+        monkeypatch.setattr(serve_cmd.core_community, "install", install)
+        payload = {"op": "community_add", "url": "https://example.com/x.git", "commit": "abc"}
+        assert _code(_req(daemon, "/api/v1/integrations", payload, bearer=True)[1]) == "community.reached"
+        assert _req(daemon, "/api/v1/settings", {"setting": "cache.enable"}, bearer=True, headers=self.ADMIN)[0] == 200
+
+
+class TestRemoteFocus:
+    def test_a_tabs_remote_focus_goes_to_that_host_the_latest_tab_winning(self):
+        local, remote = [], []
+        hub = serve_cmd._Hub(local.append)
+        hub.on_host_focus = remote.append
+        first, _ = hub.subscribe("p", "build-box")
+        hub.subscribe("q")
+        latest, _ = hub.subscribe("r", "build-box")
+        assert (local[-1], remote[-1]) == ({"q"}, {"build-box": "r"})
+        hub.unsubscribe(latest)
+        assert remote[-1] == {"build-box": "p"}
+        hub.unsubscribe(first)
+        assert (local[-1], remote[-1]) == ({"q"}, {})
+
+    def test_the_stream_query_carries_the_host_but_a_hubs_own_stream_never_steers_the_links(self, daemon):
+        seen = []
+        daemon.hub.on_host_focus = seen.append
+
+        def open_stream(headers):
+            req = urllib.request.Request(daemon.base + "/api/v1/stream?focus=p&host=build-box", headers={"Authorization": f"Bearer {TOKEN}", **headers})
+            with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+                line = b""
+                while not line.startswith(b"data: "):
+                    line = resp.readline()
+
+        open_stream(DELEGATED)
+        assert seen and all(focus == {} for focus in seen)
+        open_stream({})
+        assert {"build-box": "p"} in seen
+
+
 class TestHostsRoutes:
     def test_the_hub_view_names_the_hub_and_carries_no_private_key(self, daemon, tmp_path):
         core_hosts.keys_dir().mkdir(parents=True)
