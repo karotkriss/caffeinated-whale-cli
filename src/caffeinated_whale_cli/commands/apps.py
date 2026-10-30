@@ -522,7 +522,9 @@ def uninstall_apps(
     assert report is not None  # OK/WARNING always carries a report
     for warning in result.warnings:
         stderr_console.print(f"[bold yellow]Warning:[/bold yellow] {warning.text}")
-    if any(r.ok for r in report.results):
+    if any(r.ok for r in report.results) or any(
+        w.code == "app.uninstall_unverified" for w in result.warnings
+    ):
         _refresh_cache(project_name, verbose, report.bench_path)
 
     _report_and_exit(report, json_output, success_msg="App(s) uninstalled.")
