@@ -559,6 +559,30 @@ def test_the_already_installed_refusal_checks_a_remote_matched_app_by_its_real_n
     assert not any("install-app" in c for c in container.calls)
 
 
+def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodules(tmp_path):
+    """Runs the real read against real git checkouts: a vendored submodule's url sits
+    in the same .git/config, and must not make that checkout answer for its repo."""
+    import subprocess
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    app = tmp_path / "apps" / "single_window"
+    app.mkdir(parents=True)
+    git("init", "-q", cwd=app)
+    git("remote", "add", "upstream", SW_URL, cwd=app)
+    git("config", "submodule.vendor.url", "https://example.com/org/vendored-app", cwd=app)
+
+    class LocalContainer:
+        def exec_run(self, cmd, workdir):
+            done = subprocess.run(cmd, cwd=workdir, capture_output=True)
+            return done.returncode, done.stdout
+
+    remotes = core_apps._app_remotes(LocalContainer(), str(tmp_path))
+
+    assert remotes == {"single_window": {core_apps.remote_key(SW_URL)}}
+
+
 def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, container):
     """The bug itself, pinned through the fake: a bench copy with a DIFFERENT remote
     is not the requested repository, so it is fetched, and bench's rename fails."""
