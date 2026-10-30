@@ -757,12 +757,18 @@ class TestManager:
         available = {"ssh": FakeTransport([])}
         manager = hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: dict(available))
         rec = hosts.add_host(hosts.make_pairing(PAIRING_FIELDS), now=1.0)
-        manager.resync()
-        manager._frame(manager.get(rec.id), "snapshot", {"instances": [{"project": "p", "overall": "running"}], "jobs": [{"id": "j1"}]})
+        link = hosts.HostLink(rec, available["ssh"], on_state=manager._state_changed, on_frame=manager._frame)
+        manager._links[rec.id] = link
+        link.status.state = hosts.CONNECTED
+        link.status.since = 2.0
+        link.status.last_seen = 3.0
+        manager._frame(link, "snapshot", {"instances": [{"project": "p", "overall": "running"}], "jobs": [{"id": "j1"}]})
         available.clear()
         manager.resync()
         (off,) = manager.snapshot()
         assert manager.get(rec.id) is None and off["state"] == hosts.TRANSPORT_OFF
+        assert (off["since"], off["last_seen"]) == (2.0, 3.0)
+        assert manager.view()["hosts"][0]["last_seen"] == 3.0
         assert [i["project"] for i in off["instances"]] == ["p"] and [j["id"] for j in off["jobs"]] == ["j1"]
         return manager, rec
 
@@ -774,7 +780,9 @@ class TestManager:
         try:
             (link_event, view), (snap_event, snap) = published[-2:]
             assert (link_event, view["state"]) == ("host_link", hosts.TRANSPORT_OFF)
+            assert (view["since"], view["last_seen"]) == (2.0, 3.0)
             assert snap_event == "host_snapshot" and snap["host"] == rec.id and snap["stale"] is True
+            assert (snap["since"], snap["last_seen"]) == (2.0, 3.0)
             assert [(i["project"], i["overall"]) for i in snap["instances"]] == [("p", "unknown")]
             assert [j["id"] for j in snap["jobs"]] == ["j1"]
         finally:
@@ -819,6 +827,7 @@ class TestManager:
         manager.resync()
         (view,) = manager.views()
         assert view["state"] == hosts.TRANSPORT_OFF and view["actions_allowed"] is False
+        assert (view["since"], view["last_seen"]) == (None, None)
         assert manager.view()["hub"]["transport_on"] is False
         with pytest.raises(hosts.LinkError) as e:
             manager.request("build-box", "GET", "/api/v1/instances", [])
