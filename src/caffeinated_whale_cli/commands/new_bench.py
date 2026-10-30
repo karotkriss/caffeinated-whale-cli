@@ -16,6 +16,7 @@ from ..utils import cache
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
+from . import deps_ui
 from .utils import ensure_containers_running
 
 
@@ -56,6 +57,17 @@ def new_bench(
         "--db-root-password",
         help="The instance's EXISTING MariaDB root password (checked before any work; it does not set a new one); default: the one saved at init, else 123.",
     ),
+    with_deps: bool = typer.Option(
+        False,
+        "--with-deps",
+        help="Consent to fetch and install the apps each --app requires (required_apps) "
+        "first. The bench is built before the apps are checked, so without it an app "
+        "with missing required apps is reported as failed rather than asked about.",
+    ),
+    ignore_frappe_range: bool = typer.Option(
+        False, "--ignore-frappe-range", help=deps_ui.IGNORE_RANGE_HELP
+    ),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=deps_ui.DEP_SOURCE_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start a stopped instance without prompting."
     ),
@@ -99,6 +111,11 @@ def new_bench(
             install_erpnext=erpnext,
             apps=list(apps or []),
             db_root_password=db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
+            with_deps=with_deps is True,
+            dep_sources=deps_ui.parse_dep_sources(
+                dep_source if isinstance(dep_source, list) else None
+            ),
+            ignore_frappe_range=ignore_frappe_range is True,
             after_init=lambda path: cache.recache_project(
                 project_name, bench_path=path, warnings=[]
             ),

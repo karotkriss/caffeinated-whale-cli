@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from caffeinated_whale_cli.core import app_deps
+
 from caffeinated_whale_cli.core import scale as core_scale
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
@@ -58,6 +60,15 @@ class FakeContainer:
 
     def exec_run(self, cmd, workdir=None, environment=None, user=None):
         script = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 else str(cmd)
+
+        if isinstance(cmd, (list, tuple)) and len(cmd) >= 6 and app_deps.SENTINEL in cmd[4]:
+            # The shared declarations reader (core.app_deps): one record of the bench's apps.
+            major = self.majors.get(cmd[5])
+            if major is None:
+                return (1, b"")
+            init = f'__version__ = "{major}.0.0"\n'
+            record = {"frappe": {"pyproject": None, "hooks": None, "init": init, "urls": []}}
+            return (0, ("\n" + app_deps.SENTINEL + json.dumps(record) + "\n").encode())
 
         if isinstance(cmd, (list, tuple)) and cmd[0] == "cat":
             for path, config in self.configs.items():

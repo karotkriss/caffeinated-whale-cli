@@ -8,6 +8,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select, TextInput } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
+import DependencyTree from './DependencyTree.vue'
+import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { newBenchDialog } from '../data/new-bench-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
 import { onHost } from '../data/hosts'
@@ -47,6 +49,8 @@ watch(() => newBenchDialog.open, (open) => {
   frappeUrl.value = ''
   erpnext.value = false
   extra.value = []
+  override.value = false
+  depSources.value = {}
   siteName.value = ''
   adminPassword.value = ''
   dbRootPassword.value = ''
@@ -87,13 +91,28 @@ const versionState = computed(() => (/^\d+(\.\d+\.\d+)?$/.test(version.value.tri
 // Extra apps: anything in the catalog with a repository URL (private ones come through the credential bridge).
 const extraOptions = computed(() => catalogApps.value.filter((a) => a.source?.url && !['frappe', 'erpnext'].includes(a.name)).map((a) => ({ label: `${a.title} (${a.name})`, value: a.key, url: a.source.url })))
 const extraUrls = computed(() => extra.value.map((k) => extraOptions.value.find((o) => o.value === k)?.url).filter(Boolean))
-const ready = computed(() => !!project.value && nameState.value.ok && !versionState.value && !!siteName.value.trim() && adminPassword.value.length >= 1 && !running.value)
+// The extra apps planned against the bench this will build (Frappe at the newest N.x
+// for the version, plus ERPNext when ticked); the job plans again on the real bench.
+const override = ref(false)
+const depSources = ref({})
+const { plan, loading: planLoading, error: planError } = usePlan(
+  () => (newBenchDialog.open && extraUrls.value.length && !versionState.value
+    ? { new_bench: true, version: version.value.trim(), erpnext: erpnext.value, site: siteName.value.trim() || 'new-site.localhost', target: extraUrls.value, dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
+    : null),
+  () => host.value,
+)
+const joined = computed(() => requiredNodes(plan.value))
+const planBlocked = computed(() => planBlockers(plan.value).length > 0 && !(onlyOverridable(plan.value) && override.value))
+const ready = computed(() => !!project.value && nameState.value.ok && !versionState.value && !!siteName.value.trim() && adminPassword.value.length >= 1 && !running.value && !(extraUrls.value.length && (planLoading.value || planBlocked.value)))
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-bench ${q(project.value || '<instance>')} ${q(name.value.trim() || '<name>')} --version ${q(version.value.trim() || '16')} --site ${q(siteName.value.trim() || '<site>')}`
   if (frappeUrl.value.trim()) line += ` --frappe-url ${q(frappeUrl.value.trim())}`
   if (erpnext.value) line += ' --erpnext'
   for (const u of extraUrls.value) line += ` --app ${q(u)}`
+  if (joined.value.length) line += ' --with-deps'
+  for (const [a, u] of Object.entries(depSources.value)) line += ` --dep-source ${q(`${a}=${u}`)}`
+  if (override.value) line += ' --ignore-frappe-range'
   return line
 })
 function toggleExtra(key, on) {
@@ -107,7 +126,7 @@ async function start() {
     const record = await createJob({
       verb: 'new-bench',
       target: { project: project.value },
-      args: { bench_name: name.value.trim(), site_name: siteName.value.trim(), version: version.value.trim(), frappe_url: frappeUrl.value.trim() || null, install_erpnext: erpnext.value, apps: extraUrls.value },
+      args: { bench_name: name.value.trim(), site_name: siteName.value.trim(), version: version.value.trim(), frappe_url: frappeUrl.value.trim() || null, install_erpnext: erpnext.value, apps: extraUrls.value, ...(joined.value.length ? { with_deps: true } : {}), ...(Object.keys(depSources.value).length ? { dep_sources: depSources.value } : {}), ...(override.value ? { ignore_frappe_range: true } : {}) },
       secrets: { admin_password: adminPassword.value, ...(askDbRootPassword.value && dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
     }, host.value)
     newBenchDialog.open = false
@@ -155,6 +174,7 @@ async function start() {
             <Button size="sm" variant="subtle" icon-left="lucide-plus" :label="extra.length ? 'Change' : 'Choose apps'" :disabled="!extraOptions.length" @click="pickerOpen = true" />
             <span v-if="!extraOptions.length" class="text-xs text-ink-gray-5">the catalog holds no app with a repository URL yet</span>
           </div>
+          <DependencyTree v-if="extraUrls.length" class="mt-3" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" consent-note="Apps the extra apps require are fetched and installed on the first site before them." />
           <AppPickerDialog :open="pickerOpen" title="Extra apps for the new bench" :options="extraOptions.map((o) => ({ value: o.value, label: extraApp(o.value)?.title || o.label, app: extraApp(o.value), hint: extraApp(o.value)?.source?.url || '' }))" :model-value="extra" @update:model-value="(v) => (extra = v)" @update:open="pickerOpen = $event" />
         </div>
       </div>

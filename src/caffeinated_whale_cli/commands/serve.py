@@ -247,6 +247,7 @@ from .. import jobs as core_jobs
 from ..core import accounts as core_accounts
 from ..core import advisories as core_advisories
 from ..core import app_catalog as core_app_catalog
+from ..core import app_deps as core_app_deps
 from ..core import apps as core_apps
 from ..core import auto_inspect as core_auto_inspect
 from ..core import backup_store as core_backup_store
@@ -1309,6 +1310,8 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                 }
             )
+        elif path == "/api/v1/apps/plan":
+            self._send_app_plan(query)
         elif path == "/api/v1/metrics":
             self._send_metrics(query)
         elif path == "/api/v1/sites/icons":
@@ -2339,6 +2342,76 @@ class _Handler(BaseHTTPRequestHandler):
             return
         status, body = _result_response("probe_url", project, result)
         self._send_json(body, status=status)
+
+    def _send_app_plan(self, query: dict) -> None:
+        """The dependency plan the Install, New site and New bench dialogs preview
+        (``core.app_deps``): each picked app's Frappe range and required apps at the
+        ref that would land, against the bench (or, for New bench, the bench it will
+        build). A PURE READ: it fetches into no bench and installs nothing; the job
+        re-plans before it acts, so a remote that moves in between cannot slip by.
+
+        ``target`` (repeatable) is a repository URL or a bench app's name; ``ref`` the
+        branch for the targets; ``site`` (repeatable) filters the sites; ``new_site``
+        names a site about to be created; ``dep_source`` (repeatable ``app=url``)
+        answers an ambiguous source. ``new_bench=1`` with ``version`` and ``erpnext``
+        plans against a bench that does not exist yet.
+        """
+        if self._refuse_cross_origin():
+            return
+        one = lambda key: _optional_str((query.get(key) or [None])[0])  # noqa: E731
+        targets = [t for t in (query.get("target") or []) if t and t.strip()]
+        if not targets:
+            self._send_error(400, ErrorKind.USAGE.value, "plan.target_required", "no target")
+            return
+        ref = one("ref")
+        dep_sources = {}
+        for value in query.get("dep_source") or []:
+            app_name, sep, url = str(value).partition("=")
+            if sep and app_name.strip() and url.strip():
+                dep_sources[app_name.strip()] = url.strip()
+        pairs = [(t.strip(), ref) for t in targets]
+        try:
+            if one("new_bench"):
+                version = one("version") or "16"
+                major = int(version.split(".")[0]) if version.split(".")[0].isdigit() else 16
+                plan = core_app_deps.plan_new_bench(
+                    "",
+                    pairs,
+                    frappe_major=major,
+                    with_erpnext=one("erpnext") in ("1", "true"),
+                    site=one("site") or "new-site",
+                    dep_sources=dep_sources,
+                )
+                self._send_json({"data": core_app_deps.plan_as_dict(plan) | {"warnings": []}})
+                return
+            project = one("project")
+            if not project:
+                self._send_error(400, ErrorKind.USAGE.value, "project.required", "no project")
+                return
+            sites = [s for s in (query.get("site") or []) if s]
+            result = core_app_deps.plan(
+                project,
+                pairs,
+                bench=one("bench"),
+                sites=sites or None,
+                new_site=one("new_site"),
+                fetch_only=one("fetch_only") in ("1", "true"),
+                dep_sources=dep_sources,
+                ignore_frappe_range=one("ignore_frappe_range") in ("1", "true"),
+            )
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        if result.status is Status.NEEDS_CHOICE or result.data is None:
+            status, body = _result_response("app_plan", project, result)
+            self._send_json(body, status=status)
+            return
+        self._send_json(
+            {
+                "data": core_app_deps.plan_as_dict(result.data)
+                | {"warnings": [_plain(w) for w in result.warnings]}
+            }
+        )
 
     # ------------------------------------------------------------ apps catalog
 

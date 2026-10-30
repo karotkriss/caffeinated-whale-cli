@@ -35,6 +35,7 @@ import typer
 from typer import core as _typer_core
 from typer import rich_utils as _rich_utils
 
+from ..core import app_deps as core_app_deps
 from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import bench_ops as core_bench_ops
@@ -573,6 +574,10 @@ def emit_axi_error(error: CwcliError) -> None:
 
 
 def _choice_error_message(choice: Choice) -> str:
+    if choice.kind == "confirm_required_apps":
+        return "app.required_apps_missing: " + choice.prompt.split(" Fetch and install")[0]
+    if choice.kind == "select_app_source":
+        return "app.required_app_source_ambiguous: " + choice.prompt
     if choice.kind == "select_bench":
         return "multiple benches; pass --bench <index|label>"
     if choice.kind == "select_process":
@@ -606,6 +611,28 @@ def _choice_error_message(choice: Choice) -> str:
     return f"a decision is required: {choice.prompt}"
 
 
+_AXI_WITH_DEPS_HELP = (
+    "Consent to fetch and install the apps this one requires (required_apps), "
+    "dependencies first. Without it a missing required app is exit 2 naming this flag. "
+    "There is no Frappe-range override here; the human verb has it."
+)
+_AXI_DEP_SOURCE_HELP = (
+    "APP=URL: the repository for a required app the apps catalog holds several of. " "Repeatable."
+)
+
+
+def _axi_dep_sources(values: list[str] | None) -> dict[str, str] | None:
+    """``--dep-source app=url`` values; a malformed one is a TOON usage error, exit 2."""
+    found: dict[str, str] = {}
+    for value in values or []:
+        app_name, sep, url = str(value).partition("=")
+        if not sep or not app_name.strip() or not url.strip():
+            typer.echo(toon.kv("error", f"--dep-source takes APP=URL, got '{value}'"))
+            raise typer.Exit(2)
+        found[app_name.strip()] = url.strip()
+    return found or None
+
+
 def emit_axi_choice_as_usage_error(choice: Choice) -> None:
     """Render a needs-choice as a TOON usage error naming the flag the agent must pass.
 
@@ -637,6 +664,18 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
                 "different --bench name to create a fresh bench",
             )
         )
+    elif choice.kind == "confirm_required_apps":
+        rows = [
+            {k: o.get(k, "") for k in ("order", "app", "action", "required_by", "source", "ref")}
+            for o in choice.options or []
+        ]
+        typer.echo(toon.encode({"plan": rows}))
+        typer.echo(toon.kv("help", "re-run with --with-deps to fetch and install them first"))
+    elif choice.kind == "select_app_source":
+        options = [f"{o['value']} ({o['label']})" for o in choice.options or []]
+        typer.echo(toon.block("options", options))
+        app_name = (choice.options or [{}])[0].get("app", "<app>")
+        typer.echo(toon.kv("help", f"re-run with --dep-source {app_name}=<url>"))
 
 
 def _collapse_home(path: str) -> str:
@@ -853,8 +892,12 @@ def axi_new_site(
     site: str = typer.Argument(..., help="The new site's name, e.g. shop.localhost."),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
     apps: list[str] = typer.Option(
-        None, "--app", help="An app already on the bench to install (repeatable)."
+        None,
+        "--app",
+        help="An app to install (repeatable): a bench app's name, or a git URL fetched first.",
     ),
+    with_deps: bool = typer.Option(False, "--with-deps", help=_AXI_WITH_DEPS_HELP),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
     default: bool = typer.Option(False, "--default", help="Make it the bench's default site."),
     dev_mode: bool = typer.Option(False, "--dev-mode", help="Turn developer mode on for it."),
     admin_password: str = typer.Option(
@@ -887,13 +930,18 @@ def axi_new_site(
             )
         )
         raise typer.Exit(2)
+    picked = [a for a in (apps or []) if a]
+    urls = [a for a in picked if "/" in a or ":" in a]
     try:
         result = core_new_site.new_site(
             project,
             site=site,
             admin_password=password,
             bench=bench,
-            apps=list(apps or []),
+            apps=[a for a in picked if a not in urls],
+            fetch=urls,
+            with_deps=with_deps,
+            dep_sources=_axi_dep_sources(dep_source),
             default=default,
             developer_mode=dev_mode,
             db_root_password=db_root_password or _os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
@@ -934,6 +982,8 @@ def axi_new_bench(
     apps: list[str] = typer.Option(
         None, "--app", help="An extra app (git URL or name) to fetch and install (repeatable)."
     ),
+    with_deps: bool = typer.Option(False, "--with-deps", help=_AXI_WITH_DEPS_HELP),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
     admin_password: str = typer.Option(
         None, "--admin-password", help="Administrator password; prefer CWCLI_ADMIN_PASSWORD."
     ),
@@ -976,6 +1026,8 @@ def axi_new_bench(
             install_erpnext=erpnext,
             apps=list(apps or []),
             db_root_password=db_root_password or _os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
+            with_deps=with_deps,
+            dep_sources=_axi_dep_sources(dep_source),
             after_init=lambda path: _cache.recache_project(project, bench_path=path, warnings=[]),
         )
     except CwcliError as error:
@@ -1937,6 +1989,16 @@ def axi_apps_update(
             "refuses the update, naming the switch)."
         ),
     ),
+    with_deps: bool = typer.Option(
+        False,
+        "--with-deps",
+        help=(
+            "When the new code requires an app (required_apps) the bench or a site lacks, "
+            "fetch and install it on the sites that have the app first (otherwise the "
+            "preflight refuses with nothing pulled)."
+        ),
+    ),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
 ) -> None:
     """Update app(s) and migrate affected sites; emit the report as TOON.
 
@@ -1998,6 +2060,8 @@ def axi_apps_update(
             force=force,
             preflight=not no_preflight,
             fix_branches=fix_branches,
+            with_deps=with_deps,
+            dep_sources=_axi_dep_sources(dep_source),
         )
     except CwcliError as error:
         emit_axi_error(error)
@@ -2169,6 +2233,78 @@ def axi_apps_checkout(
 # ------------------------------------------------------------------ apps install
 
 
+@apps_app.command("plan")
+def axi_apps_plan(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    app_name: str = typer.Argument(
+        ..., metavar="APP", help="App name or git URL whose install to plan."
+    ),
+    site: list[str] = typer.Option(
+        None, "--site", help="Plan for the named site(s). Repeatable. Omit for every site."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    branch: str = typer.Option(None, "--branch", help="The branch or tag that would be fetched."),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
+) -> None:
+    """Plan installing an app, changing nothing; emit the plan as TOON.
+
+    Reads the app's `[tool.bench.frappe-dependencies]` range and `required_apps` at the
+    ref that would land, compares each range with the bench, finds each missing
+    required app in the apps catalog (same branch name, else version-N, else its
+    default branch, checked against its own range), and orders the install
+    dependencies-first. `plan` is the order; `problems` says what would refuse
+    (`blocker`), ask (`consent`: `--with-deps`) or need a pick (`choice`:
+    `--dep-source`). Exit 0 when nothing blocks, 1 when something does; a read that
+    could not be made is a `notice`, never a pass.
+    """
+    try:
+        result = core_app_deps.plan(
+            project,
+            [(app_name, branch)],
+            bench=bench,
+            sites=list(site) if site else None,
+            dep_sources=_axi_dep_sources(dep_source),
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+    plan = result.data
+    assert plan is not None
+    doc: dict = {
+        "bench": plan.bench_path,
+        "frappe": plan.frappe_version or "unknown",
+        "sites": plan.sites,
+        "ok": plan.ok,
+        "needs_consent": plan.needs_consent,
+        "needs_choice": plan.needs_choice,
+        "plan": core_app_deps.plan_rows(plan),
+        "problems": [
+            {
+                "severity": p.severity,
+                "code": p.code,
+                "app": p.app or "",
+                "message": p.message,
+                "remedy": p.remedy or "",
+            }
+            for p in plan.problems
+        ],
+    }
+    typer.echo(toon.encode(doc, warnings=result.warnings))
+    if plan.ok and not plan.needs_choice:
+        sites_flag = "".join(f" --site {s}" for s in plan.sites[:1]) or " --site <site>"
+        apply = (
+            f"cwcli axi apps install {project} {app_name}{sites_flag}"
+            + (f" --branch {branch}" if branch else "")
+            + (" --with-deps" if plan.needs_consent else "")
+        )
+        typer.echo(toon.block("help", [f"Run `{apply}` to apply this plan"]))
+    raise typer.Exit(0 if plan.ok else 1)
+
+
 @apps_app.command("install")
 def axi_apps_install(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
@@ -2191,8 +2327,19 @@ def axi_apps_install(
             "hooks - it only reports the app as already present."
         ),
     ),
+    with_deps: bool = typer.Option(False, "--with-deps", help=_AXI_WITH_DEPS_HELP),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
 ) -> None:
     """Ensure and install ONE app on ONE named site; emit the report as TOON.
+
+    Before anything is fetched, the app's declared Frappe range and required apps are
+    read at the ref that will land (`cwcli axi apps plan` shows the same plan without
+    acting). A range that does not fit the bench refuses, exit 1, with nothing
+    fetched; there is deliberately no override flag here (no named beneficiary, the
+    M1 rule), the human verb's `--ignore-frappe-range` is the escape hatch. Missing
+    required apps are exit 2 naming `--with-deps`, which consents to fetch and install
+    them on the site first. That stays inside this verb's safe half: each required app
+    is one the site does not have, and an app already installed is never touched.
 
     An app absent from apps/ is fetched with bench get-app; an app already present
     skips that fetch and proceeds to the site installation.
@@ -2267,6 +2414,8 @@ def axi_apps_install(
             # already-installed refusal (require_absent) stays the default.
             require_absent=not if_not_present,
             if_not_present=if_not_present,
+            with_deps=with_deps,
+            dep_sources=_axi_dep_sources(dep_source),
             on_event=_checkout_narrate,
         )
     except CwcliError as error:

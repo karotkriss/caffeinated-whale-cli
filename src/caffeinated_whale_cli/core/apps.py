@@ -42,7 +42,7 @@ from pathlib import PurePosixPath
 from docker.errors import DockerException
 
 from ..utils import bench_sites
-from . import bench_read, credbridge, resolvers, supervision
+from . import app_deps, bench_read, credbridge, resolvers, supervision
 from .app_catalog import remote_key
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -695,6 +695,38 @@ def _read_installed_by_site(
     return installed
 
 
+def _verify_against_plan(
+    frappe_container,
+    path: str,
+    plan: app_deps.DependencyPlan | None,
+    results: list[AppResult],
+    warnings: list[Message],
+) -> bool:
+    """Re-read every app the plan fetched from the bench and compare. True when one
+    no longer matches (a failed ``verify-dependencies`` row and a warning say which)."""
+    fetched = [n for n in (plan.nodes if plan else []) if "fetch" in n.action and n.readable]
+    if not fetched:
+        return False
+    now = app_deps.read_bench_apps(frappe_container, path) or {}
+    drifted = False
+    for node in fetched:
+        landed = now.get(node.app)
+        why = app_deps.changed_since_plan(node, landed) if landed is not None else None
+        if why:
+            drifted = True
+            results.append(
+                AppResult(app=node.app, site=None, action="verify-dependencies", ok=False)
+            )
+            warnings.append(
+                Message(
+                    "app.dependencies_changed",
+                    f"{why}; nothing was installed on any site. Run the install again to "
+                    "check the new declarations.",
+                )
+            )
+    return drifted
+
+
 def install_apps(
     project_name: str,
     apps: list[str],
@@ -707,9 +739,26 @@ def install_apps(
     auto_start: bool = False,
     require_absent: bool = False,
     if_not_present: bool = False,
+    with_deps: bool = False,
+    ignore_frappe_range: bool = False,
+    dep_sources: dict[str, str] | None = None,
+    prefer_ref: str | None = None,
+    check_deps: bool = True,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
     """Fetch (``bench get-app``) and install app(s) on the target site(s).
+
+    Before anything is fetched, :mod:`core.app_deps` reads each app's declared Frappe
+    range and ``required_apps`` at the ref that will land and plans the install
+    (``check_deps``; a caller that already planned passes False). A range that does
+    not fit the bench RAISES with nothing fetched (``ignore_frappe_range`` lets a
+    human proceed past a Frappe range they know is wrong; never a sibling app's
+    range). Missing required apps return ``NEEDS_CHOICE``/``confirm_required_apps``
+    unless ``with_deps`` consents: then each is fetched at the ref the plan chose and
+    installed on the target sites first, dependencies before dependents. An
+    ambiguous source returns ``NEEDS_CHOICE``/``select_app_source``, answered through
+    ``dep_sources`` (``{app: url}``). ``prefer_ref`` is the branch a plain-name app
+    found in the catalog prefers (an update passes the parent app's branch).
 
     The fetch is idempotent on bench-presence: an app already present under the
     bench's ``apps/`` (e.g. a bench built from a pre-warmed base that carries it)
@@ -750,16 +799,45 @@ def install_apps(
     if require_absent and not fetch_only:
         _refuse_if_installed(frappe_container, path, apps, sites, emit=emit)
 
+    plan: app_deps.DependencyPlan | None = None
+    if check_deps:
+        planned_sites = [] if fetch_only else _target_sites(frappe_container, path, sites)
+        state = app_deps.read_bench_state(frappe_container, path, sites=planned_sites)
+        plan = app_deps.build_plan(
+            project_name,
+            state,
+            [(target, branch) for target in apps],
+            fetch_only=fetch_only,
+            dep_sources=dep_sources,
+            ignore_frappe_range=ignore_frappe_range,
+            prefer_ref=prefer_ref,
+        )
+        asked = app_deps.enforce(plan, with_deps=with_deps)
+        if asked is not None:
+            return Result(
+                status=asked.status, choice=asked.choice, warnings=warnings + asked.warnings
+            )
+        warnings.extend(Message(p.code, p.message) for p in plan.problems if p.severity == "notice")
+    # Required apps the plan fetches or installs, dependencies first. Only ever apps
+    # a target site does not have: an installed app is never touched.
+    deps = [n for n in (plan.nodes if plan else []) if not n.requested and n.action != "none"]
+
     results: list[AppResult] = []
     fetched: list[tuple[str, str]] = []
-    branch_arg = f"--branch {shlex.quote(branch)} " if branch else ""
+    # (target, ref, the plan node for a required app): required apps first, each at
+    # the ref the plan chose for it, then the requested apps at --branch.
+    steps: list[tuple[str, str | None, app_deps.PlanNode | None]] = [
+        (n.target, n.ref, n) for n in deps if not n.on_bench
+    ] + [(target, branch, None) for target in apps]
+    dep_fetch_failed = False
 
     # Bridge the container's git back to the host's gh/glab for private-repo
     # fetches. Inert for public repos (git only calls a credential helper on 401),
     # so every git-URL fetch is wrapped and torn down; see core.credbridge.
     with credbridge.credential_bridge(frappe_container, path):
-        for target in apps:
-            app_name = derive_app_name(target)
+        for target, ref, dep_node in steps:
+            branch_arg = f"--branch {shlex.quote(ref)} " if ref else ""
+            app_name = dep_node.app if dep_node else derive_app_name(target)
             command, before_apps = _available_apps(frappe_container, path)
             before = set(before_apps)
             present = _bench_copy_of(frappe_container, path, target, before)
@@ -784,6 +862,7 @@ def install_apps(
                 if _app_registered(frappe_container, path, app_name) is False:
                     emit(AppsStepEnd(phase="get-app", app=app_name, site=None, ok=False))
                     results.append(AppResult(app=app_name, site=None, action="get-app", ok=False))
+                    dep_fetch_failed = dep_fetch_failed or dep_node is not None
                     warnings.append(
                         Message(
                             "app.present_not_installed",
@@ -795,7 +874,8 @@ def install_apps(
                     )
                     continue
                 results.append(AppResult(app=app_name, site=None, action="get-app", ok=True))
-                fetched.append((target, app_name))
+                if dep_node is None:
+                    fetched.append((target, app_name))
                 continue
 
             get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
@@ -810,6 +890,7 @@ def install_apps(
             )
             if code != 0:
                 results.append(AppResult(app=target, site=None, action="get-app", ok=False))
+                dep_fetch_failed = dep_fetch_failed or dep_node is not None
                 # A failed get-app (e.g. clone ok but pip-install failed) leaves a
                 # PARTIAL apps/<app> dir behind, which would poison every retry: the
                 # next run sees the dir, skips the fetch, and fails at install-app. Undo
@@ -826,9 +907,22 @@ def install_apps(
 
             new_dirs = set(after_apps) - before
             app_name = new_dirs.pop() if len(new_dirs) == 1 else app_name
-            fetched.append((target, app_name))
+            if dep_node is None:
+                fetched.append((target, app_name))
 
-    if not fetch_only:
+    # The remote may have moved between the check and the fetch: re-read what landed
+    # and stop before any site install when it no longer matches the plan.
+    drifted = _verify_against_plan(frappe_container, path, plan, results, warnings)
+    blocked_installs = dep_fetch_failed or drifted
+    if dep_fetch_failed:
+        warnings.append(
+            Message(
+                "app.required_app_fetch_failed",
+                "A required app could not be fetched, so nothing was installed on any site.",
+            )
+        )
+
+    if not fetch_only and not blocked_installs:
         target_sites = _target_sites(frappe_container, path, sites)
         if not target_sites:
             warnings.append(
@@ -845,6 +939,22 @@ def install_apps(
             if if_not_present and target_sites
             else {}
         )
+        # Required apps first, in plan order, only on the sites that lack them.
+        for node in deps:
+            for site in [s for s in target_sites if s in node.missing_sites]:
+                emit(AppsAnnounce(phase="install-app", app=node.app, site=site))
+                code = _run_step(
+                    frappe_container,
+                    f"bench --site {shlex.quote(site)} install-app {shlex.quote(node.app)}",
+                    path,
+                    emit=emit,
+                    phase="install-app",
+                    app=node.app,
+                    site=site,
+                )
+                results.append(
+                    AppResult(app=node.app, site=site, action="install-app", ok=code == 0)
+                )
         for _target, app_name in fetched:
             for site in target_sites:
                 if if_not_present and app_name in installed_by_site.get(site, set()):

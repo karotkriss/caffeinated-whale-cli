@@ -17,7 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import db_password, resolvers
+from . import app_deps, db_password, resolvers
+from . import apps as core_apps
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -60,19 +61,8 @@ def check_site_name(site: str) -> None:
 
 
 def frappe_major(container, bench_path: str) -> int | None:
-    """The bench's Frappe major from apps/frappe/frappe/__init__.py (``__version__``)."""
-    code, out = container.exec_run(
-        [
-            "sh",
-            "-c",
-            'grep -m1 -E "^__version__" "$1/apps/frappe/frappe/__init__.py" 2>/dev/null',
-            "sh",
-            bench_path,
-        ]
-    )
-    text = (out or b"").decode("utf-8", "replace")
-    m = re.search(r'["\'](\d+)\.', text)
-    return int(m.group(1)) if m else None
+    """The bench's Frappe major, through the shared declarations reader."""
+    return app_deps.bench_frappe_major(container, bench_path)
 
 
 def new_site(
@@ -86,8 +76,20 @@ def new_site(
     default: bool = False,
     developer_mode: bool = False,
     db_root_password: str | None = None,
+    fetch: list[str] | None = None,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
+    ignore_frappe_range: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[NewSiteReport]:
+    """Create ``site`` and install ``apps`` on it (each a bench app name).
+
+    ``fetch`` names repositories to fetch onto the bench first. Every pick is planned
+    by :mod:`core.app_deps` BEFORE the site exists: a Frappe range that does not fit
+    the bench raises, missing required apps return ``NEEDS_CHOICE``/
+    ``confirm_required_apps`` unless ``with_deps``, and the apps are installed in the
+    plan's order, required apps first. A refusal leaves no site behind.
+    """
     emit = on_event or (lambda _e: None)
     warnings: list[Message] = []
     check_site_name(site)
@@ -130,6 +132,42 @@ def new_site(
             f"A site named '{site}' already exists on {bench_path}.",
             hint="Pick another name, or open the existing site.",
         )
+    picks: list[tuple[str, str | None]] = [(u, None) for u in (fetch or []) if u]
+    picks += [(a, None) for a in wanted]
+    to_fetch: list[tuple[str, str | None]] = [(u, None) for u in (fetch or []) if u]
+    if picks:
+        on_bench = app_deps.read_bench_state(container, bench_path, sites=[site], new_site=site)
+        plan = app_deps.build_plan(
+            project,
+            on_bench,
+            picks,
+            dep_sources=dep_sources,
+            ignore_frappe_range=ignore_frappe_range,
+        )
+        asked = app_deps.enforce(plan, with_deps=with_deps)
+        if asked is not None:
+            return Result(status=asked.status, choice=asked.choice, warnings=warnings)
+        warnings.extend(Message(p.code, p.message) for p in plan.problems if p.severity == "notice")
+        to_fetch = [(n.target, n.ref) for n in plan.nodes if not n.on_bench]
+        wanted = [n.app for n in plan.nodes if n.app != "frappe"]
+    for target, ref in to_fetch:
+        # Remote picks and required apps land on the bench BEFORE the site exists: a
+        # failed fetch stops here with no site left behind.
+        fetched = core_apps.install_apps(
+            project,
+            [target],
+            bench_path=bench_path,
+            branch=ref,
+            fetch_only=True,
+            check_deps=False,
+            on_event=emit,
+        )
+        if fetched.data is None or not fetched.data.ok:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "new_site.fetch_failed",
+                f"Fetching {target} failed; the site was not created.",
+            )
     for a in wanted:
         if not _directory_exists(container, f"{bench_path}/apps/{a}"):
             raise CwcliError(

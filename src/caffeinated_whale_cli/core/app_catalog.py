@@ -128,6 +128,9 @@ class CatalogApp:
     remote_state: str = "unverified"  # verified | remembered | unverified
     hooks_logo: str | None = None  # the declared hooks.py logo path, for honesty
     official: bool = False  # owned by the frappe GitHub organisation (github.com/frappe/*)
+    # What the default branch declares, for display only ({frappe_range, required_apps});
+    # the install check always reads the ref that will land (core.app_deps).
+    declares: dict[str, Any] | None = None
 
 
 OFFICIAL_PREFIX = "github.com/frappe/"
@@ -543,6 +546,21 @@ def _hooks_facts(text: str) -> dict[str, str | None]:
     }
 
 
+def _declares(pyproject_text: str | None, hooks_text: str | None) -> dict[str, Any]:
+    """The Frappe range and required apps the scanned text declares, kept from the
+    files the scan already downloads (no extra request). Display only: a default
+    branch's facts, never what the install check acts on."""
+    from . import app_deps  # app_deps imports this module
+
+    ranges = app_deps.frappe_dependencies(pyproject_text) or {}
+    required = app_deps.required_apps(hooks_text) or []
+    frappe = ranges.get("frappe")
+    return {
+        "frappe_range": frappe if isinstance(frappe, str) else None,
+        "required_apps": [app_deps.entry_module(e)[0] for e in required],
+    }
+
+
 def _logo_source_path(module: str, logo: str) -> str | None:
     """``/assets/<app>/<rest>`` -> ``<module>/public/<rest>`` (the repo path of the asset)."""
     m = re.match(r"^/?assets/([^/]+)/(.+)$", logo)
@@ -757,6 +775,7 @@ def scan_github(
                 "custom_card": bool(n.get("usesCustomOpenGraphImage")),
             },
             "hooks_logo": facts["logo"],
+            "declares": _declares((n.get("pyproject") or {}).get("text"), text),
             "logo": logo,
             "cover": cover,
             "pushed_at": n.get("pushedAt"),
@@ -802,7 +821,8 @@ def _gitlab_project(
     )
     if status != 200:
         return None
-    facts = _hooks_facts(raw.decode("utf-8", "replace"))
+    hooks_text = raw.decode("utf-8", "replace")
+    facts = _hooks_facts(hooks_text)
     logo = None
     if facts["logo"]:
         rel = _logo_source_path(module, facts["logo"])
@@ -836,6 +856,7 @@ def _gitlab_project(
             "group_avatar": bool((project.get("namespace") or {}).get("avatar_url")),
         },
         "hooks_logo": facts["logo"],
+        "declares": _declares(pyproject, hooks_text),
         "logo": logo,
         "cover": None,
         "last_activity_at": project.get("last_activity_at"),
@@ -1483,6 +1504,7 @@ def _merge(
             remote_state=remote_state.get(host, "remembered"),
             hooks_logo=r.get("hooks_logo"),
             official=key.startswith(OFFICIAL_PREFIX),
+            declares=r.get("declares"),
         )
     by_name: dict[str, list[str]] = {}
     for key, app in apps.items():
