@@ -20,7 +20,13 @@ from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.core import update as core_update
 from caffeinated_whale_cli.core import update_preflight
 
-from .test_apps import FakeFrappeContainer, _count_discovery, _no_sleep, _wire_update
+from .test_apps import (
+    FakeFrappeContainer,
+    _count_discovery,
+    _no_sleep,
+    _wire_update,
+    fail_requirements_like_uv,
+)
 
 BENCH = "/workspace/frappe-bench"
 
@@ -526,6 +532,21 @@ class TestSkipRequirements:
 
         assert exc.value.exit_code == 1
         assert "requirements: failed" in capsys.readouterr().out
+
+    def test_axi_failed_requirements_name_the_failing_dependency(self, wired, capsys):
+        # axi forwards no bench output, so the document itself must carry the cause.
+        fail_requirements_like_uv(wired)
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update()
+
+        assert exc.value.exit_code == 1
+        out = capsys.readouterr().out
+        assert "requirements_cause[" in out
+        warning = next(line for line in out.splitlines() if "did not finish" in line)
+        assert "cwreq-missing was not found in the package registry" in warning
+        assert "--skip-requirements" in warning
+        assert "CommandFailedError" not in out
 
     def test_human_output_says_the_step_was_skipped(self, wired, capsys):
         apps_mod.update_apps(
