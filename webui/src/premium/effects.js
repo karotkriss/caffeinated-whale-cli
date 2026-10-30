@@ -31,15 +31,14 @@ const painted = ref(resolvedColorScheme.value)
 export const resolvedScheme = readonly(painted)
 const osDark = window.matchMedia('(prefers-color-scheme: dark)')
 const swap = (id) => { setColorScheme(id); painted.value = resolvedColorScheme.value }
-const choice = (origin) => ({ reduced: effects.reducedMotion, enabled: effects.enabled, origin })
-// Change the preference, blending the page from the old scheme to the new one (see
-// scheme-transition.js). `origin` is the control that was pressed, if any: the wipe plays
-// only for a press. A change that leaves the painted scheme as it is (system -> light on
-// a light OS) only stores the preference.
-export function setScheme(id, origin = null) {
+const choice = (pressed) => ({ reduced: effects.reducedMotion, enabled: effects.enabled, pressed })
+// Change the preference after a press on a scheme control, blending the page from the old
+// scheme to the new one (see scheme-transition.js). A change that leaves the painted scheme
+// as it is (system -> light on a light OS) only stores the preference.
+export function setScheme(id) {
   const next = id === 'system' ? (osDark.matches ? 'dark' : 'light') : id
   if (next === painted.value) return swap(id)
-  transitionScheme(() => swap(id), choice(origin))
+  transitionScheme(() => swap(id), choice(true))
 }
 // An OS switch under `system`: frappe-ui's own listener swaps the attribute at once (the
 // instant change this page used to make). By this frame's animation-frame callbacks it has
@@ -50,7 +49,7 @@ osDark.addEventListener('change', () => {
   requestAnimationFrame(() => {
     if (resolvedColorScheme.value === painted.value) return
     document.documentElement.setAttribute('data-theme', painted.value)
-    transitionScheme(() => swap('system'), choice(null))
+    transitionScheme(() => swap('system'), choice(false))
   })
 })
 

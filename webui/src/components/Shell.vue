@@ -39,7 +39,7 @@ import { active, motion, scheme, setScheme, stops } from '../premium/effects'
 import { cssGradient } from '../premium/themes'
 const SCHEME_CYCLE = { light: 'dark', dark: 'system', system: 'light' }
 const SCHEME_ICON = { light: 'lucide-sun', dark: 'lucide-moon', system: 'lucide-monitor' }
-function cycleScheme(event) { setScheme(SCHEME_CYCLE[scheme.value] || 'light', event.currentTarget) }
+function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
 import { fleet, instances, doctor, details, countSites } from '../data/fleet'
 import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
@@ -183,7 +183,7 @@ watch(() => route.name, (name) => {
             <SidebarItem label="Appearance" :active="false" @click="openPicker">
               <template #prefix><span class="size-4 shrink-0 rounded-full border border-outline-gray-2" :style="{ background: cssGradient(stops) }" aria-hidden="true" /></template>
               <template #suffix>
-                <button type="button" class="cw-scheme-toggle mr-0.5" :title="`Scheme: ${scheme}. Click for ${SCHEME_CYCLE[scheme] || 'light'}`" :aria-label="`Colour scheme, now ${scheme}; switch to ${SCHEME_CYCLE[scheme] || 'light'}`" @click.stop="cycleScheme($event)">
+                <button type="button" class="cw-scheme-toggle mr-0.5" :title="`Scheme: ${scheme}. Click for ${SCHEME_CYCLE[scheme] || 'light'}`" :aria-label="`Colour scheme, now ${scheme}; switch to ${SCHEME_CYCLE[scheme] || 'light'}`" @click.stop="cycleScheme">
                   <span v-for="(icon, id) in SCHEME_ICON" :key="id" :class="icon" :data-on="scheme === id ? '' : null" aria-hidden="true" />
                 </button>
               </template>

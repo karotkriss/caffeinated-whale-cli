@@ -26,7 +26,7 @@ const SCHEMES = [['light', 'Light', 'lucide-sun'], ['dark', 'Dark', 'lucide-moon
       <div class="mb-2 text-sm text-ink-gray-6">Scheme</div>
       <div role="radiogroup" aria-label="Colour scheme" class="inline-flex rounded-4 border border-outline-gray-2 bg-surface-gray-1 p-0.5">
         <button v-for="[id, label, icon] in SCHEMES" :key="id" type="button" role="radio" :aria-checked="scheme === id"
-          class="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm transition-colors duration-100" :class="scheme === id ? 'bg-surface-base text-ink-gray-9 shadow-sm' : 'text-ink-gray-6 hover:text-ink-gray-8'" @click="setScheme(id, $event.currentTarget)">
+          class="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-sm transition-colors duration-100" :class="scheme === id ? 'bg-surface-base text-ink-gray-9 shadow-sm' : 'text-ink-gray-6 hover:text-ink-gray-8'" @click="setScheme(id)">
           <span :class="icon" class="size-3.5" aria-hidden="true" />{{ label }}
         </button>
       </div>

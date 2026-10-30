@@ -9,8 +9,8 @@
 // Which blend plays: the wipe only when a control was pressed, effects are on and the
 // OS does not ask for less motion; otherwise the 200 ms cross-fade (reduced motion,
 // visual effects off, an OS-driven change under `system`, where nothing was pressed).
-export function pickDirection({ reduced, enabled, origin }) {
-  return reduced || !enabled || !origin ? 'fade' : 'wipe'
+export function pickDirection({ reduced, enabled, pressed }) {
+  return reduced || !enabled || !pressed ? 'fade' : 'wipe'
 }
 
 // While a blend runs the page is a snapshot, so every press lands on <html>, and an open
