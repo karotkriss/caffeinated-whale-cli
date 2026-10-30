@@ -774,13 +774,14 @@ def _delete_project_directory(
         emit(RmNotice(text=f"Removed project directory {project_dir}"))
         return True
     except Exception as e:
+        service_owned = shared and isinstance(e, PermissionError)
         finish = f"sudo rm -rf '{project_dir}'"
         emit(
             RmWarning(
                 text=f"Could not remove project directory '{project_dir}': {e}",
                 hint=(
                     f"Its remaining files belong to the cwcli service account; finish with {finish}."
-                    if shared
+                    if service_owned
                     else None
                 ),
             )
@@ -788,7 +789,7 @@ def _delete_project_directory(
         if failures is not None:
             failures.append(
                 f"project directory '{project_dir}' was left on disk; remove it with {finish}"
-                if shared
+                if service_owned
                 else f"could not remove project directory for '{project_name}'"
             )
         emit(RmTrace(text=f"Exception: {e}"))

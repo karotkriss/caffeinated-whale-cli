@@ -274,6 +274,25 @@ class TestSharedModeServiceOwnedDirectory:
         ]
         assert f"sudo rm -rf '{project_dir}'" in capsys.readouterr().err
 
+    def test_shared_mode_non_permission_failure_keeps_the_plain_message(
+        self, cwcli_home, monkeypatch, capsys
+    ):
+        _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+
+        def rmtree(path):
+            raise OSError(16, "Device or resource busy", str(path))
+
+        monkeypatch.setattr(core_rm.shutil, "rmtree", rmtree)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: True)
+        helper = MagicMock()
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert _delete_project_directory("proj", failures=failures) is False
+        helper.assert_not_called()
+        assert failures == ["could not remove project directory for 'proj'"]
+        assert "service account" not in capsys.readouterr().err
+
     def test_per_user_mode_never_uses_the_helper(self, cwcli_home, monkeypatch):
         _make_project_dir(core_rm.PROJECTS_DIR, "proj")
         self._denied_once(monkeypatch)
