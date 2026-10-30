@@ -202,6 +202,9 @@ def run_sandbox(src: Path = _REPO_ROOT) -> str:
     """Run the whole scenario in one throwaway container; returns its combined output."""
     with tempfile.TemporaryDirectory() as tmp:
         sandbox = Path(tmp)
+        # TemporaryDirectory is 0700: the in-container member must read
+        # member_fetch.py whatever the host uid is (CI's runner is not uid 1000).
+        sandbox.chmod(0o755)
         (sandbox / "git_server.py").write_text(_GIT_SERVER)
         (sandbox / "member_fetch.py").write_text(_MEMBER_FETCH)
         (sandbox / "glab-svc").write_text(
