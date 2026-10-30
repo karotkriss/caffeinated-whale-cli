@@ -23,11 +23,14 @@ carries exactly ONE HTTP/1.1 request on stdin; the bridge
    job), whatever the cap: this machine's own Admin does those on this machine. A job
    verb or integration op sent with anything around it is refused too, so the value
    compared is the one the daemon runs;
-4. drops every credential and identity header the hub sent (``Authorization``,
-   ``Cookie``, the delegation headers, ``Host``, ``Connection`` and whatever it
-   names), refuses a folded header line and a delegation header that is sent twice
-   or named in ``Connection``, lowers the claimed role to the cap in its own command
-   line, writes the delegated user as ``<user>@<hub>`` with the hub name from its own
+4. reads the head strictly (printable ASCII in CRLF-ended lines, header names that
+   are RFC 7230 tokens, no folded line, no ``X-Cwcli-Delegated-*`` header twice) and
+   refuses anything else whole, so nothing the daemon's own parser could read as a
+   header line of its own is forwarded; then drops every credential and identity
+   header the hub sent (``Authorization``, ``Cookie``, the delegation headers,
+   ``Host``, ``Connection`` and whatever it names), refuses a delegation header named
+   in ``Connection``, lowers the claimed role to the cap in its own command line,
+   writes the delegated user as ``<user>@<hub>`` with the hub name from its own
    command line, and adds this machine's own daemon token - the hub never holds it;
 5. pipes the exchange to the loopback ``cwcli ui`` daemon and streams the
    daemon's response back verbatim, once the daemon's pid file shows the process
@@ -77,6 +80,10 @@ _DAEMON_READ_TIMEOUT_S = 120.0
 _DAEMON_START_WAIT_S = 30.0
 
 _REQUEST_LINE = re.compile(rb"^(GET|POST) (/api/v1/[\x21-\x7e]*) HTTP/1\.[01]$")
+_TOKEN = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+# A byte a head may not carry: anything but printable ASCII, and a CR or LF that is not
+# part of a CRLF line end.
+_BAD_HEAD = re.compile(rb"[^\x20-\x7e\r\n]|\r(?!\n)|(?<!\r)\n")
 _GRANT_LINE = re.compile(r'restrict,command="([^"]*)" (\S+) (\S+) cwcli-hub:(\S+)')
 _USER = re.compile(r"[A-Za-z0-9._+-]{1,80}")
 # Headers the bridge never forwards: credentials, identity, routing, hop-by-hop,
@@ -219,27 +226,41 @@ def parse_request(head: bytes) -> tuple[str, str, list[tuple[str, str]]]:
 
     Only ``GET`` and ``POST`` on an ``/api/v1/`` target are HTTP requests this bridge
     recognises; anything else - a shell command, a different method, a path
-    outside the API - is refused before any header is looked at.
+    outside the API - is refused before any header is looked at. The rest of the head
+    is read strictly, as the last line of defence before the daemon's own parser:
+    printable ASCII in CRLF-ended lines, every header a ``name: value`` line whose
+    name is an RFC 7230 token, no folded line and no ``X-Cwcli-Delegated-*`` header
+    twice. Anything else refuses the whole request, so a byte the daemon could read as
+    a line end (a lone CR inside a header name, say) never reaches it.
     """
-    lines = head.replace(b"\r\n", b"\n").split(b"\n")
+    lines = head.split(b"\r\n")
     match = _REQUEST_LINE.match(lines[0].strip())
     if match is None:
         raise BridgeError(400, "bridge.not_http", "expected an HTTP request")
+    if _BAD_HEAD.search(head):
+        raise BridgeError(
+            400, "bridge.bad_header", "the request head is not printable ASCII in CRLF lines"
+        )
     method = match.group(1).decode()
     target = match.group(2).decode()
     headers: list[tuple[str, str]] = []
+    delegation: set[bytes] = set()
     for raw in lines[1:]:
-        if not raw.strip():
+        if not raw:
             continue
-        if raw[:1] in (b" ", b"\t"):
+        if raw[:1] == b" ":
             raise BridgeError(400, "bridge.bad_header", "a folded header line is not accepted")
         name, sep, value = raw.partition(b":")
-        if not sep or not name.strip():
+        if not sep or not _TOKEN.fullmatch(name):
             raise BridgeError(400, "bridge.bad_header", "malformed header line")
-        try:
-            headers.append((name.strip().decode("ascii"), value.strip().decode("latin-1")))
-        except UnicodeDecodeError as e:
-            raise BridgeError(400, "bridge.bad_header", "malformed header line") from e
+        low = name.lower()
+        if low.startswith(b"x-cwcli-delegated-"):
+            if low in delegation:
+                raise BridgeError(
+                    400, "bridge.delegation_repeated", f"{name.decode()} may be sent only once"
+                )
+            delegation.add(low)
+        headers.append((name.decode("ascii"), value.strip().decode("ascii")))
     return method, target, headers
 
 
@@ -276,8 +297,9 @@ def rewrite(
     Every incoming credential, identity and hop-by-hop header is dropped, so the
     only identity the daemon sees is the one this function writes; a request
     whose ``Connection`` header names a delegation header is refused outright
-    (the hop-by-hop stripping trick that once ran a request as the proxy itself),
-    and so is one that sends a delegation header twice.
+    (the hop-by-hop stripping trick that once ran a request as the proxy itself).
+    ``headers`` are ``parse_request``'s, which has refused a delegation header sent
+    twice and any byte outside a header's grammar.
     """
     if target.startswith(_REFUSED_PREFIXES):
         raise BridgeError(
@@ -299,10 +321,6 @@ def rewrite(
                 if named:
                     hop_by_hop.add(named)
         elif low in _DELEGATION:
-            if low in claimed:
-                raise BridgeError(
-                    400, "bridge.delegation_repeated", f"{name} may be sent only once"
-                )
             claimed[low] = value
         elif low == "transfer-encoding":
             raise BridgeError(
@@ -313,8 +331,6 @@ def rewrite(
         low = name.lower()
         if low in _DROP or low in hop_by_hop or low.startswith(_DROP_PREFIXES):
             continue
-        if "\r" in value or "\n" in value:
-            raise BridgeError(400, "bridge.bad_header", "malformed header line")
         out.append((name, value))
     out.extend(
         [
@@ -619,7 +635,13 @@ def main(
         head, rest = _read_head(fd, deadline)
         method, target, headers = parse_request(head)
     except BridgeError as e:
-        if e.code in ("bridge.not_http", "bridge.truncated", "bridge.head_timeout"):
+        if e.code in (
+            "bridge.not_http",
+            "bridge.truncated",
+            "bridge.head_timeout",
+            "bridge.bad_header",
+            "bridge.delegation_repeated",
+        ):
             sys.stderr.write(f"bridge: {e.message}\n")
             return 2
         out.write(_error(e.status, e.code, e.message))

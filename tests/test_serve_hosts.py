@@ -415,6 +415,16 @@ class TestForward:
         assert sent["headers"]["Content-Type"] == "application/json" and sent["headers"]["X-Cwcli-Delegated-Role"] == "admin"
         assert sent["headers"]["X-Cwcli-Delegated-User"] == "api"
 
+    def test_a_user_whose_name_is_not_ascii_still_reaches_the_remote(self, daemon, monkeypatch):
+        """The bridge refuses any byte outside printable ASCII, so the hub sends the name
+        escaped; the bridge then files it as ``hub@<hub>``, as before."""
+        daemon.views["build-box"] = _connected()
+        monkeypatch.setattr(serve_cmd._Handler, "_account_name", lambda self: "jos\u00e9")
+        status, _b, _ = _req(daemon, "/api/v1/hosts/build-box/instances", bearer=True)
+        assert status == 200
+        (sent,) = daemon.forwarded
+        assert sent["headers"]["X-Cwcli-Delegated-User"] == "jos\\xe9"
+
     def test_a_folded_content_type_from_the_browser_never_reaches_the_remote(self, daemon):
         """The browser's Content-Type is parsed with its folded continuation kept inside
         the value; forwarded as is, the bridge would read that continuation as a
