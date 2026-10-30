@@ -345,6 +345,29 @@ class TestNoCodeChangeThroughAHub:
         (seen,) = daemon.requests
         assert seen["path"] == "/api/v1/settings" and seen["headers"]["x-cwcli-delegated-role"] == "admin"
 
+    @pytest.mark.parametrize(
+        "path,payload",
+        [
+            ("/api/v1/jobs", {"verb": " self-update"}),
+            ("/api/v1/jobs", {"verb": "self-update\n"}),
+            ("/api/v1/jobs", {"verb": "rm ", "target": {"project": "x"}, "args": {"no_backup": True}}),
+            ("/api/v1/jobs", {"verb": ""}),
+            ("/api/v1/integrations", {"op": " community_add", "url": "https://example.com/x.git", "commit": "abc"}),
+        ],
+    )
+    def test_a_padded_verb_or_op_is_refused_never_read_as_the_one_it_pads(self, admin, daemon, path, payload):
+        code, out = _run(admin, _post(path, payload))
+        assert code == 1 and _error_code(out) == "bridge.not_canonical"
+        assert daemon.requests == []
+
+    @pytest.mark.parametrize(
+        "path,payload",
+        [("/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}), ("/api/v1/integrations", {"op": "test", "id": "ldap"})],
+    )
+    def test_an_exact_verb_or_op_still_crosses(self, admin, daemon, path, payload):
+        code, out = _run(admin, _post(path, payload))
+        assert code == 0 and _status_and_json(out)[0] == 200 and [r["path"] for r in daemon.requests] == [path]
+
 
 class TestTheRealExchange:
     def test_a_read_reaches_the_daemon_with_the_machines_own_token_and_identity(self, grant, daemon):

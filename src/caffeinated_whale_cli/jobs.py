@@ -432,14 +432,23 @@ def _secret_field(value: Any) -> str | None:
     return None
 
 
+def job_verb(value: object) -> str:
+    """``value`` when it names a job verb exactly: a known verb with nothing around it.
+    Anything else (padded, empty, not a string, unknown) is a usage error. Every role and
+    code-change check reads the verb this returns, so the verb they checked is the one
+    that runs."""
+    if isinstance(value, str) and value in ALLOWED_VERBS:
+        return value
+    raise CwcliError(
+        ErrorKind.USAGE,
+        "job.verb_unsupported",
+        f"Unsupported job verb {value!r}.",
+        hint="Allowed verbs are " + ", ".join(sorted(ALLOWED_VERBS)) + ".",
+    )
+
+
 def _validate_spec(verb: str, target: dict[str, Any], args: dict[str, Any]) -> None:
-    if verb not in ALLOWED_VERBS:
-        raise CwcliError(
-            ErrorKind.USAGE,
-            "job.verb_unsupported",
-            f"Unsupported job verb '{verb}'.",
-            hint="Allowed verbs are " + ", ".join(sorted(ALLOWED_VERBS)) + ".",
-        )
+    job_verb(verb)
     if not isinstance(target, dict) or not isinstance(args, dict):
         raise CwcliError(
             ErrorKind.USAGE,

@@ -850,11 +850,14 @@ class _Handler(BaseHTTPRequestHandler):
         This machine's own Admin still does both."""
         if self._delegation() is None:
             return False
+        if path == "/api/v1/jobs":
+            payload = {"verb": core_jobs.job_verb(payload.get("verb"))}
+        elif path == "/api/v1/integrations":
+            payload = {"op": _canonical_op(payload)}
         job = _rerun_job(path)
-        if not (
-            hub_bridge.code_change(path, payload)
-            or (job is not None and hub_bridge.code_change("/api/v1/jobs", job))
-        ):
+        if job is not None:
+            path, payload = "/api/v1/jobs", job
+        if not hub_bridge.code_change(path, payload):
             return False
         self._send_error(
             403,
@@ -1102,6 +1105,8 @@ class _Handler(BaseHTTPRequestHandler):
         """The least role a POST needs. Viewers only read; Operators run the fleet;
         Admins also change settings and integrations, remove instances, sites, benches
         and backups, and update cwcli itself."""
+        if path == "/api/v1/integrations":
+            _canonical_op(payload)
         if path in (
             "/api/v1/settings",
             "/api/v1/integrations",
@@ -1110,8 +1115,8 @@ class _Handler(BaseHTTPRequestHandler):
         ):
             return "admin"
         if path == "/api/v1/jobs":
-            admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
-            return "admin" if admin else "operator"
+            verb = core_jobs.job_verb(payload.get("verb"))
+            return "admin" if core_accounts.admin_only(verb, payload.get("args")) else "operator"
         if path == "/api/v1/publish/preflight":
             admin = core_accounts.admin_only("publish-site", {"address": payload.get("address")})
             return "admin" if admin else "operator"
@@ -1499,9 +1504,9 @@ class _Handler(BaseHTTPRequestHandler):
         if routed is not None:
             self._forward(routed[0], routed[1], parsed.query, method="POST", body=raw)
             return
-        if self._refuse_delegated_code_change(parsed.path, payload):
-            return
         try:
+            if self._refuse_delegated_code_change(parsed.path, payload):
+                return
             if parsed.path == "/api/v1/actions":
                 status, body = self._dispatch_action(payload)
             elif parsed.path == "/api/v1/jobs":
@@ -1584,7 +1589,7 @@ class _Handler(BaseHTTPRequestHandler):
         return origin
 
     def _create_job(self, payload: dict) -> tuple[int, dict]:
-        verb = _required_str(payload, "verb")
+        verb = core_jobs.job_verb(payload.get("verb"))
         target = payload.get("target") or {}
         args = payload.get("args") or {}
         secret_values = payload.get("secrets") or {}
@@ -2964,11 +2969,8 @@ def _forward_role(rest: str, payload: dict) -> str:
     if inner in ("/api/v1/settings", "/api/v1/integrations", "/api/v1/backups/settings"):
         return "admin"
     if inner == "/api/v1/jobs":
-        return (
-            "admin"
-            if core_accounts.admin_only(payload.get("verb"), payload.get("args"))
-            else "operator"
-        )
+        verb = core_jobs.job_verb(payload.get("verb"))
+        return "admin" if core_accounts.admin_only(verb, payload.get("args")) else "operator"
     return "operator"
 
 
@@ -2992,6 +2994,19 @@ def _parse_after(raw: str) -> dict[str, int] | None:
         if sep and process and offset.isdigit():
             after[process] = int(offset)
     return after or None
+
+
+def _canonical_op(payload: dict) -> str:
+    """An integration ``op`` exactly as sent: a non-empty string with nothing around it, so
+    the guards that compare it exactly read the op that runs; else a usage error."""
+    op = payload.get("op")
+    if isinstance(op, str) and op and op == op.strip():
+        return op
+    raise CwcliError(
+        ErrorKind.USAGE,
+        "integration.op_invalid",
+        "op must be test, configure, disable, action or a community_ op, exactly.",
+    )
 
 
 def _rerun_job(path: str) -> dict | None:

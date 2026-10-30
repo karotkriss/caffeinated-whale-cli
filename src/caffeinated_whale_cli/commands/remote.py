@@ -100,8 +100,9 @@ def allow_cmd(
     user is, this machine treats them as at most --max-role. Even at the Admin cap a hub
     never installs or updates community integrations or updates cwcli here; this
     machine's own Admin does that. A grant this hub already had in a different file is
-    taken out of it, so the hub keeps one grant here. Prints the pairing string to paste
-    into the hub, which carries this machine's SSH host key so the hub pins it.
+    taken out of it once the new one is written, so the hub keeps one grant here (exits 1,
+    naming the file, when that fails). Prints the pairing string to paste into the hub,
+    which carries this machine's SSH host key so the hub pins it.
     """
     try:
         grant = remote_access.allow(
@@ -120,6 +121,8 @@ def allow_cmd(
     note = remote_access.shared_mode_note()
     if as_json:
         console.print_json(json.dumps({**asdict(grant), "note": note}))
+        if grant.earlier_left:
+            raise typer.Exit(code=1)
         return
     verb = "Replaced" if grant.replaced else "Added"
     console.print(
@@ -154,6 +157,8 @@ def allow_cmd(
     if note:
         stderr_console.print(f"[yellow]Note:[/yellow] {escape(note)}", soft_wrap=True)
     console.print(f"Undo with: cwcli remote revoke --hub {escape(grant.hub)}")
+    if grant.earlier_left:
+        raise typer.Exit(code=1)
 
 
 @app.command("revoke")

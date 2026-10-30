@@ -20,7 +20,9 @@ carries exactly ONE HTTP/1.1 request on stdin; the bridge
 3. forwards only ``/api/v1/`` paths, never the session or hosts routes, and never an
    operation that installs or updates third-party code here or replaces cwcli itself
    (a ``community_add`` or ``community_update`` integration op, a ``self-update``
-   job), whatever the cap: this machine's own Admin does those on this machine;
+   job), whatever the cap: this machine's own Admin does those on this machine. A job
+   verb or integration op sent with anything around it is refused too, so the value
+   compared is the one the daemon runs;
 4. drops every credential and identity header the hub sent (``Authorization``,
    ``Cookie``, the delegation headers, ``Host``, ``Connection`` and whatever it
    names), refuses a folded header line and a delegation header that is sent twice
@@ -113,10 +115,21 @@ _CODE_CHANGES = {
 
 def code_change(path: str, payload: object) -> bool:
     """Whether a POST to ``path`` (the parsed path, as the daemon routes it) with
-    ``payload`` installs or updates third-party code here or replaces cwcli itself.
-    The bridge refuses such a request and the daemon refuses a delegated one."""
+    ``payload`` installs or updates third-party code here or replaces cwcli itself,
+    compared exactly. The bridge refuses such a request and the daemon refuses a
+    delegated one."""
     rule = _CODE_CHANGES.get(path)
     return rule is not None and isinstance(payload, dict) and payload.get(rule[0]) in rule[1]
+
+
+def canonical(path: str, payload: object) -> bool:
+    """Whether the job verb or integration op a POST to ``path`` names, when it names one,
+    is sent exactly: a non-empty string with nothing around it."""
+    rule = _CODE_CHANGES.get(path)
+    if rule is None or not isinstance(payload, dict) or rule[0] not in payload:
+        return True
+    value = payload[rule[0]]
+    return isinstance(value, str) and value != "" and value == value.strip()
 
 
 class BridgeError(Exception):
@@ -498,13 +511,21 @@ def _pipe(
         raise BridgeError(
             403, "bridge.path_refused", f"{target.split('?')[0]} is not reachable through a hub"
         )
-    if method == "POST" and code_change(urlparse(target).path, _json_body(body)):
-        raise BridgeError(
-            403,
-            "bridge.code_change_refused",
-            "a hub cannot install or update community integrations or update cwcli on this "
-            "machine, whatever its cap; this machine's own Admin does that here",
-        )
+    if method == "POST":
+        path, payload = urlparse(target).path, _json_body(body)
+        if not canonical(path, payload):
+            raise BridgeError(
+                400,
+                "bridge.not_canonical",
+                "a job verb or integration op must be sent exactly, with nothing around it",
+            )
+        if code_change(path, payload):
+            raise BridgeError(
+                403,
+                "bridge.code_change_refused",
+                "a hub cannot install or update community integrations or update cwcli on "
+                "this machine, whatever its cap; this machine's own Admin does that here",
+            )
     state = _read_state(args.state)
     conn = _connect(state["port"]) if state is not None else None
     if conn is None:
