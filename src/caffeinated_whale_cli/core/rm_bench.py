@@ -1,7 +1,7 @@
 """``core.remove_bench`` - remove ONE bench from an instance, never the instance.
 
 The bench-scoped sibling of ``core.rm`` (whole instance) and ``core.rm_site``
-(one site): a single frappemate instance accumulates ~23 benches at ~2.6 GB, and
+(one site): a single long-lived development instance accumulates ~23 benches at ~2.6 GB, and
 every one boots on ``start``/``scale``, so an OOM-tight box needs a way to thin
 them without destroying the instance. Until this module existed the only way to
 drop a bench was ``docker exec ... rm -rf`` past cwcli, with no backup and no

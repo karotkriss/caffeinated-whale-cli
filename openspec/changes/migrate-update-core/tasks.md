@@ -6,7 +6,7 @@
 - [x] 1.4 These tests MUST pass **before** the migration and **after** it, **unchanged**. That is what makes refactor-under-green true rather than aspirational.
 - [x] 1.5 **State the boundary of "unchanged" explicitly** (design Decision 3): the tests that must not change are the ones pinning behaviour this batch PRESERVES. The stream-loss tests change **by design**, because Decision 2 changes what a stream loss does. Do not silently rewrite a test to match new behaviour and call it characterization.
 - [x] 1.6 Re-measure coverage and report it. Baseline re-measured first-hand: `update.py` **387 stmts, 112 miss, 71.06%** (the recon's 376/113/69.95% predates PR #81); `apps.py` 195/17/91.28%; suite **870 passed**. Coverage of the moved state machine must be measurably up at the end.
-- [x] 1.7 Note for whoever runs the suite: `/tmp/pytest-of-cmckay` is owned by `root` on this host, so every `tmp_path` test errors in setup (169 errors) unless `TMPDIR` is redirected. Environmental, outside the worktree, NOT a real failure and not caused by this change.
+- [x] 1.7 Note for whoever runs the suite: `/tmp/pytest-of-<user>` is owned by `root` on this host, so every `tmp_path` test errors in setup (169 errors) unless `TMPDIR` is redirected. Environmental, outside the worktree, NOT a real failure and not caused by this change.
 
 ## 2. The frappe fork FIRST (it is what makes the verb possible)
 

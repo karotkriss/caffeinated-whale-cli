@@ -3,7 +3,7 @@
 **`bench migrate` and `bench run-tests` are the two commands every Frappe proof runs, and neither has an agent-facing form.**
 
 Driving Frappe work through `cwcli axi` is currently satisfiable for reads and for a few named mutations, but every *execution* step drops to raw `cwcli run`.
-Found by frappemate on 2026-07-19 doing exactly that work; it is the standing exception recorded in its own charter.
+Found by an agent on 2026-07-19 doing exactly that work; it is the standing exception recorded in its own charter.
 
 This is not only a convenience gap. It is a hole in the workflow `cwcli apps checkout` shipped for four days ago.
 
@@ -90,7 +90,7 @@ Three options, each with its cost stated. **Recommendation is Option A**, argued
 
 ### Option C - the split: `cwcli axi migrate` top-level, `run-tests` deferred entirely
 
-- **Cost:** leaves half the reported gap open; frappemate still drops to raw `cwcli run` for its test step.
+- **Cost:** leaves half the reported gap open; the agent still drops to raw `cwcli run` for its test step.
 - **Benefit:** `migrate` and `run-tests` are not actually the same kind of thing (see the safety section - one is a bounded state mutation, the other is unbounded code execution), and pairing them in one decision invites approving the harder one on the easier one's evidence. That is precisely the inherited-rationale failure `add-axi-apps-checkout-verb` had to unwind.
 
 **Recommended: Option A**, with the two verbs judged on their own separate evidence inside one change (safety sections below are deliberately separate, so the captain can approve one and decline the other without re-opening the change).

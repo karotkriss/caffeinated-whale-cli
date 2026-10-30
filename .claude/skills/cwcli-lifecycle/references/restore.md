@@ -73,7 +73,7 @@ The unit fakes still model per-entry probes; `tests/batched_probes.py:emulate_ba
 
 #### Default site resolves from EITHER source (`currentsite.txt` OR `common_site_config.json`)
 
-A bench records its default site in `common_site_config.json`'s `default_site` OR `sites/currentsite.txt`; a plain `bench use`d dev bench only has the latter (the captain's `ners` had no `default_site` key at all).
+A bench records its default site in `common_site_config.json`'s `default_site` OR `sites/currentsite.txt`; a plain `bench use`d dev bench only has the latter (the captain's `client-b` had no `default_site` key at all).
 `Bench.current_site` is a nullable column (idempotent `_migrate_bench_current_site_column`, mirroring the `label` migration) populated by a full inspect from `currentsite.txt`, carried forward by the T2 partial pass, and surfaced by `get_cached_project_data`.
 `db_utils.get_default_site` returns `common_site_config.default_site` if set, else the cached `current_site` (via `get_current_site`) - so `restore`/`backup`/`unlock` all resolve the default even with no `default_site` key.
 `inspect`'s tree marks `(default)` from either source too.

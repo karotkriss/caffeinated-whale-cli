@@ -1626,10 +1626,10 @@ cwcli db-access repair PROJECT_NAME [--bench SELECTOR] [--site NAME]... --yes [-
 
 ```bash
 # Which sites would be refused from the container's current address? (exit 1 if any)
-cwcli db-access check staging16
+cwcli db-access check my-instance
 
 # Rename each refused site's user to '%' so any container address may connect
-cwcli db-access repair staging16 --yes
+cwcli db-access repair my-instance --yes
 ```
 
 **Output:**

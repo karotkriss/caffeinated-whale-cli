@@ -116,7 +116,7 @@ class AppInstall:
 
 @dataclass(slots=True, kw_only=True)
 class CatalogApp:
-    key: str  # github.com/owner/repo | dev.egov.gy/group/proj | local:<name>
+    key: str  # github.com/owner/repo | gitlab.example.com/group/proj | local:<name>
     name: str  # the Frappe app (module) name
     title: str
     description: str | None = None
@@ -1552,7 +1552,7 @@ def _source_from_key(key: str) -> dict[str, Any] | None:
     kind = (
         "github"
         if host.endswith("github.com")
-        else "gitlab" if "gitlab" in host or host == "dev.egov.gy" else "git"
+        else "gitlab" if "gitlab" in host or host in gitlab_hosts() else "git"
     )
     return {
         "kind": kind,

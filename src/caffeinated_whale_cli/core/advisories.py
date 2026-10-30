@@ -27,7 +27,7 @@ What the research settled, and this module follows:
   global tier is CISA KEV + EPSS + CIRT.gy's ``page-data.json`` alerts; Alpine
   secdb is kept natively; service binaries are matched on their upstream
   versions (MariaDB/server and redis/redis repository advisories, nginx.org).
-  dev.egov.gy and NVD are out of phase 1.
+  Self-hosted forges and NVD are out of phase 1.
 
 Every source is fetched with its own validators (ETag / If-Modified-Since,
 body hash otherwise) and records its own freshness and error, so one dead feed

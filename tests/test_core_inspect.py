@@ -837,8 +837,8 @@ class _RemotesContainer(FakeFrappeContainer):
     def exec_run(self, cmd, workdir=None):
         if isinstance(cmd, list) and "/.git/config" in cmd[-1]:
             self.calls.append(cmd)
-            url = "https://oauth2:tok@dev.egov.gy/Ministry/chpa/single-window.git"
-            return (0, f"apps/single_window/.git/config\t{url}\n".encode())
+            url = "https://oauth2:tok@gitlab.example.com/Example-Group/Sub-Group/field-service.git"
+            return (0, f"apps/field_service/.git/config\t{url}\n".encode())
         return super().exec_run(cmd, workdir)
 
     def read_remotes(self) -> bool:
@@ -856,7 +856,7 @@ class TestAppRemotes:
 
         assert result.data.served_from == "partial"
         assert result.data.benches[0].app_remotes == {
-            "single_window": ["https://dev.egov.gy/ministry/chpa/single-window"]
+            "field_service": ["https://gitlab.example.com/example-group/sub-group/field-service"]
         }
 
     def test_it_is_read_only_when_asked(self, wired):

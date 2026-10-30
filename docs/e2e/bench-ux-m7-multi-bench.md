@@ -32,7 +32,7 @@ Raw transcript follows.
 
 ---
 
-Isolated HOME: /tmp/claude-1000/-home-cmckay--treehouse-cwcli-b7e614-2-cwcli/37b1217f-f6e7-46d4-a99e-a489bb6f07e8/scratchpad/e2e-home | project: cwcli-e2e-mbench | net: cwcli-e2e-net
+Isolated HOME: <session scratchpad>/e2e-home | project: cwcli-e2e-mbench | net: cwcli-e2e-net
 ### confirm 'label' command present in this build
 │ inspect   Inspects a Project to find all Bench Instances, Sites, and Apps    │
 │           within it. Caches the results for faster subsequent inspects.      │
@@ -292,6 +292,6 @@ cwcli-e2e-mariadb
 cwcli-e2e-redis
 cwcli-e2e-net
 throwaway HOME removed
---- confirm nothing labeled with the E2E project remains, captain's 'ners' untouched ---
+--- confirm nothing labeled with the E2E project remains, captain's real instance untouched ---
 e2e containers left: 0
-ners still running: 4 containers
+client-b still running: 4 containers

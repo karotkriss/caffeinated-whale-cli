@@ -430,7 +430,7 @@ def _sites_with_app(
     (``core.bench_read``). A site it could not read is left out, reported in
     ``warnings`` with its cause and, when ``unreadable`` is given, named there: the
     app's code has moved under a site that will not be migrated, which is a failure
-    of the run, not a footnote (captain, staging16 2026-10-28).
+    of the run, not a footnote (captain, a staging server, 2026-10-28).
     """
     cached = db_utils.get_cached_project_data(project_name)
     if cached:
@@ -935,7 +935,7 @@ def _frappe_checks(
     outcome = check()
     if force and _reown_dubious_apps(frappe_container, bench_path, outcome.findings, warnings):
         outcome = check()
-    # staging16 (2026-10-28), two more failures the preflight now prevents:
+    # On a staging server (2026-10-28), two more failures the preflight now prevents:
     # (B) a branch the remote's fetch refspec does not cover (a narrow clone switched
     #     with `checkout -B ... FETCH_HEAD`): widened in place and logged, always - a
     #     refspec that also covers the checked-out branch is never wrong;
@@ -1108,7 +1108,7 @@ def update(
         # state machine as any app, with these differences - each core app is reset to
         # its remote branch (fetch + reset --hard, the core apps ONLY; never bench's
         # bench-wide `bench update --reset`, which hard-reset every app on the bench,
-        # the captain's staging16 defect) after the preflight and the data-loss guard,
+        # the captain's staging-server defect) after the preflight and the data-loss guard,
         # every site's stale locks are cleared first, and the bench's requirements
         # are reinstalled before the sites migrate. Every site then migrates under
         # cwcli's own per-site maintenance with its `finally`, so a failed migrate
