@@ -11,13 +11,13 @@ nothing is published and the upgrade resolves offline from a local wheelhouse:
    default tool folder and the running services kept the old code.
 2. Assert the install, the web UI's ``/api/v1/meta`` and every daemon's pid moved
    to the new version.
-3. Offer a newer wheel but make the bin folder unwritable, so uv replaces the
-   packages and then fails linking the executables. Assert exit 1, the reason in
-   the error, the install back on the previous version, and no service restarted.
+3. Offer a newer wheel but put a folder where uv links the ``caffeinated-whale-cli``
+   alias, so uv replaces the packages, removes the old executables and then fails.
+   Assert exit 1, the reason in the error, the install and ``cwcli`` itself back on
+   the previous version, and no service restarted.
 
 A tiny empty Docker API on a unix socket stands in for Docker, so the web UI
-daemon starts without touching any real daemon. Runs as a non-root user (the
-failure step relies on a read-only folder). Run locally with::
+daemon starts without touching any real daemon. Run locally with::
 
     uv run pytest tests/e2e/test_self_update_e2e.py -m e2e_pkg -o addopts=""
 """
@@ -143,8 +143,6 @@ def _free_port() -> int:
 
 @pytest.fixture()
 def sandbox(tmp_path):
-    if os.geteuid() == 0:
-        pytest.skip("the failure step needs a folder root cannot be refused")
     if not (REPO_ROOT / "src/caffeinated_whale_cli/webui/dist/index.html").exists():
         pytest.skip("build the web UI first (cd webui && npm run build)")
     built = tmp_path / "built"
@@ -208,7 +206,6 @@ def sandbox(tmp_path):
         for args in (("ui", "--stop"), ("config", "auto-inspect", "disable")):
             run(*args, check=False)
         run("config", "cred-bridge", "disable", check=False)
-        bins.chmod(0o755)
         docker.shutdown()
 
 
@@ -245,13 +242,15 @@ def test_self_update_restarts_every_service_or_changes_nothing(sandbox):
     # --- a failed upgrade: uv replaces the packages, then cannot link ---------
     shutil.copy2(sandbox["wheels"][NEWER], sandbox["house"])
     sandbox["latest"](NEWER)
-    sandbox["bins"].chmod(0o555)
+    alias = sandbox["bins"] / "caffeinated-whale-cli"
+    alias.unlink()
+    (alias / "blocker").mkdir(parents=True)
     failed = run("self-update", check=False)
-    sandbox["bins"].chmod(0o755)
     assert failed.returncode == 1, failed.stdout + failed.stderr
     error = " ".join((failed.stdout + failed.stderr).split())
-    assert "Permission denied" in error
+    assert "Is a directory" in error
     assert f"cwcli {NEW} is still installed, and nothing was restarted" in error
-    assert NEW in run("--version").stdout  # rolled back, not left half-upgraded
+    # Rolled back, not left half-upgraded, and `cwcli` itself is still there.
+    assert NEW in run("--version").stdout
     assert _meta_version(port) == NEW
     assert {n: _pid(run_dir, n) for n in after} == after

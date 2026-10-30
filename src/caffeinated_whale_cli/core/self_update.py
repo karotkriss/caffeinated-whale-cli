@@ -170,6 +170,17 @@ def _backup(root: Path, run_as: int | None) -> Path | None:
             "self_update.backup_failed",
             f"Could not copy {root} aside before upgrading ({exc}), so nothing was changed.",
         ) from exc
+    # uv removes the old executables before it links the new ones, so a failure
+    # there leaves no `cwcli` on PATH unless they are put back too.
+    saved = backup / ".cwcli-entrypoints"
+    saved.mkdir()
+    manifest = {}
+    for i, path in enumerate(_entrypoints(root)):
+        if path.is_symlink() or path.is_file():
+            with contextlib.suppress(OSError):
+                shutil.copy2(path, saved / str(i), follow_symlinks=False)
+                manifest[str(i)] = str(path)
+    (saved / "manifest.json").write_text(json.dumps(manifest))
     if run_as is not None:  # root made the copy; it must stay the install owner's
         owner = root.stat()
         for dirpath, dirnames, filenames in os.walk(backup):
@@ -182,6 +193,16 @@ def _backup(root: Path, run_as: int | None) -> Path | None:
 def _restore(root: Path, backup: Path | None) -> bool:
     if backup is None or not backup.is_dir():
         return False
+    saved = backup / ".cwcli-entrypoints"
+    with contextlib.suppress(OSError, ValueError):
+        for name, dest in json.loads((saved / "manifest.json").read_text()).items():
+            target = Path(dest)
+            if target.is_dir() and not target.is_symlink():
+                continue  # something else took the name; never delete a folder
+            with contextlib.suppress(OSError):
+                target.unlink(missing_ok=True)
+                shutil.copy2(saved / name, target, follow_symlinks=False)
+    shutil.rmtree(saved, ignore_errors=True)
     try:
         shutil.rmtree(root, ignore_errors=True)
         os.replace(backup, root)
@@ -248,16 +269,23 @@ def _uv_env(root: Path) -> dict[str, str]:
     """Point uv at the tool folder this install is in, and the bin folder its
     entry points were linked into (read from the tool's receipt)."""
     env = {"UV_TOOL_DIR": str(root.parent)}
+    for path in _entrypoints(root):
+        if path.name == "cwcli":
+            env["UV_TOOL_BIN_DIR"] = str(path.parent)
+    return env
+
+
+def _entrypoints(root: Path) -> list[Path]:
+    """The executables uv linked for this tool (``cwcli`` and its alias)."""
     if tool_env() is None:
-        return env
-    with contextlib.suppress(Exception):
+        return []
+    try:
         import toml
 
-        receipt = toml.load(root / "uv-receipt.toml")
-        for entry in receipt["tool"]["entrypoints"]:
-            if entry.get("name") == "cwcli" and entry.get("install-path"):
-                env["UV_TOOL_BIN_DIR"] = str(Path(entry["install-path"]).parent)
-    return env
+        entries = toml.load(root / "uv-receipt.toml")["tool"]["entrypoints"]
+        return [Path(e["install-path"]) for e in entries if e.get("install-path")]
+    except Exception:
+        return []
 
 
 def _find_uv(run_as: int | None) -> str:

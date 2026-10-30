@@ -2808,7 +2808,7 @@ sudo cwcli self-update     # on a shared (multi-user) install
 
 An open web UI page notices that its daemon now runs a new version, reconnects and reloads by itself; you stay signed in.
 
-**When the upgrade fails** nothing changes: cwcli copies a uv tool install aside before upgrading and puts it back if the upgrade fails part way, restarts nothing, so every service keeps running the old version, and the error names the cause (the last line of the upgrader's output).
+**When the upgrade fails** nothing changes: cwcli copies a uv tool install and its `cwcli` executables aside before upgrading and puts them back if the upgrade fails part way, restarts nothing, so every service keeps running the old version, and the error names the cause (the last line of the upgrader's output).
 An upgrade that exits successfully but leaves the install on the old version (for example because uv upgraded a different install) is reported as a failure too, never as "Upgraded".
 
 **Exit codes:**
