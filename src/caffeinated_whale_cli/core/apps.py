@@ -215,7 +215,7 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
-def _app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
+def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
     """``apps/<dir> -> {normalized remote, ...}`` for every git checkout on the bench.
 
     Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
@@ -254,7 +254,7 @@ def _bench_copy_of(frappe_container, bench_path: str, target: str, before: set[s
     """
     key = remote_key(target)
     if key:
-        for name, keys in sorted(_app_remotes(frappe_container, bench_path).items()):
+        for name, keys in sorted(app_remotes(frappe_container, bench_path).items()):
             if name in before and key in keys:
                 return name
     name = derive_app_name(target)
