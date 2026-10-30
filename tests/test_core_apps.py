@@ -1287,6 +1287,32 @@ def test_an_uninstall_that_exits_0_but_leaves_the_app_installed_is_a_failure(
     assert any(w.code == "app.still_installed" for w in result.warnings)
 
 
+def test_an_unconfirmed_uninstall_fails_but_still_resynchronises_the_bench(monkeypatch, container):
+    """The uninstall exited 0 and most likely removed the app, so its processes restart."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    restarted = _wire_running_bench(monkeypatch)
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main"]}
+    run = container._run
+
+    def unreadable_after_uninstall(cmd):
+        code, out = run(cmd)
+        if " uninstall-app " in (cmd if isinstance(cmd, str) else " ".join(cmd)):
+            container.fail_on.append("execute frappe.get_installed_apps")
+        return code, out
+
+    container._run = unreadable_after_uninstall
+
+    result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert result.data.ok is False
+    assert any(w.code == "app.uninstall_unverified" for w in result.warnings)
+    assert restarted == ["web", "schedule", "worker_default"]
+    assert [(r.action, r.ok) for r in result.data.results] == [
+        ("uninstall-app", False),
+        ("restart-processes", True),
+    ]
+
+
 def test_an_uninstall_that_removed_the_app_stays_a_success(monkeypatch, container):
     """The success twin of the after-check."""
     _cache(monkeypatch, [{"path": BENCH}])

@@ -1218,21 +1218,27 @@ def _verify_uninstalled(
     warnings: list[Message],
     *,
     emit: OnEvent,
-) -> list[AppResult]:
+) -> tuple[list[AppResult], list[str]]:
     """Fail every ``uninstall-app`` row whose app is still installed on its site.
 
     The exit code alone is not the truth: Frappe declines some uninstalls with a
     printed warning and exit 0. A site whose installed apps cannot be read leaves
     its rows unconfirmed, which is reported as a failure too, never as success.
+
+    Also returns the sites the uninstall may have changed: every exit-0 site that
+    was not read back with the app still installed, unconfirmed ones included.
     """
     sites = list(dict.fromkeys(r.site for r in results if r.ok and r.site is not None))
     if not sites:
-        return results
+        return results, []
     installed = _read_installed_apps(frappe_container, bench_path, sites, emit=emit)
     verified: list[AppResult] = []
+    changed: list[str] = []
     for r in results:
         if r.ok and r.site is not None:
             site_apps, cause = installed.get(r.site, (None, "no answer"))
+            if site_apps is None or r.app not in site_apps:
+                changed.append(r.site)
             if site_apps is None:
                 warnings.append(
                     Message(
@@ -1251,7 +1257,7 @@ def _verify_uninstalled(
                 )
                 r = replace(r, ok=False)
         verified.append(r)
-    return verified
+    return verified, list(dict.fromkeys(changed))
 
 
 def uninstall_apps(
@@ -1325,10 +1331,9 @@ def uninstall_apps(
             )
             results.append(AppResult(app=app_name, site=site, action="uninstall-app", ok=code == 0))
 
-    results = _verify_uninstalled(frappe_container, path, results, warnings, emit=emit)
-    changed_sites = [
-        r.site for r in results if r.action == "uninstall-app" and r.ok and r.site is not None
-    ]
+    results, changed_sites = _verify_uninstalled(
+        frappe_container, path, results, warnings, emit=emit
+    )
     _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
 
     any_fail = any(not r.ok for r in results)
