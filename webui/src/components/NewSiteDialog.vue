@@ -15,7 +15,7 @@ import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, 
 import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
-import { inventoryState, splitBenchApps } from '../data/bench-apps'
+import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
@@ -93,7 +93,8 @@ const theBench = computed(() => benches.value.find((b) => String(b.index) === St
 // remote pick is fetched onto the bench first (`cwcli apps install --fetch-only`), then
 // installed on the new site like any other. Remote picks are keyed `remote:<catalog key>`.
 // An app the bench already holds is never a remote pick.
-const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [], benchRemotes: theBench.value?.app_remotes || {} }))
+const held = computed(() => ({ benchApps: theBench.value?.available_apps || [], benchRemotes: theBench.value?.app_remotes || {} }))
+const split = computed(() => splitBenchApps({ catalog: catalogApps.value, ...held.value }))
 const benchApps = computed(() => split.value.onBench)
 const remoteApps = computed(() => split.value.remote)
 const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
@@ -102,10 +103,11 @@ const pickerOptions = computed(() => [
   ...benchApps.value.map((a) => ({ value: a, label: catalogApp(a).title, app: catalogApp(a), hint: catalogApp(a).description || '', section: 'On this bench' })),
   ...remoteApps.value.map((a) => ({ value: `remote:${a.key}`, name: a.name, label: a.title, app: a, hint: `fetched from ${hostLabel(a.source.host)} first · ${a.source.url}`, section: 'From app sources' })),
 ])
-// A fresh read can move a remote pick onto the bench: keep it, by its app name.
+// A fresh read can move a remote pick onto the bench: keep it, as the bench app holding it.
 watch(pickerOptions, (opts) => {
   const ok = new Set(opts.map((o) => o.value))
-  const kept = apps.value.map((v) => (ok.has(v) ? v : catalogApps.value.find((a) => `remote:${a.key}` === v)?.name)).filter((v) => ok.has(v))
+  const pickOf = (v) => { const a = catalogApps.value.find((c) => `remote:${c.key}` === v); return a && benchAppFor(a, held.value) }
+  const kept = apps.value.map((v) => (ok.has(v) ? v : pickOf(v))).filter((v) => ok.has(v))
   if (kept.length !== apps.value.length || kept.some((v, i) => v !== apps.value[i])) apps.value = [...new Set(kept)]
 })
 const chipApp = (v) => remoteApp(v) || catalogApp(v)

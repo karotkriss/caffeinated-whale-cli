@@ -7,10 +7,16 @@
 // Dependency-free: tests run it under plain node.
 
 export function splitBenchApps({ catalog = [], benchApps = [], benchRemotes = {} } = {}) {
-  const keys = new Set(Object.values(benchRemotes).flat().map((u) => u.replace(/^https:\/\//, '')))
   const onBench = benchApps.filter((n) => n && n !== 'frappe')
-  const remote = catalog.filter((a) => a.source?.url && a.name !== 'frappe' && !benchApps.includes(a.name) && !keys.has(a.key))
+  const remote = catalog.filter((a) => a.source?.url && a.name !== 'frappe' && !benchAppFor(a, { benchApps, benchRemotes }))
   return { onBench, remote }
+}
+
+// The bench app that holds catalog entry `a`: the checkout whose remote is its
+// repository, else the one with its name; null when the bench does not hold it.
+export function benchAppFor(a, { benchApps = [], benchRemotes = {} } = {}) {
+  const byRepo = Object.keys(benchRemotes || {}).find((dir) => benchApps.includes(dir) && (benchRemotes[dir] || []).some((u) => u.replace(/^https:\/\//, '') === a.key))
+  return byRepo || (benchApps.includes(a.name) ? a.name : null)
 }
 
 // The bench's app list is LIVE only when inspect read the running bench ('partial' or

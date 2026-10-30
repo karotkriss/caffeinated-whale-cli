@@ -215,13 +215,14 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
-def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
+def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]] | None:
     """``apps/<dir> -> {normalized remote, ...}`` for every git checkout on the bench.
 
     Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
     would refuse as "dubious ownership" still answers. Only ``[remote ...]`` sections
-    count: a ``[submodule ...]`` url is another repository, not this checkout. One exec for the whole bench;
-    a failed read is an empty map (the caller falls back to the directory name).
+    count: a ``[submodule ...]`` url is another repository, not this checkout. One exec
+    for the whole bench; a failed read is None, never an empty map that would read as
+    "no remotes" (the fetch then falls back to the directory name).
     """
     script = (
         'for f in apps/*/.git/config; do [ -f "$f" ] && '
@@ -229,9 +230,9 @@ def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]]:
         'inr && $1 == "url" && $2 == "=" { print f "\\t" $3 }\' "$f"; done; true'
     )
     exit_code, output = frappe_container.exec_run(["sh", "-c", script], workdir=bench_path)
-    remotes: dict[str, set[str]] = {}
     if exit_code not in (0, None):
-        return remotes
+        return None
+    remotes: dict[str, set[str]] = {}
     for line in _decode(output).splitlines():
         path, _, url = line.partition("\t")
         parts = path.split("/")
@@ -254,7 +255,7 @@ def _bench_copy_of(frappe_container, bench_path: str, target: str, before: set[s
     """
     key = remote_key(target)
     if key:
-        for name, keys in sorted(app_remotes(frappe_container, bench_path).items()):
+        for name, keys in sorted((app_remotes(frappe_container, bench_path) or {}).items()):
             if name in before and key in keys:
                 return name
     name = derive_app_name(target)
