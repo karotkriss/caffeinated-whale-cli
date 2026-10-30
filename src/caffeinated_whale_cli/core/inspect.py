@@ -103,6 +103,11 @@ class BenchInfo:
     # is a symlink, or whose imported copy differs from apps/<app>. Empty on a
     # cache-served read - the same verified-or-not honesty as installed_apps_verified.
     app_copies: list[resolvers.AppImport] = field(default_factory=list)
+    # Each app checkout's git remotes (``[remote ...]`` urls, credentials dropped),
+    # read live only when the caller asks (``inspect(app_remotes=True)``) and the
+    # container answered; never cached. None whenever they were not read (not asked,
+    # a cache-served read, or a failed exec), so "no remotes" is only ever a real answer.
+    app_remotes: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -906,6 +911,31 @@ def _to_bench_info(
     )
 
 
+def _with_app_remotes(project_name: str, benches: list[BenchInfo]) -> list[BenchInfo]:
+    """``benches`` with each app's credential-free remote urls; None where the read failed."""
+    from . import apps as core_apps
+
+    try:
+        container = core_docker.get_frappe_container(project_name)
+        read = [core_apps.app_remotes(container, b.path) for b in benches]
+    except (CwcliError, DockerException, requests.RequestException):
+        return benches
+    return [
+        dataclasses.replace(
+            b,
+            app_remotes=(
+                None
+                if remotes is None
+                else {
+                    app: sorted(f"https://{k}" for k in keys)
+                    for app, keys in sorted(remotes.items())
+                }
+            ),
+        )
+        for b, remotes in zip(benches, read, strict=True)
+    ]
+
+
 def inspect(
     project_name: str,
     *,
@@ -914,6 +944,7 @@ def inspect(
     offer_choice: bool = True,
     on_event: OnEvent | None = None,
     bench: str | None = None,
+    app_remotes: bool = False,
 ) -> Result[InspectReport]:
     """The tiered project read, returning the typed (secrets-free) report.
 
@@ -923,6 +954,9 @@ def inspect(
     bench). Frontends that only need the side effect (recache) or the typed
     report (``axi``, a GUI) call this; the human CLI renderer calls
     :func:`inspect_raw` for the byte-identical cache-shaped dicts.
+
+    ``app_remotes`` adds one exec per bench reading each app checkout's git
+    remotes into :attr:`BenchInfo.app_remotes`, on a live (non-cache) read only.
     """
     raw = inspect_raw(
         project_name,
@@ -959,6 +993,8 @@ def inspect(
         )
         for position, b in enumerate(raw.data.benches)
     ]
+    if app_remotes and raw.data.served_from != "cache":
+        benches = _with_app_remotes(project_name, benches)
 
     warnings = list(raw.warnings)
     # Name the remedy when a served list carries app refs it never observed live -
