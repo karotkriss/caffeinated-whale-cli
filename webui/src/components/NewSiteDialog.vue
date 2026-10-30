@@ -304,8 +304,8 @@ async function start() {
               <AppIcon :app="chipApp(a)" size="xs" />{{ chipApp(a).title }}<span v-if="remoteApp(a)" class="text-xs text-ink-gray-4">fetch</span>
               <button type="button" class="rounded p-0.5 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-gray-7" :aria-label="`Remove ${a}`" @click="toggleApp(a, false)"><span class="lucide-x size-3.5" aria-hidden="true" /></button>
             </span>
-            <span v-for="n in joined" :key="`req-${n.app}`" class="inline-flex h-7 items-center gap-1.5 rounded-4 border border-dashed border-outline-gray-2 bg-surface-gray-1 px-2 text-sm text-ink-gray-7" :title="n.on_bench ? 'on this bench' : `fetched from ${n.source || n.target}`">
-              <AppIcon :app="catalogApp(n.app)" size="xs" />{{ catalogApp(n.app).title || n.app }}<span class="text-xs text-ink-gray-4">{{ n.on_bench ? '' : 'fetch · ' }}required by {{ n.parent }}</span>
+            <span v-for="n in joined" :key="`req-${n.app}`" class="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-4 border border-dashed border-outline-gray-2 bg-surface-gray-1 px-2 py-1 text-sm text-ink-gray-7" :title="n.on_bench ? 'on this bench' : `fetched from ${n.source || n.target}`">
+              <AppIcon class="shrink-0" :app="catalogApp(n.app)" size="xs" /><span class="shrink-0">{{ catalogApp(n.app).title || n.app }}</span><span class="min-w-0 text-xs leading-4 text-ink-gray-4">{{ n.on_bench ? '' : 'fetch · ' }}required by {{ n.parent }}</span>
             </span>
             <Button size="sm" variant="subtle" icon-left="lucide-plus" :label="apps.length ? 'Change' : 'Choose apps'" :disabled="!pickerOptions.length || inventory === 'reading'" @click="pickerOpen = true" />
             <span v-if="inventory === 'reading'" class="text-xs text-ink-gray-5">reading the bench's apps…</span>
