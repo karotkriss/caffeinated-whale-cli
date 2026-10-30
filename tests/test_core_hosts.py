@@ -324,13 +324,23 @@ class TestEncodeRequest:
             ("Accept", "a\nX-Cwcli-Delegated-User: alice"),
             ("Accept", "a\rb"),
             ("X-A\r\nX-Cwcli-Delegated-Role", "admin"),
+            ("X-A\rX-Cwcli-Delegated-Role", "admin"),
             ("Bad Name", "x"),
+            (" X-Lead", "x"),
+            ("X-Note", "caf\xe9"),
+            ("X-Note", "a\tb"),
         ],
     )
     def test_a_header_that_could_end_its_line_is_never_written(self, header):
         with pytest.raises(CwcliError) as e:
             hosts.encode_request("POST", "/api/v1/jobs", [header], b"{}")
         assert e.value.code == "host.bad_request" and e.value.kind is ErrorKind.USAGE
+
+    def test_a_delegation_header_is_written_once_or_not_at_all(self):
+        headers = [("X-Cwcli-Delegated-Role", "viewer"), ("x-cwcli-delegated-role", "admin")]
+        with pytest.raises(CwcliError) as e:
+            hosts.encode_request("GET", "/api/v1/instances", headers)
+        assert e.value.code == "host.bad_request"
 
     @pytest.mark.parametrize("target", ["/api/v1/instances/caf\xe9", "/api/v1/a b", "/api/v1/x\x01", "/etc/passwd", "/api/v2/x"])
     def test_a_target_the_bridge_would_not_read_is_refused(self, target):

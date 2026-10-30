@@ -2624,8 +2624,9 @@ class _Handler(BaseHTTPRequestHandler):
     ) -> None:
         """One request to ``/api/v1/<rest>`` on a remote host, through its transport.
 
-        The hub builds the forwarded headers itself: the signed-in user and their
-        role (the bridge appends ``@<hub>`` and lowers the role to the cap), the one
+        The hub builds the forwarded headers itself: the signed-in user, as ASCII
+        (the bridge refuses any other byte, and reads a name it cannot use as ``hub``),
+        and their role (the bridge appends ``@<hub>`` and lowers the role to the cap), the one
         content type the hub admits, and nothing the browser sent. An action (POST)
         needs the host ``connected``, which includes an equal protocol; a read needs
         the link readable. Neither dials a host that is not. The answer is relayed as
@@ -2663,7 +2664,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         headers = [
             ("Accept", "application/json, text/event-stream"),
-            (_DELEGATED_USER, self._account_name().split("@", 1)[0]),
+            (
+                _DELEGATED_USER,
+                self._account_name().split("@", 1)[0].encode("ascii", "backslashreplace").decode(),
+            ),
             (_DELEGATED_ROLE, self._role()),
             ("User-Agent", f"cwcli-hub/{__version__}"),
         ]

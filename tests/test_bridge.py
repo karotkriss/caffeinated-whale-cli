@@ -290,18 +290,51 @@ class TestRewrite:
             self._rewrite([("Transfer-Encoding", "chunked")])
         assert e.value.status == 411
 
-    def test_a_delegation_header_sent_twice_is_refused(self):
-        with pytest.raises(bridge.BridgeError) as e:
-            self._rewrite([("X-Cwcli-Delegated-Role", "operator"), ("x-cwcli-delegated-role", "admin")])
-        assert e.value.status == 400 and e.value.code == "bridge.delegation_repeated"
-
     def test_a_folded_header_line_is_refused_never_read_as_a_header_of_its_own(self, grant, daemon):
         request = (
             b"POST /api/v1/jobs HTTP/1.1\r\nContent-Type: application/json;\r\n X-Cwcli-Delegated-Role: admin\r\n"
             b"Content-Length: 2\r\n\r\n{}"
         )
         code, out = _run(grant, request)
-        assert code == 1 and _error_code(out) == "bridge.bad_header" and daemon.requests == []
+        assert code == 2 and out == b"" and daemon.requests == []
+
+
+class TestStrictHead:
+    """The bridge reads the head strictly, as the last line of defence before the
+    daemon's own parser: a head the daemon could read differently from the bridge is
+    refused whole, nothing is forwarded, and no delegation ever reaches the daemon."""
+
+    @pytest.mark.parametrize(
+        "header_lines",
+        [
+            # A lone CR inside a name: the daemon would read it as a line end, and a
+            # header line of the hub's own, ahead of the bridge's capped role.
+            b"X-Foo\rX-Cwcli-Delegated-Role: admin\r\n",
+            b"X-Foo\nX-Cwcli-Delegated-Role: admin\r\n",  # a lone LF in a name
+            b" X-Cwcli-Delegated-Role: admin\r\n",  # a leading space (a fold)
+            b"X-Cwcli-Delegated-Role : admin\r\n",  # whitespace before the colon
+            b"X-Cwcli-Delegated-Role: viewer\r\nx-cwcli-delegated-role: admin\r\n",  # twice
+            b"X-Cwcli-Delegated-Note: a\r\nX-CWCLI-DELEGATED-NOTE: b\r\n",
+            b"X-Note: caf\xc3\xa9\r\n",  # a byte outside printable ASCII
+            b"X-Note:\ta\r\n",
+            b"X-Note\r\n",  # no colon
+        ],
+    )
+    def test_a_head_the_daemon_could_read_differently_is_refused_whole(self, grant, daemon, capsys, header_lines):
+        code, out = _run(grant, b"GET /api/v1/instances HTTP/1.1\r\n" + header_lines + b"Accept: application/json\r\n\r\n")
+        assert code == 2 and out == b"" and daemon.requests == []
+        assert capsys.readouterr().err.startswith("bridge: ")
+
+    def test_a_well_formed_head_still_crosses_with_the_role_capped(self, grant, daemon):
+        head = (
+            b"GET /api/v1/instances HTTP/1.1\r\nAccept: application/json\r\n"
+            b"X-Cwcli-Delegated-User: alice\r\nX-Cwcli-Delegated-Role: admin\r\n\r\n"
+        )
+        code, out = _run(grant, head)
+        assert code == 0 and _status_and_json(out)[0] == 200
+        (seen,) = daemon.requests
+        assert seen["headers"]["x-cwcli-delegated-role"] == "operator"
+        assert seen["headers"]["x-cwcli-delegated-user"] == f"alice@{HUB}"
 
 
 def _post(path: str, payload: dict) -> bytes:

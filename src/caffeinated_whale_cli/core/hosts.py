@@ -137,7 +137,7 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 # The request line the remote's bridge reads, and the header fields it can be sent.
 _TARGET = re.compile(r"/api/v1/[\x21-\x7e]*")
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
-_HEADER_VALUE = re.compile(r"[^\x00-\x1f\x7f]*")
+_HEADER_VALUE = re.compile(r"[\x20-\x7e]*")
 
 
 # ----------------------------------------------------------------- validation
@@ -741,9 +741,10 @@ def encode_request(
     method: str, target: str, headers: list[tuple[str, str]], body: bytes = b""
 ) -> bytes:
     """One HTTP/1.1 request as bytes, or a USAGE error for a request the remote's bridge
-    would not read as exactly this one: a target outside the bridge's request line, or a
-    header name or value with a control character (a CR or LF would end the line early
-    and smuggle a header of its own past every check the hub made)."""
+    would not read as exactly this one, so it is refused before ssh starts: a target
+    outside the bridge's request line, a header name that is not an RFC 7230 token, a
+    value outside printable ASCII (a CR or LF would end the line early and smuggle a
+    header of its own past every check the hub made), or a delegation header sent twice."""
     if method not in ("GET", "POST") or not _TARGET.fullmatch(target):
         raise _usage("host.bad_request", "This path cannot be sent to a remote host.")
     for name, value in headers:
@@ -751,6 +752,9 @@ def encode_request(
             raise _usage(
                 "host.bad_request", f"The {name!r} header cannot be sent to a remote host."
             )
+    delegation = [n.lower() for n, _v in headers if n.lower().startswith("x-cwcli-delegated-")]
+    if len(delegation) != len(set(delegation)):
+        raise _usage("host.bad_request", "A delegation header can be sent to a remote only once.")
     lines = [f"{method} {target} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers]
     if body or method == "POST":
         lines.append(f"Content-Length: {len(body)}")
