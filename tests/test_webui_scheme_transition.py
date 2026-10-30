@@ -20,8 +20,8 @@ MODULE = Path(__file__).resolve().parents[1] / "webui" / "src" / "premium" / "sc
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
-PRESS = {"reduced": False, "enabled": True, "origin": True}
-OS_CHANGE = {**PRESS, "origin": None}
+PRESS = {"reduced": False, "enabled": True, "pressed": True}
+OS_CHANGE = {**PRESS, "pressed": False}
 
 # A document with (or without) the View Transitions API that records what the module does. A skipped
 # transition rejects `ready`, as the browser does when a newer transition replaces it before it animates.
