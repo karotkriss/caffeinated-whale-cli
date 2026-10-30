@@ -1035,20 +1035,55 @@ class TestDockerOutage:
 
         return _Client
 
-    def test_one_slow_ping_is_not_an_outage(self, monkeypatch, listing):
-        """An overloaded daemon answers late; that must not blank every page."""
+    def test_one_slow_ping_resubscribes_without_an_outage(self, monkeypatch, listing):
+        """An overloaded daemon answers late; that must not blank every page. But a
+        short silent outage looks the same and can leave the stream half-open with
+        no error while the next ping reaches a returned Docker, so a late ping that
+        is followed by an answer replaces the stream (and re-bootstraps) quietly."""
         listing(("p", "running", ["8000"]))
         monkeypatch.setattr(core_fleet, "_LIVENESS_S", 0.01)
+        monkeypatch.setattr(core_fleet, "_RECONNECT_DELAY_S", 0.01)
         late = requests.exceptions.ReadTimeout("Read timed out. (read timeout=5.0)")
+        pings: list = [late, True]
         released, stop = threading.Event(), threading.Event()
-        client = self._watched([late, True, late, late, True], released, stop)
-        monkeypatch.setattr(core_fleet.docker, "from_env", lambda **kw: client())
+        attempts: list = []
+
+        class _HungStream:
+            def __iter__(self):
+                assert released.wait(5), "the stream a short outage left was never replaced"
+                return iter(())
+
+            def close(self):
+                released.set()
+
+        class _Client:
+            def events(self, **kwargs):
+                if len(attempts) > 1:
+                    stop.set()
+                    return iter(())
+                return _HungStream()
+
+            def ping(self):
+                answer = pings.pop(0) if pings else True
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+
+            def close(self):
+                pass
+
+        def _from_env(**kw):
+            attempts.append(1)
+            return _Client()
+
+        monkeypatch.setattr(core_fleet.docker, "from_env", _from_env)
         f = core_fleet.Fleet()
         published, lost = [], []
         f.set_publish(lambda *a: None, docker=published.append)
 
         core_fleet.event_loop(f, stop, on_error=lost.append)
 
+        assert len(attempts) == 2, "the stream is resubscribed"
         assert lost == []
         assert [d["reachable"] for d in published] == [True]
         assert f.docker_down() is False
