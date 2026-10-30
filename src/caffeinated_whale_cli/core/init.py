@@ -1426,6 +1426,13 @@ def init_bench(
             bench_parent_path, nvm_prefix + env_prefix + " ".join(bench_init_args)
         )
 
+        if _directory_exists(frappe_container, bench_full_path):
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "bench.exists",
+                f"Bench '{bench_full_path}' was created by another run while this one "
+                "was preparing it; nothing was changed. Pass a different --bench name.",
+            )
         emit(InitStepStart(phase="bench_init", item=bench_name))
         # A custom Frappe fork may be a PRIVATE repo, so bridge the container's
         # git back to the host's gh/glab for the clone `bench init` performs -
