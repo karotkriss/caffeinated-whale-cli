@@ -47,6 +47,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 
 import docker
+import requests
 from docker.errors import DockerException
 
 from . import status as core_status
@@ -74,18 +75,21 @@ EVENT_ACTIONS = ["start", "stop", "die", "kill", "restart", "destroy"]
 
 # The event stream's reconnect backoff: doubles from the first value to the cap,
 # and resets on every successful connect. The cap bounds how late a returning
-# Docker is noticed; it is also why a down Docker costs one attempt per few
+# Docker is noticed; it is also why a down Docker costs one attempt per couple of
 # seconds rather than a spin.
 _RECONNECT_DELAY_S = 1.0
-_RECONNECT_MAX_S = 5.0
+_RECONNECT_MAX_S = 2.0
 
 # How often the daemon behind an OPEN event stream is pinged, and how long a ping
 # (and the stream client's connect) may take. Docker's event stream has no
 # heartbeat and is read with no timeout, so a connection left half-open - what a
 # Docker Desktop restart does to the socket bridge - blocks the reader forever
-# with no error at all. The ping is the only way to notice.
+# with no error at all. The ping is the only way to notice. A ping that fails to
+# connect ends the stream at once; a ping that only answers late does so after
+# _PING_TIMEOUTS in a row, because an overloaded daemon is slow, not gone.
 _LIVENESS_S = 3.0
 _PING_TIMEOUT_S = 5.0
+_PING_TIMEOUTS = 3
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -520,8 +524,8 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
 
     This loop also OWNS the fleet's Docker reachability (:meth:`Fleet.set_docker`).
     Every attempt builds a NEW client, so nothing from before an outage is reused;
-    a watchdog pings Docker while the stream is open and closes the stream when the
-    ping fails, because a half-open connection never ends a blocked read on its
+    a watchdog pings Docker while the stream is open and closes the stream when a
+    ping fails to connect or keeps answering late, because a half-open connection never ends a blocked read on its
     own. ``on_error`` hears the failure that took Docker away and ``on_recover``
     hears its return, once each per outage - a down Docker retries on a bounded
     backoff without writing a line per attempt. ANY exception is a reconnect: a
@@ -574,14 +578,21 @@ def event_loop(fleet: Fleet, stop: threading.Event, *, on_error=None, on_recover
 
 def _watch_stream(client, stream, done: threading.Event, lost: list) -> None:
     """Ping Docker every :data:`_LIVENESS_S` while ``stream`` is open; on a failed
-    ping record why in ``lost`` and close the stream, which unblocks its reader."""
+    ping, or :data:`_PING_TIMEOUTS` late ones in a row, record why in ``lost`` and
+    close the stream, which unblocks its reader."""
+    timeouts = 0
     while not done.wait(_LIVENESS_S):
         try:
             client.ping()
         except Exception as e:
+            if isinstance(e, requests.exceptions.Timeout):
+                timeouts += 1
+                if timeouts < _PING_TIMEOUTS:
+                    continue
             lost.append(e)
             _close_quietly(stream)
             return
+        timeouts = 0
 
 
 def _close_quietly(thing) -> None:
