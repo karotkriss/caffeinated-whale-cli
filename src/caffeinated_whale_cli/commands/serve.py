@@ -255,6 +255,7 @@ from ..core import community as core_community
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
 from ..core import daemon_recovery
+from ..core import db_password as core_db_password
 from ..core import dev_mode as core_dev_mode
 from ..core import directory as core_directory
 from ..core import doctor as core_doctor
@@ -2153,8 +2154,18 @@ class _Handler(BaseHTTPRequestHandler):
             dev_modes = core_dev_mode.read_dev_modes(project)
         except Exception:  # a cache read must never break the detail page
             dev_modes = {}
+        # Whether cwcli holds the instance's MariaDB root password (never the value):
+        # the New bench and New site dialogs ask for it only when it does not.
+        saved = core_db_password.remembered(project) is not None
         self._send_json(
-            {"data": {**asdict(report), "cached_at": cached_at, "dev_modes": dev_modes}}
+            {
+                "data": {
+                    **asdict(report),
+                    "cached_at": cached_at,
+                    "dev_modes": dev_modes,
+                    "db_root_password_saved": saved,
+                }
+            }
         )
 
     def _send_logs(self, project: str, query: dict) -> None:

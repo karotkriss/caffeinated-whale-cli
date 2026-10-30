@@ -1746,3 +1746,28 @@ class TestRetryAfterFailedPull:
         assert "- ../data:/workspace:cached" in content
         assert '      - "18000-18005:8000-8005"' in content
         assert (s.compose_path.parent / "db-root-password").read_text() == "Ch0sen-pw"
+
+
+class TestInitBenchChecksTheRootPasswordFirst:
+    """A wrong MariaDB root password used to fail only at ``bench new-site``,
+    minutes into the build; it is now refused before the first build step."""
+
+    DENIED = (1, (None, b"ERROR 1045 (28000): Access denied for user 'root'@'172.21.0.5'"))
+
+    def test_a_wrong_password_builds_nothing(self, monkeypatch, patched):
+        container = FakeContainer(exec_run_responses={"SELECT 1": self.DENIED})
+        use_container(monkeypatch, container)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_bench(PROJECT, **bench_kwargs(db_root_password="wrong"))
+        assert exc.value.code == "db.root_password_wrong"
+        assert container.client.api.exec_calls == []  # no bench init, no new-site
+        assert patched.added == []  # not even registered as a search path
+
+    def test_a_site_that_already_exists_needs_no_password(self, monkeypatch, patched):
+        container = FakeContainer(
+            dirs_exist={BENCH_PATH, SITE_PATH}, exec_run_responses={"SELECT 1": self.DENIED}
+        )
+        use_container(monkeypatch, container)
+        result = core_init.init_bench(PROJECT, **bench_kwargs(reuse_bench=True))
+        assert result.status is not Status.NEEDS_CHOICE
+        assert not any("SELECT 1" in c for c in container.exec_run_calls)

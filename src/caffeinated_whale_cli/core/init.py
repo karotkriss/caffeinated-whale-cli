@@ -1244,6 +1244,19 @@ def init_bench(
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
     bench_full_path = f"{bench_parent_path}/{bench_name}"
 
+    # `bench new-site` needs the instance's MariaDB root password; check it now, in
+    # seconds, rather than at new-site after minutes of building. A site that already
+    # exists needs no password, so a re-run against it is never refused here.
+    if not _directory_exists(frappe_container, f"{bench_full_path}/sites/{site_name}"):
+        from . import db_access
+
+        unverified = db_access.verify_root_password(
+            frappe_container, project_name, db_root_password
+        )
+        if unverified is not None:
+            emit(InitNotice(code=unverified.code, text=unverified.text))
+            warnings.append(unverified)
+
     # Align the container's `frappe` user (uid 1000 by image default) with the
     # host user BEFORE any bench command writes the bind-mounted workspace, so the
     # files it creates are owned by the host user and `cwcli rm` can remove them on

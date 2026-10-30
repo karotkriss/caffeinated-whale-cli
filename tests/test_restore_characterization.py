@@ -77,7 +77,7 @@ class FakeRestoreContainer:
     def _cmd_str(cmd) -> str:
         return " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
 
-    def exec_run(self, cmd, workdir=None, environment=None):
+    def exec_run(self, cmd, workdir=None, environment=None, demux=False):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
         s = self._cmd_str(cmd)
 

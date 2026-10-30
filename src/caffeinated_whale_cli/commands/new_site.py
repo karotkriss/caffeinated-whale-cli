@@ -42,7 +42,7 @@ def new_site(
     db_root_password: str = typer.Option(
         None,
         "--db-root-password",
-        help="MariaDB root password; default: the one remembered at init.",
+        help="The instance's EXISTING MariaDB root password (checked before any work; it does not set a new one); default: the one saved at init, else 123.",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start a stopped instance without prompting."

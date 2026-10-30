@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..utils import bench_sites
-from . import resolvers, supervision
+from . import db_access, resolvers, supervision
 from . import rm_site as core_rm_site
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -297,6 +297,14 @@ def remove_bench(
             "bench.sites_unknown",
             f"Could not list sites under {path}/sites; the bench was not removed.",
         )
+
+    if sites:
+        # Every drop needs the root password; a wrong one is refused before any backup.
+        unverified = db_access.verify_root_password(
+            container, project_name, db_root_password, bench_path=path
+        )
+        if unverified is not None:
+            warnings.append(unverified)
 
     sites_dropped: list[str] = []
     sites_failed: list[str] = []

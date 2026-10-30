@@ -69,6 +69,7 @@ function confirm() {
         :type="f.type || 'text'"
         :label="f.label"
         :placeholder="f.placeholder"
+        :description="f.description"
         :autocomplete="f.type === 'password' ? 'new-password' : 'off'"
       />
       <Checkbox v-for="f in checkboxes" :key="f.name" v-model="dialogState.values[f.name]" :label="f.label" :description="f.note?.(ctx)" />
