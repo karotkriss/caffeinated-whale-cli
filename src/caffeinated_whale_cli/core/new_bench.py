@@ -64,6 +64,7 @@ def new_bench(
     emit = on_event or (lambda _e: None)
     warnings: list[Message] = []
     bench_name = core_init.validate_bench_slug(bench_name)
+    site_name = core_init.validate_new_site_name(site_name)
     if not admin_password:
         raise CwcliError(
             ErrorKind.USAGE,

@@ -119,6 +119,27 @@ class TestNewBenchCleanup:
         drop = [c for c, _env in db.calls if "drop-site" in " ".join(c)]
         assert drop, "the half-made site's database is dropped first"
 
+    def test_a_mixed_case_site_name_drops_the_site_bench_actually_made(self, monkeypatch):
+        db = Db()
+
+        def init_bench(project, **kw):
+            kw["on_event"](InitStepStart(phase="bench_init", item="b2"))
+            db.dirs |= {"/workspace/b2", f"/workspace/b2/sites/{kw['site_name'].strip().lower()}"}
+            raise CwcliError(ErrorKind.DOCKER, "init.exec_failed", "bench new-site failed.")
+
+        monkeypatch.setattr(new_bench.core_docker, "get_frappe_container", lambda p: db)
+        monkeypatch.setattr(
+            new_bench.resolvers, "resolve_container_state", lambda *a, **k: Result(status=Status.OK)
+        )
+        monkeypatch.setattr(new_bench.core_init, "init_bench", init_bench)
+        monkeypatch.setattr(new_bench.config_utils, "remove_custom_path", lambda p: None)
+        with pytest.raises(CwcliError):
+            new_bench.new_bench(
+                "acme", bench_name="b2", site_name=" Shop.localhost", admin_password="admin"
+            )
+        drops = [" ".join(c) for c, _env in db.calls if "drop-site" in " ".join(c)]
+        assert drops and "shop.localhost" in drops[0]
+
     def test_an_existing_bench_is_never_removed(self, monkeypatch):
         db = Db(dirs={"/workspace/b2"})
 
