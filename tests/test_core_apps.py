@@ -1259,16 +1259,26 @@ def test_a_dependent_uninstalled_earlier_in_the_same_call_does_not_block(monkeyp
     ]
 
 
-def test_an_unreadable_site_fails_the_uninstall_closed(monkeypatch, container):
+def test_an_unreadable_site_skips_the_required_check_and_proceeds(monkeypatch, container):
+    """The after-check, not the up-front check, decides an unreadable site's outcome."""
     _cache(monkeypatch, [{"path": BENCH}])
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main"]}
     container.fail_on = ["execute frappe.get_installed_apps"]
+    run = container._run
 
-    with pytest.raises(CwcliError) as exc:
-        core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+    def readable_after_uninstall(cmd):
+        if " uninstall-app " in (cmd if isinstance(cmd, str) else " ".join(cmd)):
+            container.fail_on = []
+        return run(cmd)
 
-    assert exc.value.kind is ErrorKind.PRECONDITION
-    assert exc.value.code == "app.uninstall_state_unknown"
-    assert not any("uninstall-app" in c for c in container.calls)
+    container._run = readable_after_uninstall
+
+    result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert any("uninstall-app payments" in c for c in container.calls)
+    assert [w.code for w in result.warnings].count("app.required_check_skipped") == 1
+    assert result.data.ok is True
+    assert [(r.action, r.ok) for r in result.data.results] == [("uninstall-app", True)]
 
 
 def test_an_uninstall_that_exits_0_but_leaves_the_app_installed_is_a_failure(
