@@ -20,8 +20,8 @@ distribution content, and fixtures are exactly where real hostnames, tenant name
 sample credentials and internal identifiers accumulate, because they feel like
 throwaway scaffolding rather than published material.
 
-The hostname incident itself is tracked separately as `cwcli-gov-hostname-in-tests`,
-and the exposure of the already-published 1.1.0 artifact as `cwcli-1-1-0-artifact-exposure`.
+The hostname incident itself is tracked separately,
+and so is the exposure of the already-published 1.1.0 artifact.
 Nothing already on PyPI was altered or unpublished here.
 
 ## The decision, stated in config
