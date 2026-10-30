@@ -105,6 +105,9 @@ KEY_TYPES = (
 KEEPALIVE_S = 15.0  # the daemon's SSE keepalive; the stream idle limit is a multiple
 STREAM_IDLE_S = 4 * KEEPALIVE_S
 CONNECT_TIMEOUT_S = 25.0  # ssh ConnectTimeout (10s) plus auth and the bridge start-up
+# A forwarded request's answer: the connect above, then as long as the bridge itself waits
+# for its daemon (a backup download's head comes only after the whole tar is written).
+FORWARD_TIMEOUT_S = CONNECT_TIMEOUT_S + 120.0
 MAX_BACKOFF_S = 60.0
 DROP_WINDOW_S = 600.0
 _HEAD_LIMIT = 64 * 1024
@@ -636,6 +639,11 @@ class Channel(Protocol):
         """After the stream ended with no HTTP answer: why, as a link state."""
         ...
 
+    def cancel(self) -> None:
+        """End the stream from another thread; the thread reading it sees the end and
+        closes it."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -704,6 +712,9 @@ class HttpResponse:
             if len(out) > limit:
                 raise LinkError(UNREACHABLE, "the response is larger than the hub accepts")
         return bytes(out)
+
+    def cancel(self) -> None:
+        self._channel.cancel()
 
     def close(self) -> None:
         self._channel.close()
@@ -792,8 +803,11 @@ def _ask(
     target: str,
     headers: list[tuple[str, str]],
     body: bytes = b"",
+    *,
+    timeout: float = CONNECT_TIMEOUT_S,
 ) -> HttpResponse:
-    """One request to a host's API through its transport.
+    """One request to a host's API through its transport, its head awaited ``timeout``
+    seconds.
 
     The request is encoded before anything is dialled, so one the bridge would refuse
     is a USAGE error with no ssh started. sshd binds the bridge's command line when a
@@ -803,11 +817,11 @@ def _ask(
     it is now. The bridge refuses before it forwards anything to the daemon.
     """
     request = encode_request(method, target, headers, body)
-    resp = exchange(transport.open(host), request)
+    resp = exchange(transport.open(host), request, timeout=timeout)
     if resp.status == 403 and resp.header("x-cwcli-bridge-error") == "bridge.revoked":
         resp.close()
         transport.close(host)
-        resp = exchange(transport.open(host), request)
+        resp = exchange(transport.open(host), request, timeout=timeout)
     return resp
 
 
@@ -875,12 +889,12 @@ class SshChannel:
             pass
 
     def read(self, size: int, timeout: float) -> bytes | None:
+        ready, _, _ = select.select([self._stdout_fd], [], [], max(0.0, timeout))
+        if not ready:
+            return None
         try:
-            ready, _, _ = select.select([self._stdout_fd], [], [], max(0.0, timeout))
-            if not ready:
-                return None
             return os.read(self._stdout_fd, size)
-        except (OSError, ValueError):
+        except OSError:
             return b""
 
     def failure(self) -> LinkError | None:
@@ -896,6 +910,13 @@ class SshChannel:
             except (OSError, ValueError):  # a closed pipe reads as no message, never a crash
                 err = ""
         return classify_ssh_failure(code, err)
+
+    def cancel(self) -> None:
+        """Kill ssh, and only that: its stdout then reads as ended, and the reader closes
+        the pipe (closing it here would free the descriptor while the reader still
+        selects on it)."""
+        if self._proc.poll() is None:
+            self._proc.kill()
 
     def close(self) -> None:
         if self._proc.poll() is None:
@@ -1298,7 +1319,7 @@ class HostLink:
         self._wake.set()
         current = self._current
         if current is not None:
-            current.close()
+            current.cancel()
 
 
 # -------------------------------------------------------------- the manager
@@ -1601,7 +1622,9 @@ class HostManager:
                 raise LinkError(TRANSPORT_OFF, "the Remote hosts over SSH integration is off")
             raise CwcliError(ErrorKind.NOT_FOUND, "host.unknown", f"No remote host '{host_id}'.")
         try:
-            return _ask(link.transport, link.host, method, target, headers, body)
+            return _ask(
+                link.transport, link.host, method, target, headers, body, timeout=FORWARD_TIMEOUT_S
+            )
         except LinkError as e:
             if e.state in (HOST_KEY_CHANGED, AUTH_REFUSED):
                 link._set(e.state, e.reason)
@@ -1644,13 +1667,13 @@ class HostManager:
                 return link.view()
             current = link._current
             if current is not None:
-                current.close()
+                current.cancel()
             return link.view()
         before = link.probe_count
         link.request_check()
         current = link._current
         if current is not None:
-            current.close()
+            current.cancel()
         deadline = time.monotonic() + timeout
         while (
             time.monotonic() < deadline and link.probe_count == before and self.get(host_id) is link

@@ -7,7 +7,7 @@
 // strip above the grid shows each host's link; a host that stopped answering keeps
 // its last-known instances, shown as unknown with the time it was last seen.
 import { computed, onMounted, ref } from 'vue'
-import { Button, Dropdown, Badge, Dialog, Select, TextInput, Tooltip } from 'frappe-ui'
+import { Button, Dropdown, Badge, Dialog, Select, TextInput, Tooltip, toast } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FleetPerformance from '../components/FleetPerformance.vue'
@@ -99,19 +99,23 @@ const menu = (i) => [
 const checking = ref('')
 async function check(h) {
   checking.value = h.id
-  try { const data = await checkHost(h.id); if (data.host) applyHostLink(data.host) } finally { checking.value = '' }
+  try { const data = await checkHost(h.id); if (data.host) applyHostLink(data.host) } catch (e) { toast.error(`Could not check ${h.name}`, { description: e.message }) } finally { checking.value = '' }
 }
 const removing = ref(null)
 const removeBusy = ref(false)
 async function confirmRemove() {
   removeBusy.value = true
-  try { await removeHost(removing.value.id); dropHost(removing.value.id); removing.value = null } finally { removeBusy.value = false }
+  try { await removeHost(removing.value.id); dropHost(removing.value.id); removing.value = null } catch (e) { toast.error(`Could not remove ${removing.value.name}`, { description: e.message }) } finally { removeBusy.value = false }
 }
 const hostMenu = (h) => [
-  { label: 'Check now', icon: 'lucide-refresh-cw', onClick: () => check(h) },
+  ...(can('admin') ? [{ label: 'Check now', icon: 'lucide-refresh-cw', onClick: () => check(h) }] : []),
   ...(h.actions_allowed && can('operator') ? [{ label: `New instance on ${h.name}`, icon: 'lucide-plus', onClick: () => openJob('init', { host: h.id }) }] : []),
-  { label: 'Settings', icon: 'lucide-settings', onClick: () => openSettings('hosts') },
-  ...(can('admin') ? [{ label: 'Remove host…', icon: 'lucide-trash-2', theme: 'red', onClick: () => (removing.value = h) }] : []),
+  ...(can('admin')
+    ? [
+        { label: 'Settings', icon: 'lucide-settings', onClick: () => openSettings('hosts') },
+        { label: 'Remove host…', icon: 'lucide-trash-2', theme: 'red', onClick: () => (removing.value = h) },
+      ]
+    : []),
 ]
 </script>
 
@@ -157,7 +161,7 @@ const hostMenu = (h) => [
             <template v-if="h.drops_10m"> · {{ h.drops_10m }} {{ h.drops_10m === 1 ? 'drop' : 'drops' }} in 10 min</template>
           </span>
         </span>
-        <Dropdown :options="hostMenu(h)" align="end">
+        <Dropdown v-if="hostMenu(h).length" :options="hostMenu(h)" align="end">
           <Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Host actions" :loading="checking === h.id" />
         </Dropdown>
       </div>

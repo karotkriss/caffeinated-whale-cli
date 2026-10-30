@@ -7,7 +7,7 @@
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { restoreWizard } from '../data/restore-wizard'
-import { instances, details, loadDetail, instance } from '../data/fleet'
+import { localInstances, details, loadDetail, instance } from '../data/fleet'
 import { createJob, loadJob, jobs, ACTIVE_STATES } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { backups, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
@@ -31,7 +31,7 @@ const set = computed(() => restoreWizard.set)
 watch(() => restoreWizard.open, (open) => {
   if (!open) return
   step.value = 1
-  project.value = set.value?.project || instances.value[0]?.project || null
+  project.value = set.value?.project || localInstances.value[0]?.project || null
   bench.value = set.value?.bench_index != null ? String(set.value.bench_index) : null
   mode.value = 'same'
   newSite.value = ''
@@ -44,7 +44,7 @@ watch(() => restoreWizard.open, (open) => {
   error.value = null
 })
 watch(project, (p) => { if (p) loadDetail(p) }, { immediate: true })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped)`, value: i.project })))
+const projectOptions = computed(() => localInstances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped)`, value: i.project })))
 const benches = computed(() => details[project.value]?.data?.benches || [])
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${b.label || b.path.split('/').pop()} (#${b.index}) · ${b.sites.length} sites`, value: String(b.index) })))
 watch(benchOptions, (opts) => { if (opts.length && (bench.value == null || !opts.some((o) => o.value === bench.value))) bench.value = opts[0].value }, { immediate: true })

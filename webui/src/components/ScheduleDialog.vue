@@ -6,7 +6,7 @@ import { computed, ref, watch } from 'vue'
 import { Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { scheduleDialog } from '../data/schedule-dialog'
 import { DAYS, VERBS, fromCron, saveSchedule, toCron, verbNeed, verbNeedsFlag } from '../data/schedules'
-import { details, instances, loadDetail } from '../data/fleet'
+import { details, localInstances, loadDetail } from '../data/fleet'
 import { can } from '../data/session'
 
 const open = computed({ get: () => scheduleDialog.open, set: (v) => (scheduleDialog.open = v) })
@@ -22,7 +22,7 @@ function reset() {
     id: s.id || null,
     name: s.name || '',
     verb: s.verb || 'backup-sites',
-    project: t.project || instances.value[0]?.project || '',
+    project: t.project || localInstances.value[0]?.project || '',
     bench: t.bench || '',
     site: t.site || '',
     process: t.process || '',
@@ -59,7 +59,7 @@ const verbOptions = [...VERBS.filter((v) => !v.admin || can('admin')).map((v) =>
 const isRecipe = computed(() => f.value.verb === 'recipe')
 const addStep = () => f.value.steps.push({ verb: 'backup-sites', site: '' })
 const removeStep = (i) => f.value.steps.splice(i, 1)
-const projectOptions = computed(() => instances.value.map((i) => ({ value: i.project, label: i.project })))
+const projectOptions = computed(() => localInstances.value.map((i) => ({ value: i.project, label: i.project })))
 const toggleDay = (d) => { const set = new Set(picker.value.days || []); set.has(d) ? set.delete(d) : set.add(d); picker.value.days = [...set] }
 
 async function submit() {

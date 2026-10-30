@@ -5,7 +5,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Alert, Button, Checkbox, Dialog, Dropdown, ErrorMessage, FormControl, Select, Switch, Tooltip } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
-import { instances, setFocus } from '../data/fleet'
+import { localInstances, setFocus } from '../data/fleet'
 import { openSchedule, scheduleFromTemplate } from '../data/schedule-dialog'
 import { DAYS, deleteSchedule, enableSchedule, list, loadSchedules, runSchedule, saveScheduleSettings, schedules, templates, upcoming, verbLabel, whenAbs, whenRel } from '../data/schedules'
 import { toast } from 'frappe-ui'
@@ -40,7 +40,7 @@ const days = computed(() => {
   }
   return [...groups.values()]
 })
-const templateItems = computed(() => templates.value.map((t) => ({ label: t.name, onClick: () => openSchedule(scheduleFromTemplate(t, instances.value[0]?.project || '')) })))
+const templateItems = computed(() => templates.value.map((t) => ({ label: t.name, onClick: () => openSchedule(scheduleFromTemplate(t, localInstances.value[0]?.project || '')) })))
 
 // Windows and guards
 const settingsOpen = ref(false)
@@ -49,7 +49,7 @@ const sv = ref({ project: '', start: '02:00', end: '05:00', days: [0, 1, 2, 3, 4
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 function openSettings() {
   const d = schedules.data || {}
-  const p = sv.value.project || instances.value[0]?.project || ''
+  const p = sv.value.project || localInstances.value[0]?.project || ''
   const w = (d.windows || {})[p]
   sv.value = { project: p, start: w?.start || '02:00', end: w?.end || '05:00', days: (w?.days || DAY_KEYS).map((k) => DAY_KEYS.indexOf(k)), quietOn: !!d.quiet_hours, qStart: d.quiet_hours?.start || '22:00', qEnd: d.quiet_hours?.end || '06:00', disk: d.guards?.min_free_disk_gb ?? 5, mem: d.guards?.min_free_mem_mb ?? 512, digest: d.digest || 'off' }
   windowOn.value = !!w
@@ -145,7 +145,7 @@ const windowText = (p) => { const w = ((schedules.data || {}).windows || {})[p];
         <div class="text-base-medium text-ink-gray-9">Maintenance window</div>
         <p class="text-p-sm text-ink-gray-6">A schedule marked "only inside the window" waits for it. Per instance.</p>
         <div class="mt-2 grid gap-3 sm:grid-cols-3">
-          <Select :model-value="sv.project" label="Instance" :options="instances.map((i) => ({ value: i.project, label: i.project }))" @update:model-value="loadWindow" />
+          <Select :model-value="sv.project" label="Instance" :options="localInstances.map((i) => ({ value: i.project, label: i.project }))" @update:model-value="loadWindow" />
           <FormControl v-model="sv.start" type="time" label="From" />
           <FormControl v-model="sv.end" type="time" label="To" />
         </div>

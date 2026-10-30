@@ -52,7 +52,7 @@ STUBS = {
         "export const loadDetail = () => {}\n"
         "export async function getJsonUrl(project, query) {\n"
         "  globalThis.__t.calls.push({ url: project, query: Object.fromEntries(query) })\n"
-        "  return { url: 'http://b.localhost:12101', reachable: true }\n"
+        "  return { url: globalThis.__t.probeUrl ?? 'http://b.localhost:12101', reachable: true }\n"
         "}"
     ),
     "./api": (
@@ -176,6 +176,24 @@ def test_open_site_starts_the_sites_bench_then_opens_it(run):
         {"url": "acme", "query": {"bench": "1", "site": "b.localhost"}},
         {"open": "http://b.localhost:12101"},
     ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["/api/v1/apps/refs?url=https://attacker.example/x", "javascript:alert(1)", "//attacker.example/x", ""],
+)
+def test_open_site_opens_only_an_http_address(run, url):
+    """A remote host answers the site's address; anything but an http(s) URL would send
+    this page to a route of the hub itself (or run as script), so nothing is opened."""
+    up = {"acme": {"project": "acme", "container_running": True, "benches": [{"index": 0, "overall": "running"}, {"index": 1, "overall": "running"}]}}
+    out = run(
+        f"globalThis.__t.probeUrl = {json.dumps(url)}\n"
+        f"return {{ probe: await dialog.runAction('site.open', {json.dumps(SITE)}, {{}}) }}",
+        instances=up,
+    )
+    assert out["probe"] is None
+    assert not [c for c in out["calls"] if "open" in c]
+    assert [t["title"] for t in out["toasts"]] == ["b.localhost is not serving"]
 
 
 def test_a_tab_the_browser_would_block_after_the_start_is_offered_on_a_button(run):

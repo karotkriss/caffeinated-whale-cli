@@ -11,7 +11,7 @@ import { benchRunning, ensureRunning } from '../data/start-gate'
 import { getJson } from '../data/api'
 import CommandLine from './CommandLine.vue'
 import { installSheet } from '../data/app-panel'
-import { instances, details, loadDetail, parseApp, benchName } from '../data/fleet'
+import { localInstances, details, loadDetail, parseApp, benchName } from '../data/fleet'
 import { createJob } from '../data/jobs'
 
 const app = computed(() => installSheet.app)
@@ -31,7 +31,7 @@ watch(() => installSheet.open, (open) => {
   branch.value = app.value?.source?.default_branch || ''
   // Default to a running instance that already holds the app, else the first running one.
   const holders = new Set((app.value?.installs || []).map((i) => i.project))
-  const first = instances.value.find((i) => i.container_running && holders.has(i.project)) || instances.value.find((i) => i.container_running) || instances.value.find((i) => holders.has(i.project)) || instances.value[0]
+  const first = localInstances.value.find((i) => i.container_running && holders.has(i.project)) || localInstances.value.find((i) => i.container_running) || localInstances.value.find((i) => holders.has(i.project)) || localInstances.value[0]
   project.value = first ? first.project : null
 })
 watch(project, (p) => {
@@ -39,10 +39,10 @@ watch(project, (p) => {
   sites.value = []
   if (p) loadDetail(p)
 })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped, asks to start)`, value: i.project })))
+const projectOptions = computed(() => localInstances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped, asks to start)`, value: i.project })))
 const benches = computed(() => details[project.value]?.data?.benches || [])
 // Captain note 46: every bench and site stays selectable; a stopped instance or bench is said, not hidden.
-const instRunning = computed(() => !!instances.value.find((i) => i.project === project.value)?.container_running)
+const instRunning = computed(() => !!localInstances.value.find((i) => i.project === project.value)?.container_running)
 const benchState = (b) => (!instRunning.value ? 'stopped' : benchRunning(project.value, b.index) ? 'running' : 'stopped')
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${benchName(b)} · ${b.sites.length} ${b.sites.length === 1 ? 'site' : 'sites'}${benchState(b) === 'stopped' ? ' · stopped' : ''}`, value: String(b.index) })))
 const needsStart = computed(() => !!project.value && (!instRunning.value || (theBench.value && benchState(theBench.value) === 'stopped')))

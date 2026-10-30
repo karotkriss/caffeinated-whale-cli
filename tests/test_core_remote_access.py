@@ -18,6 +18,7 @@ from caffeinated_whale_cli.core.errors import CwcliError
 HUB = "hub-office"
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm hub comment"
 HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM root@box"
+OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM other hub"
 
 
 @pytest.fixture
@@ -131,6 +132,31 @@ class TestAllow:
         assert e.value.code == "host.user"
         assert not keys.exists()
 
+    @pytest.mark.parametrize(
+        "earlier",
+        [
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm me@laptop",
+            'from="10.0.0.0/8" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAoLvGEvGjS97I/0qCfGZ07VM9w5bY4Gd4/g9hbWOwYm',
+        ],
+    )
+    def test_a_grant_another_line_with_the_same_key_would_shadow_is_refused(self, keys, host_key_file, earlier):
+        """sshd applies the first line that matches a key: with the hub's key already in
+        the file unrestricted (an ssh-copy-id while setting up SSH), that line would give
+        it a shell and the forced bridge and the cap would never apply."""
+        keys.parent.mkdir(parents=True)
+        keys.write_text(f"# set up by hand\n{earlier}\n")
+        with pytest.raises(CwcliError) as e:
+            _allow(keys, host_key_file)
+        assert e.value.code == "remote.key_in_use" and "Line 2 of" in e.value.message
+        assert keys.read_text() == f"# set up by hand\n{earlier}\n"
+
+    def test_the_same_key_granted_to_another_hub_is_refused_too(self, keys, host_key_file):
+        _allow(keys, host_key_file, hub="hub-home")
+        with pytest.raises(CwcliError) as e:
+            _allow(keys, host_key_file)
+        assert e.value.code == "remote.key_in_use"
+        assert [g.hub for g in remote_access.list_grants(keys)] == ["hub-home"]
+
     def test_a_missing_host_key_is_a_loud_warning_and_an_empty_pin(self, keys, tmp_path):
         grant = _allow(keys, tmp_path / "nope.pub", address="10.0.0.1")
         assert hosts.parse_pairing(grant.pairing)["host_key"] is None
@@ -140,14 +166,14 @@ class TestAllow:
 class TestGrantsAndRevocation:
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
-        _allow(keys, host_key_file, hub="hub-home", cap="admin")
+        _allow(keys, host_key_file, hub="hub-home", cap="admin", key=OTHER_KEY)
         grants = remote_access.list_grants(keys)
         assert [(g.hub, g.cap, g.key_type) for g in grants] == [(HUB, "operator", "ssh-ed25519"), ("hub-home", "admin", "ssh-ed25519")]
         assert all(g.fingerprint.startswith("SHA256:") for g in grants)
 
     def test_revoke_removes_only_that_hubs_line(self, keys, host_key_file):
         _allow(keys, host_key_file)
-        _allow(keys, host_key_file, hub="hub-home")
+        _allow(keys, host_key_file, hub="hub-home", key=OTHER_KEY)
         done = remote_access.revoke(hub=HUB, keys_path=keys, proc_root=keys.parent)
         assert done.removed == 1
         assert [g.hub for g in remote_access.list_grants(keys)] == ["hub-home"]
