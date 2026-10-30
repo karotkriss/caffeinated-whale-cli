@@ -1,8 +1,8 @@
 """Advisories: security feeds merged, deduplicated and matched against what the
-machine's instances actually run, built on the research in
-``firstmate/data/cwcli-advisories-research/report.md`` (which corrects the first
-spec in places). Detection and matching only; the fix is always named, and a
-one-click action is offered only where cwcli already has the verb.
+machine's instances actually run, built on an internal research note
+(which corrects the first spec in places). Detection and matching only; the fix
+is always named, and a one-click action is offered only where cwcli already has
+the verb.
 
 What the research settled, and this module follows:
 

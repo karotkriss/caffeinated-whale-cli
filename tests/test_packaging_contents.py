@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_no_private_refs import ARTIFACT_PATTERN, find_private_refs
+from tests.test_no_private_refs import ARTIFACT_HASHES, find_private_refs
 
 pytestmark = pytest.mark.packaging
 
@@ -178,10 +178,10 @@ def test_no_artifact_names_private_infrastructure(sdist_archive, wheel_archive):
         assert members, "sdist is empty; the scan would be vacuous"
         for m in members:
             data = tar.extractfile(m).read()  # type: ignore[union-attr]
-            hits += find_private_refs(f"sdist/{m.name}", data, ARTIFACT_PATTERN)
+            hits += find_private_refs(f"sdist/{m.name}", data, ARTIFACT_HASHES)
     with zipfile.ZipFile(wheel_archive) as zf:
         names = [n for n in zf.namelist() if not n.endswith("/")]
         assert names, "wheel is empty; the scan would be vacuous"
         for n in names:
-            hits += find_private_refs(f"wheel/{n}", zf.read(n), ARTIFACT_PATTERN)
+            hits += find_private_refs(f"wheel/{n}", zf.read(n), ARTIFACT_HASHES)
     assert not hits, "replace with a neutral placeholder:\n" + "\n".join(hits)

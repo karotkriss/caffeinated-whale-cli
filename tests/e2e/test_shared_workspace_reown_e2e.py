@@ -1,8 +1,8 @@
 """Committed real-Docker E2E for the shared-mode workspace re-own fix (v3.1.1).
 
 Reproduces the exact bricking mechanism that took migrated Frappe instances down
-after shared mode was enabled (diagnosis
-`firstmate/data/cwcli-shared-supervise-perms-diagnosis/report.md`): in shared mode
+after shared mode was enabled (an internal diagnosis
+note): in shared mode
 `align_container_user_to_host` remaps the container's `frappe` user to the stable
 service uid, but on a MIGRATED instance the bind-mounted bench workspace is still
 owned by the pre-shared uid. The remapped `frappe` user can then no longer write
