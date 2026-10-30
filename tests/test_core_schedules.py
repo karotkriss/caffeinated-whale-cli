@@ -357,6 +357,22 @@ class TestAdminOnlySchedules:
         remote_access.revoke(hub="hub-x", proc_root=tmp_path)
         assert "cwcli-hub:hub-x" not in chosen.read_text() and remote_access.recorded_grants() == {}
 
+    def test_a_grant_line_this_home_never_recorded_still_counts(self, tmp_path, monkeypatch):
+        """The bridge honours a grant line in the default authorized_keys whether or not this
+        cwcli home recorded it, so the schedule check counts it, until a revoke removes it."""
+        from caffeinated_whale_cli.core import remote_access
+
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        self._grant(tmp_path, "admin", home=tmp_path / "another-home")
+        assert remote_access.recorded_grants() == {}
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        assert remote_access.revoke(hub="hub-x", proc_root=tmp_path).removed == 1
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
+
     def test_on_a_shared_install_the_tick_reads_the_grant_the_service_account_wrote(self, tmp_path, monkeypatch):
         """The service account ran `cwcli remote allow` (its own ~/.ssh/authorized_keys); a
         tick run by another account on the shared home still reads that grant, and when it

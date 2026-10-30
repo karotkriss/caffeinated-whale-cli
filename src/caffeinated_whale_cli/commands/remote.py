@@ -153,8 +153,8 @@ def revoke_cmd(
     authorized_keys: str | None = typer.Option(
         None,
         "--authorized-keys",
-        help="The authorized_keys file (default: the one `allow` wrote the hub's grant to, "
-        "else ~/.ssh/authorized_keys).",
+        help="The authorized_keys file (default: ~/.ssh/authorized_keys and every file `allow` "
+        "wrote a grant to).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
@@ -170,13 +170,14 @@ def revoke_cmd(
         console.print_json(json.dumps(asdict(done)))
         return
     if done.removed:
+        changed = ", ".join(path for path, n in done.files.items() if n)
         console.print(
-            f"Revoked hub [bold]{escape(done.hub)}[/bold]: removed {done.removed} line(s) from {escape(done.keys_path)}.",
+            f"Revoked hub [bold]{escape(done.hub)}[/bold]: removed {done.removed} line(s) from {escape(changed)}.",
             soft_wrap=True,
         )
     else:
         console.print(
-            f"Hub {escape(done.hub)} had no line in {escape(done.keys_path)}; nothing to remove.",
+            f"Hub {escape(done.hub)} had no line in {escape(', '.join(done.files))}; nothing to remove.",
             soft_wrap=True,
         )
     if done.ended_pids:
@@ -190,7 +191,8 @@ def hubs_cmd(
     authorized_keys: str | None = typer.Option(
         None,
         "--authorized-keys",
-        help="The authorized_keys file to read (default: the ones `allow` wrote each grant to).",
+        help="The authorized_keys file to read (default: ~/.ssh/authorized_keys and every file "
+        "`allow` wrote a grant to).",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
@@ -209,7 +211,7 @@ def hubs_cmd(
         return
     for g in grants:
         console.print(
-            f"[bold]{escape(g.hub)}[/bold]  cap {g.cap or '?'}  {escape(g.key_type)} {escape(g.fingerprint)}",
+            f"[bold]{escape(g.hub)}[/bold]  cap {g.cap or '?'}  {escape(g.key_type)} {escape(g.fingerprint)}  {escape(g.keys_path)}",
             soft_wrap=True,
         )
 

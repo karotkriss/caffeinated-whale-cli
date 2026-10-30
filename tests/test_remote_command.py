@@ -51,6 +51,23 @@ class TestRemoteSide:
         assert revoked["removed"] == 1 and keys.read_text() == ""
         assert scanned and set(scanned) == {"hub-x"}
 
+    def test_hubs_and_revoke_find_a_grant_line_this_home_never_recorded(self, tmp_path, monkeypatch):
+        """The bridge honours a grant line whether or not this cwcli home recorded it (a reset
+        home, another CWCLI_HOME): `hubs` lists it and `revoke` takes it out of its file."""
+        remote_access.allow(
+            hub="hub-x", key=KEY, cap="operator", home=tmp_path / "another-home", state_path=str(tmp_path / "ui.json"),
+            host_key_file=str(tmp_path / "none"), proc_root=tmp_path,
+        )  # fmt: skip
+        default = tmp_path / "userhome" / ".ssh" / "authorized_keys"
+        assert remote_access.recorded_grants() == {} and "cwcli-hub:hub-x" in default.read_text()
+        hubs = _json(runner.invoke(app, ["remote", "hubs", "--json"]))
+        assert [(h["hub"], h["cap"], h["keys_path"]) for h in hubs] == [("hub-x", "operator", str(default))]
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: [])
+        revoked = _json(runner.invoke(app, ["remote", "revoke", "--hub", "hub-x", "--json"]))
+        assert revoked["removed"] == 1 and revoked["files"] == {str(default): 1}
+        assert "cwcli-hub:hub-x" not in default.read_text()
+        assert _json(runner.invoke(app, ["remote", "hubs", "--json"])) == []
+
     def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):
         keys = tmp_path / "ak"
         result = runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", "not a key", "--authorized-keys", str(keys)])

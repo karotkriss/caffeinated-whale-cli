@@ -29,8 +29,10 @@ it replaces a hub's line; the bridge also re-reads the grant on every channel, w
 closes the window for a channel opened after the line is gone or changed.
 
 ``allow`` records which file holds each hub's line (``hub-grants.json`` in the cwcli
-home the bridge reaches), so ``revoke``, ``hubs`` and the schedule owner check read the
-grant the bridge enforces, whichever file and whichever account wrote it.
+home the bridge reaches). ``revoke``, ``hubs`` and the schedule owner check read every
+grant the bridge would honour: the default ``authorized_keys`` and each recorded file,
+so a line written with ``--authorized-keys`` or by another account is found, and a line
+this home never recorded still counts.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ from ..utils import config_utils
 from .errors import CwcliError, ErrorKind
 from .hosts import (
     DEFAULT_CAP,
+    ROLES,
     check_hostname,
     check_hub_name,
     check_name,
@@ -95,6 +98,7 @@ class HubGrant:
     cap: str
     key_type: str
     fingerprint: str
+    keys_path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +106,7 @@ class Revocation:
     hub: str
     removed: int
     ended_pids: list[int]
-    keys_path: str
+    files: dict[str, int]  # each authorized_keys file searched: the lines removed from it
 
 
 def authorized_keys_path() -> Path:
@@ -130,9 +134,11 @@ def recorded_grants(home: Path | None = None) -> dict[str, str]:
 
 
 def _record_grant(home: Path, hub: str, keys: Path | None) -> None:
+    """Record (or, with ``keys`` None, forget) ``hub``'s grant file, dropping entries whose
+    file no longer exists."""
     path = grants_record(home)
     with StoreLock(path):
-        grants = recorded_grants(home)
+        grants = {h: p for h, p in recorded_grants(home).items() if Path(p).exists()}
         if keys is None:
             grants.pop(hub, None)
         else:
@@ -140,14 +146,22 @@ def _record_grant(home: Path, hub: str, keys: Path | None) -> None:
         write_state(path, json.dumps({"version": 1, "grants": grants}, indent=1, sort_keys=True))
 
 
+def _grant_files(recorded: dict[str, str]) -> list[Path]:
+    """Every file a grant the bridge honours may live in: the default ``authorized_keys``
+    and each recorded file that still exists, once each."""
+    out = [authorized_keys_path().absolute()]
+    for path in map(Path, recorded.values()):
+        if path not in out and path.exists():
+            out.append(path)
+    return out
+
+
 def grant_cap(hub: str) -> str | None:
-    """The cap this machine's grant gives ``hub`` now, read from the file ``allow`` wrote
-    it to (the file the bridge reads), or None when there is no grant. Raises
-    ``CwcliError`` naming the file when it cannot be read."""
-    path = recorded_grants().get(hub)
-    if path is None:
-        return None
-    return next((g.cap for g in _grants_in(Path(path)) if g.hub == hub), None)
+    """The lowest cap any grant line the bridge would honour gives ``hub`` now (it cannot
+    tell which line a connection came through), or None when there is none. Raises
+    ``CwcliError`` naming a file it cannot read."""
+    caps = [g.cap for g in list_grants() if g.hub == hub]
+    return min(caps, key=lambda c: ROLES.index(c) if c in ROLES else -1) if caps else None
 
 
 def bridge_command(
@@ -373,16 +387,16 @@ def allow(
 
 
 def list_grants(keys_path: Path | None = None) -> list[HubGrant]:
-    """The hubs this machine lets in, with each one's cap: from ``keys_path``, else from
-    the file ``allow`` wrote each hub's grant to."""
+    """The hubs this machine lets in, with each one's cap and file: from ``keys_path``,
+    else from every file a grant the bridge honours may live in (``_grant_files``), one
+    entry per file and hub."""
     if keys_path is not None:
         return _grants_in(keys_path)
-    return [
-        g
-        for hub, path in sorted(recorded_grants().items())
-        for g in _grants_in(Path(path))
-        if g.hub == hub
-    ]
+    found: dict[tuple[str, str], HubGrant] = {}
+    for path in _grant_files(recorded_grants()):
+        for g in _grants_in(path):
+            found.setdefault((g.keys_path, g.hub), g)
+    return list(found.values())
 
 
 def _grants_in(keys_path: Path) -> list[HubGrant]:
@@ -411,6 +425,7 @@ def _grants_in(keys_path: Path) -> list[HubGrant]:
                 cap=cap_match.group(1) if cap_match else "",
                 key_type=key_type,
                 fingerprint=fp,
+                keys_path=str(keys_path),
             )
         )
     return out
@@ -485,26 +500,29 @@ def end_bridges(hub: str, *, proc_root: Path = Path("/proc"), grace: float = 2.0
 def revoke(
     *, hub: str, keys_path: Path | None = None, proc_root: Path = Path("/proc")
 ) -> Revocation:
-    """Remove ``hub``'s line, from the file ``allow`` recorded for it unless ``keys_path``
-    names one, and end its running bridges. Removing a hub that was never granted is a
-    no-op that says so (``removed == 0``), never an error. A record that cannot be read
-    never blocks a revoke: the line is then looked for in ``keys_path`` or the default."""
+    """Remove ``hub``'s grant lines and end its running bridges: from ``keys_path``, else
+    from every file a grant the bridge honours may live in (``_grant_files``). Removing a
+    hub that was never granted is a no-op that says so (``removed == 0``), never an
+    error. A record that cannot be read never blocks a revoke: the default file is then
+    searched."""
     hub = check_hub_name(hub)
     home = config_utils.cwcli_home()
     try:
-        recorded = recorded_grants(home).get(hub)
+        recorded: dict[str, str] | None = recorded_grants(home)
     except CwcliError:
         recorded = None
-    path = (keys_path or (Path(recorded) if recorded else authorized_keys_path())).absolute()
-    lines = _read_lines(path)
-    kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
-    removed = len(lines) - len(kept)
-    if removed:
-        _write_lines(path, kept)
-    if recorded == str(path):
+    paths = [keys_path.absolute()] if keys_path is not None else _grant_files(recorded or {})
+    files: dict[str, int] = {}
+    for path in paths:
+        lines = _read_lines(path)
+        kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
+        if len(kept) != len(lines):
+            _write_lines(path, kept)
+        files[str(path)] = len(lines) - len(kept)
+    if recorded and (keys_path is None or recorded.get(hub) == str(paths[0])):
         _record_grant(home, hub, None)
     ended = end_bridges(hub, proc_root=proc_root)
-    return Revocation(hub=hub, removed=removed, ended_pids=ended, keys_path=str(path))
+    return Revocation(hub=hub, removed=sum(files.values()), ended_pids=ended, files=files)
 
 
 def shared_mode_note() -> str | None:

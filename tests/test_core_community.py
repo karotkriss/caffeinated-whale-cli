@@ -370,7 +370,7 @@ class TestInstall:
             community.install(_url(repo), commit="")
         assert e.value.code == "community.commit"
 
-    @pytest.mark.parametrize("iid", ["local", "host", "api"])
+    @pytest.mark.parametrize("iid", ["local", "host", "api", "hub"])
     def test_an_id_cwcli_uses_as_a_session_source_is_refused(self, home, repo, iid):
         _write(repo, iid=iid)
         with pytest.raises(CwcliError) as e:
