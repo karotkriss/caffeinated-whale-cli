@@ -111,6 +111,27 @@ class TestRemoteSide:
         assert grant["keys_path"] == entry["keys"] == str(mine) and entry["home"] == str(shared)
         assert str(shared) in grant["note"] and "revoke` as this same account" in grant["note"]
 
+    def test_allow_exits_1_naming_an_earlier_line_it_could_not_remove(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: [])
+        host_key = tmp_path / "hk.pub"
+        host_key.write_text(HOST_KEY + "\n")
+        earlier = tmp_path / "srv-keys"
+        args = ["remote", "allow", "--hub", "hub-x", "--key", KEY, "--host-key-file", str(host_key), "--address", "10.0.0.2", "--json"]
+        _json(runner.invoke(app, [*args, "--authorized-keys", str(earlier)]))
+        real_replace, stuck = os.replace, os.path.realpath(earlier)
+
+        def replace(src, dst, *a, **k):
+            if os.fspath(dst) == stuck:
+                raise OSError(5, "Input/output error")
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", replace)
+        result = runner.invoke(app, args)
+        assert result.exit_code == 1
+        out = json.loads(result.stdout)
+        assert out["earlier_left"] == str(earlier) and out["pairing"].startswith("cwcli-remote:v1:")
+        assert "cwcli-hub:hub-x" in (tmp_path / "userhome" / ".ssh" / "authorized_keys").read_text()
+
     def test_a_bad_key_exits_1_and_writes_nothing(self, tmp_path):
         keys = tmp_path / "ak"
         result = runner.invoke(app, ["remote", "allow", "--hub", "hub-x", "--key", "not a key", "--authorized-keys", str(keys)])

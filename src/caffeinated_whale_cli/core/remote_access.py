@@ -107,6 +107,7 @@ class Grant:
     warnings: list = field(default_factory=list)
     ended_pids: list = field(default_factory=list)
     moved_from: str | None = None  # the earlier recorded file this hub's line was taken out of
+    earlier_left: str | None = None  # that file, when taking the line out failed after the write
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,43 +310,55 @@ def _owner_name(uid: int) -> str:
         return f"uid {uid}"
 
 
+def _writable(path: Path) -> os.stat_result | None:
+    """The stat of the file behind ``path`` (None when there is none yet), once it passes
+    what a rewrite must: a file another account owns is refused unless this is root, and so
+    is a file with other hard links (a new file would leave them with the old lines)."""
+    me = os.getuid() if hasattr(os, "getuid") else None
+    try:
+        st = Path(os.path.realpath(path)).stat()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION, "remote.keys_unwritable", f"{path} could not be written: {e}"
+        ) from e
+    if me not in (None, 0, st.st_uid):
+        owner = _owner_name(st.st_uid)
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "remote.keys_not_owned",
+            f"{path} belongs to {owner}, not to this account, and rewriting it from here "
+            "would change who can read it",
+            hint=f"Run this as {owner}.",
+        )
+    if st.st_nlink > 1:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "remote.keys_hard_linked",
+            f"{path} has {st.st_nlink} hard links, and rewriting it would leave the others "
+            "with the old lines",
+            hint="Edit it in place, or remove its other links, then run this again.",
+        )
+    return st
+
+
 def _write_lines(path: Path, lines: list[str]) -> int:
     """Rewrite ``authorized_keys`` atomically without changing who can read it, and return
     the uid that owned it before (this process's, for a file this call creates).
 
     A symlinked file or directory is rewritten where it really lives, so the link stays a
     link. sshd opens the file as its owner, so the rewrite keeps every other line byte for
-    byte, the file's mode and, under root, its owner and group. A file another account owns
-    is refused unless this is root, and so is a file with other hard links (the new file
-    would leave them with the old lines). The new content goes through a uniquely named file
-    in the real file's directory (never a planted link), removed if anything fails. Only a
-    ``.ssh`` or a file this call creates gets sshd's modes (0700, 0600).
+    byte, the file's mode and, under root, its owner and group, after ``_writable``'s
+    checks. The new content goes through a uniquely named file in the real file's
+    directory (never a planted link), removed if anything fails. Only a ``.ssh`` or a file
+    this call creates gets sshd's modes (0700, 0600).
     """
     real = Path(os.path.realpath(path))
     me = os.getuid() if hasattr(os, "getuid") else None
+    st = _writable(path)
     tmp: str | None = None
     try:
-        try:
-            st: os.stat_result | None = real.stat()
-        except FileNotFoundError:
-            st = None
-        if st is not None and me not in (None, 0, st.st_uid):
-            owner = _owner_name(st.st_uid)
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "remote.keys_not_owned",
-                f"{path} belongs to {owner}, not to this account, and rewriting it from here "
-                "would change who can read it",
-                hint=f"Run this as {owner}.",
-            )
-        if st is not None and st.st_nlink > 1:
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "remote.keys_hard_linked",
-                f"{path} has {st.st_nlink} hard links, and rewriting it would leave the others "
-                "with the old lines",
-                hint="Edit it in place, or remove its other links, then run this again.",
-            )
         real.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=f".{real.name}.", dir=real.parent)
         with os.fdopen(fd, "wb") as f:
@@ -429,7 +442,10 @@ def allow(
     nothing is written for a grant the hub would refuse to add, and neither is a grant
     another line carrying the same key would shadow. Replacing a hub's line ends the
     bridges it still runs under the old one, as ``revoke`` does, and so does taking it
-    out of the different file the hub's record names (one live grant per home).
+    out of the different file the hub's record names (one live grant per home): both
+    files are checked first, the new grant is written, and only then is the earlier line
+    removed. If that removal fails, the new grant stands and ``earlier_left`` names the
+    file still holding the old line.
     """
     hub = check_hub_name(hub)
     cap = check_role(cap)
@@ -471,12 +487,14 @@ def allow(
             )
     kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
     replaced = len(kept) != len(lines)
-    ends: set[int] = set()
+    _writable(path)
+    earlier = _earlier_grant(cwcli_home, hub, path)
+    owner = _write_lines(path, kept + [line])
+    ends = {owner} if replaced else set()
+    warnings: list[str] = []
+    moved_from: str | None = None
+    earlier_left: str | None = None
     try:
-        moved_from = _clear_earlier_grant(cwcli_home, hub, path, ends)
-        owner = _write_lines(path, kept + [line])
-        if replaced:
-            ends.add(owner)
         _record_grant(
             cwcli_home,
             hub,
@@ -490,10 +508,22 @@ def allow(
                 "at": time.time(),
             },
         )
+        if earlier is not None:
+            earlier_path, earlier_kept, earlier_user = earlier
+            try:
+                ends.add(_write_lines(earlier_path, earlier_kept))
+                moved_from = str(earlier_path)
+            except CwcliError as e:
+                earlier_left = str(earlier_path)
+                warnings.append(
+                    f"The new grant is in place, but hub {hub}'s earlier line is still in "
+                    f"{earlier_path} ({e.message}), so it still lets the hub in. Run `cwcli "
+                    f"remote revoke --hub {hub} --authorized-keys {earlier_path}` as "
+                    f"{earlier_user} to remove it."
+                )
     finally:
         ended = end_bridges(hub, uids=ends, proc_root=proc_root) if ends else []
 
-    warnings: list[str] = []
     host_key = read_host_key(host_key_file)
     if host_key is None:
         warnings.append(
@@ -529,34 +559,35 @@ def allow(
         warnings=warnings,
         ended_pids=ended,
         moved_from=moved_from,
+        earlier_left=earlier_left,
     )
 
 
-def _clear_earlier_grant(home: Path, hub: str, path: Path, ends: set[int]) -> str | None:
-    """Take ``hub``'s line out of the file its record names when that is not ``path``, adding
-    that file's owner to ``ends`` (whose bridges then end); returns the file when a line
-    went. A file this account cannot read or rewrite refuses the new grant before anything
-    is written, naming the account that can revoke the earlier one."""
+def _earlier_grant(home: Path, hub: str, path: Path) -> tuple[Path, list[str], str] | None:
+    """The different file ``hub``'s record names, its lines without the hub's and the account
+    that wrote it, when that file still holds a line for the hub. Checked before anything is
+    written: a file this account cannot read or rewrite refuses the new grant, naming the
+    account that can revoke the earlier one."""
     entry = recorded_grants(home).get(hub)
     if entry is None or os.path.realpath(entry["keys"]) == os.path.realpath(path):
         return None
     earlier = Path(entry["keys"])
+    account = str(entry.get("user") or "the account that wrote it")
     try:
         lines = _lines_of(earlier, hub, entry)
         kept = [existing for existing in lines if not _is_grant_for(existing, hub)]
         if len(kept) == len(lines):
             return None
-        ends.add(_write_lines(earlier, kept))
+        _writable(earlier)
     except CwcliError as e:
         raise CwcliError(
             e.kind,
             "remote.earlier_grant",
             f"Hub {hub}'s earlier grant is in {earlier}, which this account cannot change "
             f"({e.message}); a new grant would leave that line working",
-            hint=f"Run `cwcli remote revoke --hub {hub}` as "
-            f"{entry.get('user') or 'the account that wrote it'}, then allow again.",
+            hint=f"Run `cwcli remote revoke --hub {hub}` as {account}, then allow again.",
         ) from e
-    return str(earlier)
+    return earlier, kept, account
 
 
 def list_grants(keys_path: Path | None = None) -> list[HubGrant]:

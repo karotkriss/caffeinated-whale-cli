@@ -240,6 +240,44 @@ class TestNoCodeChangeFromAHub:
         assert _req(daemon, "/api/v1/settings", {"setting": "cache.enable"}, bearer=True, headers=self.ADMIN)[0] == 200
 
 
+class TestExactVerbsAndOps:
+    """The verb a role or code-change check reads is the verb that runs: a padded job verb
+    or integration op is a usage error before any of those checks, on the hub and here."""
+
+    PADDED = [" self-update", "self-update\n", "rm ", " rm"]
+
+    @pytest.mark.parametrize("verb", PADDED)
+    def test_a_padded_job_verb_is_refused_before_the_role_and_code_change_checks(self, daemon, verb):
+        payload = {"verb": verb, "target": {"project": "x"}, "args": {"no_backup": True}, "consent": True}
+        for role in ("viewer", "operator", "admin", None):
+            headers = {**DELEGATED, "X-Cwcli-Delegated-Role": role} if role else {}
+            status, body, _ = _req(daemon, "/api/v1/jobs", payload, bearer=True, headers=headers)
+            assert (status, _code(body)) == (400, "job.verb_unsupported"), role
+        assert daemon.jobs == []
+        operator = {**DELEGATED, "X-Cwcli-Delegated-Role": "operator"}
+        assert _req(daemon, "/api/v1/jobs", {"verb": "start", "target": {"project": "x"}}, bearer=True, headers=operator)[0] == 202
+        assert [verb for verb, _origin in daemon.jobs] == ["start"]
+
+    @pytest.mark.parametrize("verb", PADDED)
+    def test_the_hub_refuses_a_padded_verb_before_forwarding(self, daemon, verb):
+        daemon.views["build-box"] = _connected()
+        payload = {"verb": verb, "target": {"project": "x"}, "args": {"no_backup": True}, "consent": True}
+        status, body, _ = _req(daemon, "/api/v1/hosts/build-box/jobs", payload, bearer=True)
+        assert (status, _code(body)) == (400, "job.verb_unsupported") and daemon.forwarded == []
+        assert _req(daemon, "/api/v1/hosts/build-box/jobs", {"verb": "start", "target": {"project": "x"}}, bearer=True)[0] == 200
+        assert [f["target"] for f in daemon.forwarded] == ["/api/v1/jobs"]
+
+    @pytest.mark.parametrize("op", [" community_add", "community_update\n"])
+    def test_a_padded_integration_op_is_refused_before_the_role_and_code_change_checks(self, daemon, monkeypatch, op):
+        reached = []
+        monkeypatch.setattr(serve_cmd.core_community, "install", lambda *a, **k: reached.append(a))
+        payload = {"op": op, "url": "https://example.com/x.git", "id": "x", "commit": "abc"}
+        for headers in ({**DELEGATED, "X-Cwcli-Delegated-Role": "viewer"}, {**DELEGATED, "X-Cwcli-Delegated-Role": "admin"}, {}):
+            status, body, _ = _req(daemon, "/api/v1/integrations", payload, bearer=True, headers=headers)
+            assert (status, _code(body)) == (400, "integration.op_invalid")
+        assert reached == []
+
+
 class TestRemoteFocus:
     def test_a_tabs_remote_focus_goes_to_that_host_the_latest_tab_winning(self):
         local, remote = [], []

@@ -423,6 +423,50 @@ class TestGrantsAndRevocation:
         assert not keys.exists() and remote_access.recorded_grants() == record
         assert f"cwcli-hub:{HUB}" in theirs.read_text()
 
+    @staticmethod
+    def _replace_fails_for(monkeypatch, path, errno=28):
+        """``os.replace`` fails for the real file behind ``path`` and works for every other."""
+        real_replace, stuck = os.replace, os.path.realpath(path)
+
+        def replace(src, dst, *a, **k):
+            if os.fspath(dst) == stuck:
+                raise OSError(errno, os.strerror(errno))
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", replace)
+
+    def test_a_new_grant_that_cannot_be_written_leaves_the_earlier_one_and_its_bridges(self, keys, host_key_file, tmp_path, monkeypatch):
+        """Nothing is removed before the new grant is in place: a write that fails leaves the
+        hub its earlier line, its record and its running bridges."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        earlier = tmp_path / "srv" / "keys" / "frappe"
+        _allow(earlier, host_key_file, home=None, cap="operator")
+        before = earlier.read_bytes()
+        scanned = []
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: scanned.append(kw["uids"]) or [])
+        self._replace_fails_for(monkeypatch, keys)
+        with pytest.raises(CwcliError) as e:
+            _allow(keys, host_key_file, home=None, cap="viewer")
+        assert e.value.code == "remote.keys_unwritable" and str(keys) in e.value.message
+        assert earlier.read_bytes() == before and not keys.exists() and scanned == []
+        assert remote_access.recorded_grants()[HUB]["keys"] == str(earlier)
+
+    def test_an_earlier_line_that_cannot_be_removed_after_the_new_grant_is_reported_with_it(self, keys, host_key_file, tmp_path, monkeypatch):
+        """The new grant stands and the answer says so, and names the file still holding the
+        old line and the exact command that removes it (a plain revoke would take both)."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        earlier = tmp_path / "srv" / "keys" / "frappe"
+        _allow(earlier, host_key_file, home=None, cap="operator")
+        self._replace_fails_for(monkeypatch, earlier, errno=5)
+        grant = _allow(keys, host_key_file, home=None, cap="viewer")
+        assert (grant.earlier_left, grant.moved_from) == (str(earlier), None)
+        assert f"cwcli-hub:{HUB}" in keys.read_text() and f"cwcli-hub:{HUB}" in earlier.read_text()
+        assert remote_access.recorded_grants()[HUB]["keys"] == str(keys)
+        (warning,) = [w for w in grant.warnings if str(earlier) in w]
+        assert "new grant is in place" in warning and f"--hub {HUB} --authorized-keys {earlier}`" in warning
+
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
         _allow(keys, host_key_file, hub="hub-home", cap="admin", key=OTHER_KEY)
