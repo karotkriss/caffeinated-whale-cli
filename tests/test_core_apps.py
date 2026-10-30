@@ -578,7 +578,7 @@ def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodu
             done = subprocess.run(cmd, cwd=workdir, capture_output=True)
             return done.returncode, done.stdout
 
-    remotes = core_apps._app_remotes(LocalContainer(), str(tmp_path))
+    remotes = core_apps.app_remotes(LocalContainer(), str(tmp_path))
 
     assert remotes == {"single_window": {core_apps.remote_key(SW_URL)}}
 

@@ -61,6 +61,19 @@ def test_only_the_benchs_own_app_list_decides_what_it_holds():
     assert remote == ["single_window", "customization"]
 
 
+def test_an_app_on_the_bench_by_repository_is_not_a_remote_pick_whatever_its_name():
+    """The catalog names the repository's app differently from the bench's folder,
+    but the bench detail's remote for that checkout is the catalog entry's repo."""
+    sw = {**SW, "name": "single-window"}
+    on_bench, remote = _split(
+        catalog=[sw, CUSTOM],
+        benchApps=["frappe", "single_window"],
+        benchRemotes={"single_window": [SW["source"]["url"]]},
+    )
+    assert on_bench == ["single_window"]
+    assert remote == ["customization"]
+
+
 @pytest.mark.parametrize(
     "detail, state",
     [

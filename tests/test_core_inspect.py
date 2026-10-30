@@ -824,3 +824,55 @@ class TestAppCopiesFlags:
         result = core_inspect.inspect("proj", refresh="cache_only")
 
         assert result.data.benches[0].app_copies == []
+
+
+class _RemotesContainer(FakeFrappeContainer):
+    """Also answers the app-remotes read: one ``apps/<dir>/.git/config<TAB>url`` line
+    per ``[remote ...]`` url, here carrying a credential and a ``.git`` suffix."""
+
+    def exec_run(self, cmd, workdir=None):
+        if isinstance(cmd, list) and "/.git/config" in cmd[-1]:
+            self.calls.append(cmd)
+            url = "https://oauth2:tok@gitlab.example.com/Ministry/chpa/single-window.git"
+            return (0, f"apps/single_window/.git/config\t{url}\n".encode())
+        return super().exec_run(cmd, workdir)
+
+    def read_remotes(self) -> bool:
+        return any(isinstance(c, list) and "/.git/config" in c[-1] for c in self.calls)
+
+
+class TestAppRemotes:
+    def test_a_live_read_carries_each_apps_remote_without_its_credentials(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", app_remotes=True)
+
+        assert result.data.served_from == "partial"
+        assert result.data.benches[0].app_remotes == {
+            "single_window": ["https://gitlab.example.com/ministry/chpa/single-window"]
+        }
+
+    def test_it_is_read_only_when_asked(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj")
+
+        assert result.data.benches[0].app_remotes == {}
+        assert not container.read_remotes()
+
+    def test_a_cache_served_read_has_none(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        install(container)
+
+        result = core_inspect.inspect("proj", refresh="cache_only", app_remotes=True)
+
+        assert result.data.benches[0].app_remotes == {}
+        assert not container.read_remotes()

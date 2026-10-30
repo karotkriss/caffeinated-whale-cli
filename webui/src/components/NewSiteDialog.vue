@@ -93,7 +93,7 @@ const theBench = computed(() => benches.value.find((b) => String(b.index) === St
 // remote pick is fetched onto the bench first (`cwcli apps install --fetch-only`), then
 // installed on the new site like any other. Remote picks are keyed `remote:<catalog key>`.
 // An app the bench already holds is never a remote pick.
-const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [] }))
+const split = computed(() => splitBenchApps({ catalog: catalogApps.value, benchApps: theBench.value?.available_apps || [], benchRemotes: theBench.value?.app_remotes || {} }))
 const benchApps = computed(() => split.value.onBench)
 const remoteApps = computed(() => split.value.remote)
 const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
