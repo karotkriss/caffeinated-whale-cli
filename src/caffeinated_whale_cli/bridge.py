@@ -17,7 +17,10 @@ carries exactly ONE HTTP/1.1 request on stdin; the bridge
    when a connection authenticates and a hub keeps its connection open, so a
    revoke, a new cap or a new key refuses every later channel of a connection
    that authenticated before, and the hub reconnects against the line as it is;
-3. forwards only ``/api/v1/`` paths, never the session or hosts routes;
+3. forwards only ``/api/v1/`` paths, never the session or hosts routes, and never an
+   operation that installs or updates third-party code here or replaces cwcli itself
+   (a ``community_add`` or ``community_update`` integration op, a ``self-update``
+   job), whatever the cap: this machine's own Admin does those on this machine;
 4. drops every credential and identity header the hub sent (``Authorization``,
    ``Cookie``, the delegation headers, ``Host``, ``Connection`` and whatever it
    names), refuses a folded header line and a delegation header that is sent twice
@@ -31,9 +34,10 @@ carries exactly ONE HTTP/1.1 request on stdin; the bridge
    the cap and the daemon's ``/api/v1/meta``, and starts the daemon the way
    ``cwcli ui`` does when it is not running.
 
-Stdlib only, and it imports nothing else from cwcli but the package ``__init__`` and
-the stdlib-only ``utils.daemon_identity``: the hub opens a channel per request, so
-this must start in milliseconds (importing the command layer costs a third of a second).
+Stdlib only, and it imports nothing else from cwcli but the package ``__init__``, the
+constants of ``core.protocol`` and the stdlib-only ``utils.daemon_identity``: the hub
+opens a channel per request, so this must start in milliseconds (importing the command
+layer costs a third of a second).
 """
 
 from __future__ import annotations
@@ -54,11 +58,12 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import __version__
+from .core.protocol import BRIDGE_PROTOCOL
 from .utils import daemon_identity
 
-BRIDGE_PROTOCOL = 1  # keep equal to core.protocol.BRIDGE_PROTOCOL (not imported: cost)
 BRIDGE_MODULE = "caffeinated_whale_cli.bridge"
 ROLES = ("viewer", "operator", "admin")
 _RANK = {"viewer": 0, "operator": 1, "admin": 2}
@@ -98,6 +103,20 @@ _DELEGATION = {_DELEGATED_USER, _DELEGATED_ROLE}
 # The paths a hub never reaches through the bridge: the remote's own sign-in, and
 # its hosts (no hopping from one hub through another).
 _REFUSED_PREFIXES = ("/api/v1/session", "/api/v1/hosts")
+# What a hub never runs here, whatever its cap: installing or updating third-party code,
+# or replacing cwcli itself. The POST path, the payload field and its refused values.
+_CODE_CHANGES = {
+    "/api/v1/integrations": ("op", ("community_add", "community_update")),
+    "/api/v1/jobs": ("verb", ("self-update",)),
+}
+
+
+def code_change(path: str, payload: object) -> bool:
+    """Whether a POST to ``path`` (the parsed path, as the daemon routes it) with
+    ``payload`` installs or updates third-party code here or replaces cwcli itself.
+    The bridge refuses such a request and the daemon refuses a delegated one."""
+    rule = _CODE_CHANGES.get(path)
+    return rule is not None and isinstance(payload, dict) and payload.get(rule[0]) in rule[1]
 
 
 class BridgeError(Exception):
@@ -479,6 +498,13 @@ def _pipe(
         raise BridgeError(
             403, "bridge.path_refused", f"{target.split('?')[0]} is not reachable through a hub"
         )
+    if method == "POST" and code_change(urlparse(target).path, _json_body(body)):
+        raise BridgeError(
+            403,
+            "bridge.code_change_refused",
+            "a hub cannot install or update community integrations or update cwcli on this "
+            "machine, whatever its cap; this machine's own Admin does that here",
+        )
     state = _read_state(args.state)
     conn = _connect(state["port"]) if state is not None else None
     if conn is None:
@@ -523,6 +549,15 @@ def _pipe(
             conn.close()
         except OSError:
             pass
+
+
+def _json_body(body: bytes) -> object:
+    """The request body as the daemon reads it (UTF-8 JSON, empty meaning ``{}``), or
+    None when the daemon would refuse it as not JSON anyway."""
+    try:
+        return json.loads(body.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, ValueError):
+        return None
 
 
 def _connect(port: int) -> socket.socket | None:

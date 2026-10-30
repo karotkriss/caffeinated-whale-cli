@@ -61,6 +61,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from ..utils import config_utils, shared_home
 from . import integrations
@@ -1167,6 +1168,7 @@ class HostLink:
         self._current: HttpResponse | None = None
         self.thread: threading.Thread | None = None
         self.probe_count = 0
+        self.focus: str | None = None  # the instance a hub tab has open here (``?focus=``)
 
     # -- state ------------------------------------------------------------
 
@@ -1216,6 +1218,17 @@ class HostLink:
         self._attempts = 0
         self._wake.set()
 
+    def set_focus(self, project: str | None) -> None:
+        """Hold the stream with ``?focus=<project>`` (a hub tab has that instance open, so
+        the remote's daemon probes it live) or without: the held stream is ended and
+        reopened with the new query at once, never counted as a drop."""
+        if project == self.focus:
+            return
+        self.focus = project
+        current = self._current
+        if current is not None:
+            current.cancel()
+
     # -- the cycle --------------------------------------------------------
 
     def step(self) -> float:
@@ -1261,9 +1274,19 @@ class HostLink:
         return 0.0
 
     def _hold_stream(self) -> None:
-        resp = _ask(
-            self.transport, self.host, "GET", "/api/v1/stream", [("Accept", "text/event-stream")]
-        )
+        """Hold the remote's stream until it ends; a focus change reopens it at once."""
+        while True:
+            focus = self.focus
+            try:
+                self._stream_once(focus)
+                return
+            except LinkError:
+                if self.focus == focus or self._stop.is_set():
+                    raise
+
+    def _stream_once(self, focus: str | None) -> None:
+        target = f"/api/v1/stream?focus={quote(focus, safe='')}" if focus else "/api/v1/stream"
+        resp = _ask(self.transport, self.host, "GET", target, [("Accept", "text/event-stream")])
         self._current = resp
         try:
             if resp.status != 200:
@@ -1272,6 +1295,8 @@ class HostLink:
             for chunk in resp.iter_body(idle_timeout=STREAM_IDLE_S):
                 if self._stop.is_set():
                     return
+                if self.focus != focus:
+                    raise LinkError(UNREACHABLE, "the stream's focus changed")
                 self.touch()
                 frames, buffer = parse_sse(buffer + chunk)
                 if len(buffer) > _FRAME_LIMIT:
@@ -1422,6 +1447,7 @@ class HostManager:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._mtime = -1.0
+        self._focus: dict[str, str] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -1511,8 +1537,19 @@ class HostManager:
                     on_frame=self._frame,
                     protocol=self._protocol,
                 )
+                link.focus = self._focus.get(host_id)
                 self._links[host_id] = link
                 link.start()
+
+    def set_focus(self, focus: dict[str, str]) -> None:
+        """The instance a hub tab has open on each host (``{host: project}``, the most
+        recent tab's): that host's held stream carries it as ``?focus=``, so the remote's
+        daemon probes it live, and a host no tab focuses any more holds it without."""
+        with self._lock:
+            self._focus = dict(focus)
+            links = list(self._links.items())
+        for host_id, link in links:
+            link.set_focus(focus.get(host_id))
 
     # -- views ------------------------------------------------------------
 

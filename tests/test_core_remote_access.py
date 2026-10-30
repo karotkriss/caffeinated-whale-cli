@@ -387,6 +387,42 @@ class TestGrantsAndRevocation:
         assert keys.read_bytes() == before
         assert sorted(os.listdir(keys.parent)) == ["authorized_keys", "authorized_keys.cwcli-tmp"]
 
+    def test_allowing_a_hub_into_another_file_takes_its_earlier_line_out(self, keys, host_key_file, tmp_path, monkeypatch):
+        """One live grant per hub and home: an allow into a different authorized_keys file
+        takes the hub's line out of the file its record names and ends the bridges it ran
+        there, so a lower cap or a revoke never misses the earlier line."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        scanned = []
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: scanned.append(kw["uids"]) or [])
+        earlier = tmp_path / "srv" / "keys" / "frappe"
+        assert _allow(earlier, host_key_file, home=None, cap="operator").moved_from is None
+        assert scanned == []
+        grant = _allow(keys, host_key_file, home=None, cap="viewer")
+        assert grant.moved_from == str(earlier) and f"cwcli-hub:{HUB}" not in earlier.read_text()
+        assert [g.cap for g in remote_access.list_grants(keys)] == ["viewer"]
+        assert remote_access.recorded_grants()[HUB]["keys"] == str(keys)
+        assert scanned and all(uids == {os.getuid()} for uids in scanned)
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_an_earlier_grant_this_account_cannot_change_refuses_the_new_allow_before_writing(self, keys, host_key_file, tmp_path, monkeypatch):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(remote_access.getpass, "getuser", lambda: "alice")
+        theirs = tmp_path / "alice" / ".ssh" / "authorized_keys"
+        _allow(theirs, host_key_file, home=None, cap="admin")
+        record = remote_access.recorded_grants()
+        os.chmod(theirs.parent, 0)
+        try:
+            with pytest.raises(CwcliError) as e:
+                _allow(keys, host_key_file, home=None, cap="viewer")
+        finally:
+            os.chmod(theirs.parent, 0o700)
+        assert e.value.code == "remote.earlier_grant" and str(theirs) in e.value.message
+        assert f"revoke --hub {HUB}` as alice" in e.value.hint
+        assert not keys.exists() and remote_access.recorded_grants() == record
+        assert f"cwcli-hub:{HUB}" in theirs.read_text()
+
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
         _allow(keys, host_key_file, hub="hub-home", cap="admin", key=OTHER_KEY)

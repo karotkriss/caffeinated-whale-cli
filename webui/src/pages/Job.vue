@@ -167,7 +167,7 @@ async function loadAll() {
 }
 
 onMounted(() => {
-  setFocus(host ? null : record.value?.target?.project || null)
+  setFocus(record.value?.target?.project || null, host)
   refresh(0, TAIL)
 })
 watch(() => record.value?.event_count, (count, previous) => {

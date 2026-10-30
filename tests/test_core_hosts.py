@@ -559,6 +559,56 @@ class HeldChannel(FakeChannel):
         self._gone.set()
 
 
+class TestFocus:
+    """A hub tab with a remote instance open gets that instance's live readings: the host's
+    held stream carries the focus, so the remote's daemon probes it as it would its own."""
+
+    class _Then(FakeChannel):
+        """A held stream that runs ``then`` once its keepalive was read (a tab moving)."""
+
+        def __init__(self, then):
+            super().__init__([_http(200, b"", "text/event-stream", length=False), b": keepalive\n\n"])
+            self._then = then
+
+        def read(self, size, timeout):
+            piece = super().read(size, timeout)
+            if piece == b": keepalive\n\n" and self._then is not None:
+                then, self._then = self._then, None
+                then()
+            return piece
+
+    def test_focusing_a_remote_instance_reopens_the_stream_with_it_and_leaving_reopens_without(self):
+        held = {}
+        unfocused = self._Then(lambda: held["link"].set_focus("p 1"))
+        focused = self._Then(lambda: held["link"].set_focus(None))
+        last = FakeChannel([_http(200, b"", "text/event-stream", length=False)])
+        transport = FakeTransport([FakeChannel([_bridge_answer()]), unfocused, focused, last])
+        states = []
+        link = hosts.HostLink(_rec(), transport, on_state=lambda lk: states.append(lk.status.state), on_frame=lambda *a: None, clock=lambda: 1000.0, jitter=lambda: 0.5)
+        held["link"] = link
+        link.step()
+        assert [c.sent.split(b"\r\n", 1)[0] for c in (unfocused, focused, last)] == [
+            b"GET /api/v1/stream HTTP/1.1",
+            b"GET /api/v1/stream?focus=p%201 HTTP/1.1",
+            b"GET /api/v1/stream HTTP/1.1",
+        ]
+        # A move of focus is no drop: no re-probe in between, nothing flashed, and only the
+        # last stream's real end counts.
+        assert transport.opened == 4 and states == [hosts.CONNECTED] and link.view()["drops_10m"] == 1
+
+    def test_the_manager_hands_each_host_its_latest_focus_new_links_included(self):
+        manager = hosts.HostManager(publish=lambda ev, data: None, transports_fn=lambda: {"ssh": FakeTransport([])})
+        manager.set_focus({"build-box": "p"})
+        hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
+        manager.resync()
+        try:
+            assert manager.get("build-box").focus == "p"
+            manager.set_focus({})
+            assert manager.get("build-box").focus is None
+        finally:
+            manager.stop()
+
+
 class TestManager:
     def _manager(self, transport, published):
         return hosts.HostManager(publish=lambda ev, data: published.append((ev, data)), transports_fn=lambda: {"ssh": transport})

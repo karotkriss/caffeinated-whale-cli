@@ -22,7 +22,7 @@ import pytest
 from caffeinated_whale_cli import bridge
 from caffeinated_whale_cli.commands import ui as ui_cmd
 from caffeinated_whale_cli.core import remote_access
-from caffeinated_whale_cli.core.protocol import PROTOCOL_VERSION
+from caffeinated_whale_cli.core.protocol import BRIDGE_PROTOCOL, PROTOCOL_VERSION
 from caffeinated_whale_cli.utils import daemon_identity
 
 HUB = "hub-test"
@@ -304,6 +304,48 @@ class TestRewrite:
         assert code == 1 and _error_code(out) == "bridge.bad_header" and daemon.requests == []
 
 
+def _post(path: str, payload: dict) -> bytes:
+    """A POST the way the hub sends it: JSON, its user's claimed role and name."""
+    body = json.dumps(payload).encode()
+    return (
+        f"POST {path} HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+        "X-Cwcli-Delegated-User: alice\r\nX-Cwcli-Delegated-Role: admin\r\n\r\n"
+    ).encode() + body
+
+
+class TestNoCodeChangeThroughAHub:
+    """Whatever the cap, a hub never installs or updates third-party code here or
+    replaces cwcli itself: the bridge refuses it before the daemon sees anything, and
+    every other Admin operation still crosses at the Admin cap."""
+
+    @pytest.fixture
+    def admin(self, tmp_path, daemon):
+        granted = _grant(tmp_path, cap="admin")
+        (tmp_path / "ui.json").write_text(json.dumps({"port": daemon.port, "token": TOKEN}))
+        daemon_identity.write_pid_file(tmp_path / "ui.pid")
+        return _argv(granted.line)
+
+    @pytest.mark.parametrize(
+        "path,payload",
+        [
+            ("/api/v1/integrations", {"op": "community_add", "url": "https://example.com/x.git", "commit": "abc"}),
+            ("/api/v1/integrations", {"op": "community_update", "id": "x", "commit": "abc"}),
+            ("/api/v1/jobs", {"verb": "self-update", "target": {}, "args": {}}),
+            ("/api/v1/jobs?from=page", {"verb": "self-update"}),
+        ],
+    )
+    def test_installing_or_updating_code_is_refused_at_the_admin_cap(self, admin, daemon, path, payload):
+        code, out = _run(admin, _post(path, payload))
+        assert code == 1 and _error_code(out) == "bridge.code_change_refused"
+        assert daemon.requests == []
+
+    def test_an_ordinary_admin_operation_still_reaches_the_daemon(self, admin, daemon):
+        code, out = _run(admin, _post("/api/v1/settings", {"setting": "cache.enable"}))
+        assert code == 0 and _status_and_json(out)[0] == 200
+        (seen,) = daemon.requests
+        assert seen["path"] == "/api/v1/settings" and seen["headers"]["x-cwcli-delegated-role"] == "admin"
+
+
 class TestTheRealExchange:
     def test_a_read_reaches_the_daemon_with_the_machines_own_token_and_identity(self, grant, daemon):
         request = (
@@ -342,7 +384,7 @@ class TestTheRealExchange:
         assert status == 200
         data = body["data"]
         assert data["hub"] == HUB and data["max_role"] == "operator"
-        assert data["bridge_protocol"] == bridge.BRIDGE_PROTOCOL
+        assert data["bridge_protocol"] == BRIDGE_PROTOCOL  # the one constant core.hosts checks
         assert data["daemon"]["protocol"] == PROTOCOL_VERSION and data["daemon_error"] is None
         assert [r["path"] for r in daemon.requests] == ["/api/v1/meta"]
 
@@ -417,7 +459,8 @@ def test_the_bridge_imports_only_the_stdlib_and_the_package_init():
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
     lines = done.stdout.strip().splitlines()
     assert lines[0] == (
-        "['caffeinated_whale_cli', 'caffeinated_whale_cli.bridge', "
-        "'caffeinated_whale_cli.utils', 'caffeinated_whale_cli.utils.daemon_identity']"
+        "['caffeinated_whale_cli', 'caffeinated_whale_cli.bridge', 'caffeinated_whale_cli.core', "
+        "'caffeinated_whale_cli.core.protocol', 'caffeinated_whale_cli.utils', "
+        "'caffeinated_whale_cli.utils.daemon_identity']"
     )
     assert lines[1] == "[]"
