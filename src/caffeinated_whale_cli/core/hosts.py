@@ -1367,12 +1367,31 @@ def transports() -> dict[str, Transport]:
     return out
 
 
-def _unknownify(instances: list[dict]) -> list[dict]:
+def _unknownify(instances: list[dict], view: dict[str, Any]) -> list[dict]:
+    """A quiet host's last-known instances, marked the way this daemon marks an instance
+    whose probe failed: ``unknown``, with a ``probe_error`` naming why (every page shows
+    the readings under it as the last successful probe's), and each bench ``unknown``."""
+    why = (
+        f"{view['name']}: {view['reason']}"
+        if view.get("reason")
+        else f"{view['name']} is {view['state'].replace('_', ' ')}"
+    )
     out = []
     for inst in instances:
         if not isinstance(inst, dict):
             continue
-        out.append({**inst, "overall": "unknown", "web_probed": False, "probe_error": None})
+        benches = [
+            {**b, "overall": "unknown"} for b in inst.get("benches") or [] if isinstance(b, dict)
+        ]
+        out.append(
+            {
+                **inst,
+                "overall": "unknown",
+                "web_probed": False,
+                "probe_error": why,
+                "benches": benches,
+            }
+        )
     return out
 
 
@@ -1527,7 +1546,7 @@ class HostManager:
                 instances = list(self._instances.get(view["id"], []))
                 jobs = list(self._jobs.get(view["id"], []))
             if view["state"] not in READABLE_STATES:
-                instances = _unknownify(instances)
+                instances = _unknownify(instances, view)
             out.append({**view, "instances": instances, "jobs": jobs})
         return out
 
@@ -1558,7 +1577,7 @@ class HostManager:
         self._publish("host_link", view)
         if view["state"] not in READABLE_STATES:
             with self._lock:
-                instances = _unknownify(self._instances.get(link.host.id, []))
+                instances = _unknownify(self._instances.get(link.host.id, []), view)
                 jobs = list(self._jobs.get(link.host.id, []))
             self._publish(
                 "host_snapshot",
