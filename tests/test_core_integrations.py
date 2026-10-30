@@ -90,7 +90,6 @@ class TestSecrets:
         assert integrations.store_path().stat().st_mode & 0o777 == 0o600
         assert integrations.key_path().stat().st_mode & 0o777 == 0o600
 
-
     def test_a_stored_secret_is_never_sent_where_the_request_points_it(self, fake):
         integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
         tested = len(fake["tested"])
@@ -105,7 +104,6 @@ class TestSecrets:
         assert len(fake["tested"]) == tested
         assert integrations.test("fake", {"port": 9}, {"token": SECRET}).ok
         assert integrations.test("fake", {"host": "good"}).ok  # the port kept: stored secret
-
 
     def test_a_write_waits_while_another_process_holds_the_store(self, fake):
         import threading
@@ -211,16 +209,19 @@ class TestRuntimeOutcome:
         assert integrations.view("fake")[0]["state"] == "off"
 
 
-def test_the_official_integrations_are_ldap_s3_cloudflare_then_npm(tmp_path, monkeypatch):
+def test_the_official_integrations_are_ldap_s3_cloudflare_npm_then_remote_ssh(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
     views = integrations.view()
-    assert [v["id"] for v in views] == ["ldap", "s3", "cloudflare", "npm"]
+    assert [v["id"] for v in views] == ["ldap", "s3", "cloudflare", "npm", "remote_ssh"]
     assert all(v["publisher"] == "official" and v["state"] == "off" for v in views)
     assert [v["provides"] for v in views] == [
         ["sign_in"],
         ["backup_target"],
         ["dns_record"],
         ["proxy_host"],
+        ["host_transport"],
     ]
     assert views[0]["actions"] == ["lookup_user"]
     assert views[2]["actions"] == ["check_edit_access", "detect_ip"]

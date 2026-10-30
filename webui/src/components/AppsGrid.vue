@@ -8,7 +8,7 @@ import AppTile from './AppTile.vue'
 import EmptyState from './EmptyState.vue'
 import HostIcon from './HostIcon.vue'
 import { ago, apps, catalog, categories, filterApps, hostLabel, loadCatalog, scanCatalog, sources } from '../data/catalog'
-import { instances } from '../data/fleet'
+import { localInstances } from '../data/fleet'
 import { openApp } from '../data/app-panel'
 import { loadUpdates, updatesForApp } from '../data/updates'
 
@@ -52,7 +52,7 @@ const sourceOptions = computed(() => [
   { label: 'Marketplace (public index)', value: 'marketplace' },
   { label: 'Local only', value: 'local' },
 ])
-const projectOptions = computed(() => [{ label: 'Any instance', value: 'all' }, ...instances.value.map((i) => ({ label: i.project, value: i.project }))])
+const projectOptions = computed(() => [{ label: 'Any instance', value: 'all' }, ...localInstances.value.map((i) => ({ label: i.project, value: i.project }))])
 const stateOptions = [
   { label: 'All', value: 'all' },
   { label: 'Installed', value: 'both' },

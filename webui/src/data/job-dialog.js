@@ -5,6 +5,8 @@ import { trackJob } from './job-toasts'
 import { ensureRunning } from './start-gate'
 import { JOB_LABEL } from './jobs'
 import { refuseBelow } from './session'
+import { hostRefusal } from './dialog'
+import { onHost } from './hosts'
 
 export const jobDialog = reactive({
   open: false,
@@ -15,6 +17,20 @@ export const jobDialog = reactive({
   running: false,
   error: null,
 })
+
+const titles = {
+  init: 'Create an instance',
+  'apps-install': 'Install apps',
+  'apps-update': 'Update apps',
+  backup: 'Back up site',
+  migrate: 'Migrate site',
+  'run-tests': 'Run tests',
+  build: 'Build assets',
+  'setup-wizard': 'Complete setup wizard',
+  'self-update': 'Update cwcli',
+}
+// The dialog's title names the machine the job runs on when it is not this one.
+export const jobDialogTitle = () => (titles[jobDialog.verb] || 'Start job') + onHost(jobDialog.context.host)
 
 const defaults = {
   init: {
@@ -52,8 +68,13 @@ const defaults = {
 
 export function openJob(verb, context = {}) {
   if (refuseBelow()) return
+  const refused = hostRefusal(context.host)
+  if (refused) {
+    toast.error(refused.reason, { description: refused.detail })
+    return
+  }
   jobDialog.verb = verb
-  jobDialog.context = { ...context }
+  jobDialog.context = { host: null, ...context }
   jobDialog.values = { ...(defaults[verb] || {}), ...(context.args || {}) }
   if (verb === 'init') {
     const reuse = context.args?.reuse_bench
@@ -107,14 +128,15 @@ function spec() {
 
 export async function submitJob() {
   const verb = jobDialog.verb
-  const { project, bench = null, benchName = null } = jobDialog.context
-  if (!['init', 'self-update'].includes(verb) && !(await ensureRunning(project, JOB_LABEL[verb], { bench, benchLabel: benchName }))) return null
+  const { project, bench = null, benchName = null, host = null } = jobDialog.context
+  if (!['init', 'self-update'].includes(verb) && !(await ensureRunning(project, JOB_LABEL[verb], { bench, benchLabel: benchName, host }))) return null
   jobDialog.running = true
   jobDialog.error = null
   try {
-    const record = await createJob(spec())
+    // A job opened for a remote instance runs on that host, through the hub's forward.
+    const record = await createJob(spec(), host)
     jobDialog.open = false
-    trackJob(record.id)
+    trackJob(record.id, host)
     return record
   } catch (error) {
     jobDialog.error = error

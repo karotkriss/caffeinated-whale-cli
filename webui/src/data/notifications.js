@@ -4,7 +4,7 @@
 import { computed, reactive } from 'vue'
 import { advisories } from './advisories'
 import { doctor } from './fleet'
-import { jobList, jobLabel, jobTarget } from './jobs'
+import { jobList, jobLabel, jobPath, jobWhere } from './jobs'
 import { schedules } from './schedules'
 
 const KEY = 'cwcli.notifications.read'
@@ -14,8 +14,8 @@ const persist = () => localStorage.setItem(KEY, JSON.stringify([...state.read]))
 export const notifications = computed(() => {
   const out = []
   for (const j of jobList.value.slice(0, 50)) {
-    if (j.state === 'failed') out.push({ id: `job:${j.id}:failed`, kind: 'job', theme: 'red', title: `${jobLabel(j)} failed`, detail: jobTarget(j), to: `/jobs/${j.id}`, at: j.finished_at || j.created_at })
-    if (j.state === 'needs_choice') out.push({ id: `job:${j.id}:needs_choice`, kind: 'job', theme: 'amber', title: `${jobLabel(j)} needs a decision`, detail: jobTarget(j), to: `/jobs/${j.id}`, at: j.finished_at || j.created_at })
+    if (j.state === 'failed') out.push({ id: `job:${j.key || j.id}:failed`, kind: 'job', theme: 'red', title: `${jobLabel(j)} failed`, detail: jobWhere(j), to: jobPath(j), at: j.finished_at || j.created_at })
+    if (j.state === 'needs_choice') out.push({ id: `job:${j.key || j.id}:needs_choice`, kind: 'job', theme: 'amber', title: `${jobLabel(j)} needs a decision`, detail: jobWhere(j), to: jobPath(j), at: j.finished_at || j.created_at })
   }
   // Advisories that newly affect this machine (first seen after the daemon's first
   // pass, still unread): one notification each, highest severity first.

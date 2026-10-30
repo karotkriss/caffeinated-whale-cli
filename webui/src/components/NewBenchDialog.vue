@@ -9,7 +9,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select, TextInput } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { newBenchDialog } from '../data/new-bench-dialog'
-import { instances, details, loadDetail, benchName } from '../data/fleet'
+import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
+import { onHost } from '../data/hosts'
 import { apps as catalogApps, loadCatalog } from '../data/catalog'
 import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
@@ -18,6 +19,7 @@ import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
 
 const project = ref(null)
+const host = ref(null) // the remote host the picked instance lives on (null: this machine)
 const name = ref('')
 const version = ref('16')
 const frappeUrl = ref('')
@@ -43,13 +45,20 @@ watch(() => newBenchDialog.open, (open) => {
   siteName.value = ''
   adminPassword.value = ''
   dbRootPassword.value = ''
-  project.value = newBenchDialog.project || instances.value.find((i) => i.container_running)?.project || instances.value[0]?.project || null
+  const first = newBenchDialog.project ? findInstance(newBenchDialog.project, newBenchDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
+  project.value = first?.project || newBenchDialog.project || null
+  host.value = first?.host || newBenchDialog.host || null
 })
-watch(project, (p) => { if (p) loadDetail(p) })
+watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h }) })
+// The picker's value is the instance key, so two machines' same-named instances stay apart.
+const pick = computed({
+  get: () => (project.value ? ikey(host.value, project.value) : null),
+  set: (k) => { const i = fleet.instances[k]; project.value = i?.project || null; host.value = i?.host || null },
+})
 watch(name, (n) => { if (!siteName.value || siteName.value === `${prevName}.localhost`) siteName.value = n ? `${n}.localhost` : ''; prevName = n })
 let prevName = ''
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped, asks to start)`, value: i.project })))
-const benches = computed(() => details[project.value]?.data?.benches || [])
+const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
+const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 const nameState = computed(() => {
   const n = name.value.trim()
@@ -75,7 +84,7 @@ function toggleExtra(key, on) {
   extra.value = on ? [...new Set([...extra.value, key])] : extra.value.filter((k) => k !== key)
 }
 async function start() {
-  if (!(await ensureRunning(project.value, 'New bench'))) return
+  if (!(await ensureRunning(project.value, 'New bench', { host: host.value }))) return
   running.value = true
   error.value = null
   try {
@@ -84,9 +93,9 @@ async function start() {
       target: { project: project.value },
       args: { bench_name: name.value.trim(), site_name: siteName.value.trim(), version: version.value.trim(), frappe_url: frappeUrl.value.trim() || null, install_erpnext: erpnext.value, apps: extraUrls.value },
       secrets: { admin_password: adminPassword.value, ...(dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
-    })
+    }, host.value)
     newBenchDialog.open = false
-    trackJob(record.id)
+    trackJob(record.id, host.value)
   } catch (e) {
     error.value = e.hint ? `${e.message} ${e.hint}` : e.message
   } finally {
@@ -102,7 +111,7 @@ async function start() {
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <div class="mb-1 text-xs text-ink-gray-5">Instance</div>
-          <Select v-model="project" :options="projectOptions" class="w-full" placeholder="Choose an instance" />
+          <Select v-model="pick" :options="projectOptions" class="w-full" placeholder="Choose an instance" />
         </div>
         <div>
           <FormControl v-model="name" label="Bench folder name" placeholder="bench-v15" autocomplete="off" spellcheck="false" />
@@ -132,7 +141,8 @@ async function start() {
           <AppPickerDialog :open="pickerOpen" title="Extra apps for the new bench" :options="extraOptions.map((o) => ({ value: o.value, label: extraApp(o.value)?.title || o.label, app: extraApp(o.value), hint: extraApp(o.value)?.source?.url || '' }))" :model-value="extra" @update:model-value="(v) => (extra = v)" @update:open="pickerOpen = $event" />
         </div>
       </div>
-      <Alert v-if="project && !instances.find((i) => i.project === project)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then add the bench, the same as in a terminal.`" />
+      <Alert v-if="project && !findInstance(project, host)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then add the bench, the same as in a terminal.`" />
+      <Alert v-if="host" theme="gray" :title="`Runs${onHost(host)}`" description="The bench is built there, by that machine's own cwcli, through this hub." />
       <div class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running</div>
         <CommandLine :command="cli" />

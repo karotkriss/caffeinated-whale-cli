@@ -17,7 +17,8 @@ import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
 import CommandLine from './CommandLine.vue'
 import { newSiteDialog } from '../data/new-site-dialog'
-import { instances, details, loadDetail, benchName } from '../data/fleet'
+import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey } from '../data/fleet'
+import { onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
@@ -25,6 +26,7 @@ import { canPublish, loadPublications, preflightPublish, publishOptions } from '
 import { can } from '../data/session'
 
 const project = ref(null)
+const host = ref(null) // the remote host the picked instance lives on (null: this machine)
 const bench = ref(null)
 const site = ref('')
 const adminPassword = ref('')
@@ -67,12 +69,19 @@ watch(() => newSiteDialog.open, (open) => {
   proxied.value = false
   accessList.value = '0'
   loadPublications()
-  project.value = newSiteDialog.project || instances.value.find((i) => i.container_running)?.project || instances.value[0]?.project || null
+  const first = newSiteDialog.project ? findInstance(newSiteDialog.project, newSiteDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
+  project.value = first?.project || newSiteDialog.project || null
+  host.value = first?.host || newSiteDialog.host || null
   bench.value = newSiteDialog.bench
 })
-watch(project, (p) => { if (p) loadDetail(p) })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped, asks to start)`, value: i.project })))
-const benches = computed(() => details[project.value]?.data?.benches || [])
+watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h }) })
+// The picker's value is the instance key, so two machines' same-named instances stay apart.
+const pick = computed({
+  get: () => (project.value ? ikey(host.value, project.value) : null),
+  set: (k) => { const i = fleet.instances[k]; project.value = i?.project || null; host.value = i?.host || null },
+})
+const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
+const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${benchName(b)} · ${b.sites.length} ${b.sites.length === 1 ? 'site' : 'sites'}`, value: String(b.index) })))
 watch(benchOptions, (opts) => { if (opts.length && (bench.value == null || !opts.some((o) => o.value === bench.value))) bench.value = opts[0].value }, { immediate: true })
 const theBench = computed(() => benches.value.find((b) => String(b.index) === String(bench.value)))
@@ -92,6 +101,9 @@ const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
 
+// Publish only for this machine's instances: publish.js talks to this daemon's integrations.
+const publishable = computed(() => !host.value && canPublish())
+watch(publishable, (ok) => { if (!ok) publishing.value = false })
 // The zone picker applies only while publishing with a DNS integration on.
 const zones = computed(() => options.value?.dns?.zones || [])
 const zoned = computed(() => publishing.value && zones.value.length > 0)
@@ -155,7 +167,7 @@ const nameState = computed(() => {
   if (!n.includes('.')) return { ok: true, warn: 'No dot: the browser will treat it as a search unless you add a hosts entry. Consider name.localhost.' }
   if (publishing.value && n.endsWith('.localhost')) return { ok: false, text: 'A .localhost site cannot be published; give it its own domain.' }
   if (publishing.value) return { ok: true, text: `Frappe routes by name, so the site's name is its public address: ${n}.` }
-  if (!n.endsWith('.localhost')) return { ok: true, warn: `${n} looks like a real domain: it must resolve to this machine (hosts file or DNS) to open.${canPublish() ? ' Tick Publish below to have cwcli point it here.' : ''}` }
+  if (!n.endsWith('.localhost')) return { ok: true, warn: `${n} looks like a real domain: it must resolve to this machine (hosts file or DNS) to open.${publishable.value ? ' Tick Publish below to have cwcli point it here.' : ''}` }
   return { ok: true, text: 'Resolves to this machine automatically.' }
 })
 const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value)
@@ -172,7 +184,7 @@ function toggleApp(name, on) {
   apps.value = on ? [...new Set([...apps.value, name])] : apps.value.filter((a) => a !== name)
 }
 async function start() {
-  if (!(await ensureRunning(project.value, 'New site', { bench: bench.value, benchLabel: theBench.value ? benchName(theBench.value) : null }))) return
+  if (!(await ensureRunning(project.value, 'New site', { bench: bench.value, benchLabel: theBench.value ? benchName(theBench.value) : null, host: host.value }))) return
   running.value = true
   error.value = null
   try {
@@ -187,9 +199,9 @@ async function start() {
         ...(publishing.value ? { publish: { address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value, access_list_id: Number(accessList.value) || 0 } } : {}),
       },
       secrets: { admin_password: adminPassword.value, ...(dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
-    })
+    }, host.value)
     newSiteDialog.open = false
-    trackJob(record.id)
+    trackJob(record.id, host.value)
   } catch (e) {
     error.value = e.hint ? `${e.message} ${e.hint}` : e.message
   } finally {
@@ -205,11 +217,11 @@ async function start() {
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <div class="mb-1 text-xs text-ink-gray-5">Instance</div>
-          <Select v-model="project" :options="projectOptions" class="w-full" placeholder="Choose an instance" />
+          <Select v-model="pick" :options="projectOptions" class="w-full" placeholder="Choose an instance" />
         </div>
         <div>
           <div class="mb-1 text-xs text-ink-gray-5">Bench</div>
-          <Select v-model="bench" :options="benchOptions" class="w-full" :placeholder="project ? (details[project]?.loading ? 'Reading benches...' : 'Choose a bench') : 'Pick an instance first'" />
+          <Select v-model="bench" :options="benchOptions" class="w-full" :placeholder="project ? (detailOf(project, host)?.loading ? 'Reading benches...' : 'Choose a bench') : 'Pick an instance first'" />
         </div>
         <div v-if="zoned" class="sm:col-span-2">
           <FormLabel label="Site name" />
@@ -246,7 +258,7 @@ async function start() {
         </div>
         <Checkbox v-model="makeDefault" label="Make it the bench's default site" />
         <Checkbox v-model="devMode" label="Turn developer mode on for it" />
-        <div v-if="canPublish()" class="space-y-3 rounded-6 border border-outline-gray-1 p-3 sm:col-span-2">
+        <div v-if="publishable" class="space-y-3 rounded-6 border border-outline-gray-1 p-3 sm:col-span-2">
           <div>
             <Checkbox v-model="publishing" label="Publish it at a public address" />
             <p class="mt-1 pl-6 text-p-sm text-ink-gray-5">{{ publishSays }}</p>
@@ -294,7 +306,8 @@ async function start() {
           </template>
         </div>
       </div>
-      <Alert v-if="project && !instances.find((i) => i.project === project)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then create the site, the same as in a terminal.`" />
+      <Alert v-if="project && !findInstance(project, host)?.container_running" theme="gray" :title="`${project} is stopped`" :description="`cwcli will ask to start ${project} first, then create the site, the same as in a terminal.`" />
+      <Alert v-if="host" theme="gray" :title="`Runs${onHost(host)}`" description="The site is created there, by that machine's own cwcli, through this hub." />
       <div class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running{{ publishing ? ', then Publish site from the web UI (no terminal command)' : '' }}</div>
         <CommandLine :command="cli" />

@@ -10,10 +10,11 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { TabButtons, ErrorMessage, LoadingText, TextInput, Button } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import FollowPane from './FollowPane.vue'
-import { getJson } from '../data/api'
+import { apiBase, getJson } from '../data/api'
 
 const props = defineProps({
   project: { type: String, required: true },
+  host: { type: String, default: null }, // a remote host's instance: read through the hub
   bench: { type: String, required: true },
   process: { type: String, default: null }, // initial filter
 })
@@ -61,7 +62,7 @@ async function poll() {
       .map(([p, l]) => `${p}:${l.offset}`)
       .join(',')
     if (after) q.set('after', after)
-    const data = await getJson(`/api/v1/instances/${encodeURIComponent(props.project)}/logs?${q}`)
+    const data = await getJson(`${apiBase(props.host)}/instances/${encodeURIComponent(props.project)}/logs?${q}`)
     notSupervised.value = data.outcome.not_cwcli_supervised
     for (const t of data.outcome.logs) {
       const entry = logs[t.process] || (logs[t.process] = { rows: [], offset: 0 })

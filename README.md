@@ -12,6 +12,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Web UI** - A local browser dashboard over every instance, bench, site and app with `cwcli ui`: live health, logs, the `doctor` health check in Settings, and the everyday lifecycle actions
+- **Remote hosts** - Other machines' instances in the same web UI, labelled by host, each reached over SSH with one key their owner restricts to cwcli's API and caps at a role (`cwcli remote`)
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
@@ -2215,6 +2216,7 @@ With LDAP / Active Directory sign-in turned on (Settings > Integrations, below),
 A Viewer reads everything the UI shows except the contents of backup sets (no download).
 An Operator also runs the fleet: lifecycle actions, jobs, backups, transfers and schedules.
 An Admin also changes Settings, Integrations and each instance's backup settings (retention, the daily schedule and off-site copies), updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, unpublishing a site, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
+A hub acting on a remote machine at that machine's Admin cap is the one exception: it never installs or updates a community integration there or updates that machine's cwcli (see `remote` below).
 A schedule that runs one of those (a prune) is created, changed, enabled or run by hand only by an Admin, and each scheduled run checks that the Admin who last saved it is still an Admin (a directory user is looked up in the directory again); otherwise the run is skipped and the schedule shows why.
 The local `admin` account and a programmatic client holding the bearer token are Admins; a directory user's role comes from their directory groups.
 The page hides what a role cannot do, and a request beyond the role is refused with `auth.role_forbidden`.
@@ -2240,17 +2242,19 @@ The guarded destructive verbs run as jobs too, each behind a typed confirmation 
 A failed backup drops nothing, exactly as on the command line, and the job page shows bench's own reason.
 Settings is writable for an Admin: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, a Start (or Restart) button for either daemon while its feature is enabled, with the daemon log's last line shown while it is down, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
 Schedules puts any of those jobs on a timetable (templates, a friendly recurrence picker with the cron underneath, one-off runs, recipes of chained steps, "after a successful job" and "when the instance starts" triggers, a week's timeline, and "Schedule this…" on every job's page); see `schedule` below.
-`cwcli restore` (the UI restores sets from the backup store instead), `apps uninstall`, `run`, `cwcli open`'s Docker shell (the UI opens VS Code, VS Code Insiders or Cursor only), an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
+`cwcli restore` (the UI restores sets from the backup store instead), `apps uninstall`, `run`, `cwcli open`'s Docker shell (the UI opens VS Code, VS Code Insiders or Cursor only), an in-browser terminal and the shared multi-user mode are not in the UI; each needs its own decision first.
+Other machines' instances are in the UI through **Remote hosts** (Settings > Remote hosts and the `remote` command below).
 
 **Integrations (Settings > Integrations):** connections to systems outside cwcli, each off until an Admin turns it on.
 Turning one on opens its setup, tests the connection, and turns it on only when the test passes; a change to an integration that is already on is applied only when the changed settings pass the test, so a typo never takes a working one down.
 Each integration shows one of four states: Off, Needs setup (the last attempt to turn it on failed its test), On, or Error (it is on, and its last use failed).
 Secrets are stored encrypted (AES-256-GCM) in `~/.cwcli/integrations.json` under a key in `~/.cwcli/keys/integrations.key`, both 0600; after a save the page shows only that a secret is set, and a new value replaces it.
 A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, the S3 endpoint, or the Nginx Proxy Manager admin URL or email) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
-Four official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
-Each integration provides hook points that cwcli calls: **sign-in** (who may sign in to the web UI, and with which role), **the backup target** (where encrypted off-site copies go), **DNS records** (where a published site's name is written) and **the proxy** (what serves a published site over HTTPS).
+Five official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
+Each integration provides hook points that cwcli calls: **sign-in** (who may sign in to the web UI, and with which role), **the backup target** (where encrypted off-site copies go), **DNS records** (where a published site's name is written), **the proxy** (what serves a published site over HTTPS) and **the host transport** (how this machine reaches other machines' instances; see `remote` below).
 Only one integration serves a hook point at a time.
 Turning on a second one that provides it asks the Admin to choose: **Test and switch** runs the new one's test and, only if it passes, turns it on and turns the other off, keeping its settings; nothing switches silently.
+The host transport is the exception: different hosts may use different transports, so several transport integrations can be on at once.
 
 - **LDAP / Active Directory sign-in:** the server URL (`ldaps://` preferred, or `ldap://` with StartTLS; cwcli refuses to send passwords in clear text), the CA certificate that signed the directory's certificate (empty uses this machine's trusted CAs), Active Directory or OpenLDAP, a read-only service account and its password, the base DN, the user search filter (`{username}` is the typed name, escaped), the username, email and display-name attributes, and the allowed groups, each mapped to a role.
   At every sign-in cwcli finds the user with the service account, reads their groups (Active Directory: nested groups too; OpenLDAP: `groupOfNames`, `groupOfUniqueNames` and `posixGroup`), checks the password by binding as the user, and refuses an account the directory reports as disabled and anyone outside the allowed groups.
@@ -2323,6 +2327,69 @@ cwcli ui --foreground -p 9000  # run in this terminal on port 9000
 
 There is deliberately no `cwcli axi ui`: an agent does not stand up a
 browser-facing daemon.
+
+---
+
+### `remote` - Other Machines' Instances in One Web UI
+
+One machine's web UI (the **hub**) shows and drives the instances of other machines (the **remotes**), each labelled by host, alongside its own.
+Every remote runs nothing new: its ordinary `cwcli ui` daemon stays on loopback, and the hub reaches it over the remote's existing SSH server with ONE key that the remote's owner restricts to cwcli's API.
+Nothing is trusted on first contact, in either direction.
+
+```bash
+# On the hub, once: Settings > Integrations > Remote hosts over SSH > Turn on (its test creates the hub's key pair), or
+cwcli remote key                 # this hub's public key and the command a remote's owner runs
+
+# On each remote, as the user who runs cwcli there:
+cwcli remote allow --hub <hub name> --key "<hub public key>" [--max-role operator] [--no-start-daemon]
+cwcli remote hubs                # the hubs this machine lets in, with their caps and homes
+cwcli remote revoke --hub <name> # withdraw a hub: removes its line and ends its running connections
+
+# On the hub: paste the pairing string `allow` printed (Settings > Remote hosts > Add host), or
+cwcli remote add <pairing string> [--name <label>] [--address <addr>] [--port <n>] [--user <u>]
+cwcli remote ls [--check]
+cwcli remote remove <id>
+```
+
+**How the grant works.** `cwcli remote allow` writes one line into the remote user's `authorized_keys`:
+`restrict,command="<python> -m caffeinated_whale_cli.bridge --hub <name> --max-role <cap> ..." ssh-ed25519 <hub key> cwcli-hub:<name>`.
+`restrict` turns off port forwarding, agent forwarding, X11 and the pty, and the forced command means the key can run cwcli's bridge and nothing else: a shell, a different command or a forward to any other port is refused by sshd itself.
+The hub's public key is parsed, never pasted (its options and comment are dropped and the blob must decode as the type it claims), so a key that arrives with `command=` of its own cannot widen the grant.
+`allow` refuses when another line of `authorized_keys` already carries the hub's key (an earlier `ssh-copy-id`, say): sshd applies the first line that matches a key, so that line, not the restricted grant, would decide what the key may do.
+Allowing a hub again into a different `authorized_keys` file takes its earlier line out of the file its record names and ends the bridges it ran there, so a hub has one live grant per cwcli home: both files are checked first, the new grant is written, and only then is the earlier line removed.
+When this account cannot change the earlier file, `allow` writes nothing and names the account to run `cwcli remote revoke` as; if removing the earlier line still fails after the new grant is written, `allow` keeps the new grant, names the file that still holds the old line and exits 1.
+The bridge reads exactly one HTTP request per SSH channel, refuses it whole unless its head is printable ASCII in CRLF lines with token header names, no folded line and no delegation header twice, drops every credential and identity header the hub sent, lowers the role the hub claims to the cap in its own command line (`--max-role`, Operator by default: a hub can run the fleet there but cannot remove instances, sites, benches or backups unless the owner grants Admin), writes the delegated user as `<user>@<hub>`, adds the remote's OWN daemon token and pipes the exchange to the loopback daemon.
+Whatever the cap, the bridge refuses a hub's request to install or update a community integration (`community_add`, `community_update`) or to update cwcli (the `self-update` job), and the daemon refuses it again when a hub delegated it: only that machine's own Admin installs code on it.
+The hub never holds a remote's token, and the remote never learns the hub's private key (`~/.cwcli/keys/hub_ed25519`, 0600, returned by no API).
+The bridge also re-reads the grant on every channel and requires the exact line the channel runs under (its command names the key's fingerprint), so `cwcli remote revoke`, or a new cap or key from `cwcli remote allow`, takes effect for a connection that was already open: the hub reconnects against the line as it is now.
+Revoking or replacing a hub's line also ends the bridge processes that hub still has running.
+Both rewrite `authorized_keys` where it really lives without changing who can read it: a symlinked file stays a link, the file keeps its mode (and, under root, its owner), and a file another account owns (unless run as root) or one with other hard links is refused.
+On a shared install each group member grants under their own login: the line goes into that member's `authorized_keys` and names the shared home, so the hub logs in as that member and reaches the `cwcli ui` daemon they run there, and only that member's `cwcli remote revoke` (or root's) removes it.
+`allow` records each hub's grant in the cwcli home (its file, the home its bridge serves, the account that wrote it, the cap and the key fingerprint), so `cwcli remote hubs` from any account lists each recorded grant along with the lines in its own `authorized_keys`, and shows one whose file it cannot read from the record as `recorded by <account>, not readable from this account`.
+`revoke` cleans the hub's recorded file and the account's own `authorized_keys`, and the check that keeps a hub user's Admin-only schedule running reads only the hub's recorded file (else the account's own `authorized_keys`); neither reads another hub's file, and when the hub's file cannot be read, `revoke` exits 1 naming the account to run it as and the schedule is skipped with a reason naming the file and that account.
+By default, the bridge starts this machine's `cwcli ui` daemon once when the daemon is down.
+Pass `--no-start-daemon` to make a grant that only connects while the owner has already started the daemon.
+
+**Pairing.** `allow` prints a pairing string that carries the SSH user, address, port and this machine's SSH host key (from `/etc/ssh/ssh_host_ed25519_key.pub`; `--host-key-file` names another).
+The hub pins that key when the host is added (`StrictHostKeyChecking=yes` against its own `known_hosts`) and refuses to add a host without one.
+A host whose key later differs is `host key changed`: a hard stop that only an Admin clears by pinning the new key, never a reconnect on its own.
+Either side ends the arrangement alone: `cwcli remote revoke` on the remote, Remove host on the hub.
+
+**What the page shows.** Instances lists every machine's instances in one grid, each remote one with a host pill, a strip of the hosts with their link state, and a machine filter; the sidebar groups instances by machine.
+An action on a remote instance goes to that machine's own daemon through the hub (`/api/v1/hosts/<host>/...`), as the signed-in user with their role, which the remote lowers to its cap; the remote's jobs record `via: hub` and `<user>@<hub>`.
+The link states: `connected` (live, actions allowed), `connecting`, `unreachable` (the host stopped answering: its instances keep their last-known state as `unknown` with a last-seen time, actions are disabled, and nothing is started, stopped or retried because a host went quiet), `cwcli not running there`, `no longer accepts this hub`, `host key changed`, `different cwcli version` (reads work, actions wait until both sides speak the same web UI protocol; the message names the side to update), `integration off` and `service account only` (on a shared install, a group member's own web UI on the shared home: remote hosts run from the service account's web UI, the only one that can read the hub key, so this one lists them and dials none; a member opted back to a private home with `CWCLI_HOME` runs a hub of its own).
+A dropped packet never flashes a host to unknown: one immediate re-probe decides.
+A remote instance's page has the same live process readings and web check as a local one: while a tab has it open, the hub holds that host's stream with the instance as its focus.
+Backups, schedules, the apps catalog, publishing a site at a public address and the restore and transfer dialogs stay each machine's own; a remote site's backups show that machine's sets with Back up now, Verify, Download and Delete.
+Drop site on a remote site asks that machine, as the dialog opens, whether the site is published there, and offers "Also unpublish it" (ticked when it is), so the unpublish runs on the machine that published it.
+When that machine cannot be read, or the page does not know the site's bench yet, the box is offered unticked with a note that its publication state could not be read.
+
+**Security.** The hub forwards only `/api/v1/` paths, never a remote's sign-in, stream or hosts routes, and relays every answer as DATA: JSON, a download as an attachment or an image under a sandboxing policy, each with `X-Content-Type-Options: nosniff`, never a cookie and never a page (a remote can never serve code into the hub's origin).
+A remote that is itself a hub keeps its own remote hosts to itself: the stream it serves through its bridge carries its own instances and jobs, never its hosts.
+The hub builds every `ssh` argument list itself, validates the host and user it was given and puts `--` before them.
+A transport sees every request to a remote, job passwords included, so only official transport integrations are allowed; `Remote hosts over SSH` is the one that ships, and different hosts may use different transports at once (the Integrations contract's one multi-provider hook point).
+A hub runs on Linux, macOS or WSL (the native Windows OpenSSH cannot multiplex connections).
+There is deliberately no `cwcli axi remote`: granting another machine's key a foothold, or pinning a machine this hub will drive, is a person's decision.
 
 ---
 

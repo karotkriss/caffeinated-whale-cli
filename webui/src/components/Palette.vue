@@ -12,7 +12,8 @@ import {
   CommandPaletteFooter,
 } from 'frappe-ui/experimental'
 import StatusDot from './StatusDot.vue'
-import { instances, details, benchName, search } from '../data/fleet'
+import { instances, detailOf, benchName, search, instancePath, benchPath, sitePath } from '../data/fleet'
+import { hostName } from '../data/hosts'
 import { paletteOpen } from '../data/palette'
 import { openAction } from '../data/dialog'
 import { availability } from '../data/actions'
@@ -43,8 +44,9 @@ useKeyboardShortcut({
   handler: () => (paletteOpen.value = true),
 })
 
-const benches = computed(() => Object.entries(details).flatMap(([p, d]) => (d.data?.benches || []).map((b) => ({ p, b }))))
-const sites = computed(() => benches.value.flatMap(({ p, b }) => (b.sites || []).map((s) => ({ p, b, s: s.name }))))
+const benches = computed(() => instances.value.flatMap((i) => (detailOf(i.project, i.host)?.data?.benches || []).map((b) => ({ i, p: i.project, b }))))
+const sites = computed(() => benches.value.flatMap(({ i, p, b }) => (b.sites || []).map((s) => ({ i, p, b, s: s.name }))))
+const where = (i) => (i.host ? ` on ${hostName(i.host)}` : '')
 const pages = [
   ['Instances', 'lucide-boxes', '/instances'],
   ['Apps', 'lucide-package', '/apps'],
@@ -55,9 +57,9 @@ const pages = [
 const commands = computed(() =>
   instances.value.flatMap((i) => {
     const out = []
-    if (availability('instance.start', i).ok) out.push({ id: 'instance.start', label: `Start ${i.project}`, icon: 'lucide-play', ctx: { project: i.project } })
-    if (availability('instance.stop', i).ok) out.push({ id: 'instance.stop', label: `Stop ${i.project}`, icon: 'lucide-square', ctx: { project: i.project } })
-    if (availability('instance.refresh', i).ok) out.push({ id: 'instance.refresh', label: `Refresh ${i.project} health`, icon: 'lucide-refresh-cw', ctx: { project: i.project } })
+    if (availability('instance.start', i).ok) out.push({ id: 'instance.start', label: `Start ${i.project}${where(i)}`, icon: 'lucide-play', ctx: { project: i.project, host: i.host } })
+    if (availability('instance.stop', i).ok) out.push({ id: 'instance.stop', label: `Stop ${i.project}${where(i)}`, icon: 'lucide-square', ctx: { project: i.project, host: i.host } })
+    if (availability('instance.refresh', i).ok) out.push({ id: 'instance.refresh', label: `Refresh ${i.project} health${where(i)}`, icon: 'lucide-refresh-cw', ctx: { project: i.project, host: i.host } })
     return out
   }),
 )
@@ -81,23 +83,24 @@ function select(value) {
         </CommandPaletteItem>
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Instances">
-        <CommandPaletteItem v-for="i in instances" :key="i.project" :value="{ to: `/instances/${i.project}` }">
+        <CommandPaletteItem v-for="i in instances" :key="i.key" :value="{ to: instancePath(i) }" :keywords="i.host ? [hostName(i.host)] : []">
           <template #prefix><StatusDot :token="i.overall" class="mr-2" /></template>
           {{ i.project }}
+          <template v-if="i.host" #suffix><span class="text-xs text-ink-gray-5">{{ hostName(i.host) }}</span></template>
         </CommandPaletteItem>
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Benches">
-        <CommandPaletteItem v-for="{ p, b } in benches" :key="p + b.index" :value="{ to: `/instances/${p}/benches/${b.index}` }" :keywords="[b.path]">
+        <CommandPaletteItem v-for="{ i, p, b } in benches" :key="i.key + b.index" :value="{ to: benchPath(i, b.index) }" :keywords="[b.path]">
           <template #prefix><span class="lucide-layers mr-1 size-4 text-ink-gray-6" aria-hidden="true" /></template>
           {{ benchName(b) }}
-          <template #suffix><span class="text-xs text-ink-gray-5">{{ p }} #{{ b.index }}</span></template>
+          <template #suffix><span class="text-xs text-ink-gray-5">{{ p }}{{ where(i) }} #{{ b.index }}</span></template>
         </CommandPaletteItem>
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Sites">
-        <CommandPaletteItem v-for="{ p, b, s } in sites" :key="p + b.index + s" :value="{ to: `/instances/${p}/benches/${b.index}/sites/${s}` }">
+        <CommandPaletteItem v-for="{ i, b, s } in sites" :key="i.key + b.index + s" :value="{ to: sitePath(i, b.index, s) }">
           <template #prefix><span class="lucide-globe mr-1 size-4 text-ink-gray-6" aria-hidden="true" /></template>
           {{ s }}
-          <template #suffix><span class="text-xs text-ink-gray-5">{{ benchName(b) }}</span></template>
+          <template #suffix><span class="text-xs text-ink-gray-5">{{ benchName(b) }}{{ where(i) }}</span></template>
         </CommandPaletteItem>
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Apps, from the cache">
@@ -120,7 +123,7 @@ function select(value) {
         </CommandPaletteItem>
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Commands">
-        <CommandPaletteItem v-for="c in commands" :key="c.id + c.ctx.project" :value="{ action: c.id, ctx: c.ctx }">
+        <CommandPaletteItem v-for="c in commands" :key="c.id + (c.ctx.host || '') + c.ctx.project" :value="{ action: c.id, ctx: c.ctx }">
           <template #prefix><span :class="c.icon" class="mr-1 size-4 text-ink-gray-6" aria-hidden="true" /></template>
           {{ c.label }}
         </CommandPaletteItem>

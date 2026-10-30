@@ -7,7 +7,7 @@ import { Button } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import AppsGrid from '../components/AppsGrid.vue'
 import HostIcon from '../components/HostIcon.vue'
-import { setFocus, instances } from '../data/fleet'
+import { setFocus, localInstances } from '../data/fleet'
 import { apps, catalog, scanCatalog, activeSources, ago, hostLabel } from '../data/catalog'
 import { can } from '../data/session'
 
@@ -18,7 +18,7 @@ const counts = computed(() => ({
   remote: apps.value.filter((a) => a.state === 'remote').length,
   logos: apps.value.filter((a) => a.logo).length,
 }))
-const running = computed(() => instances.value.filter((i) => i.container_running).length)
+const running = computed(() => localInstances.value.filter((i) => i.container_running).length)
 </script>
 
 <template>
@@ -32,7 +32,7 @@ const running = computed(() => instances.value.filter((i) => i.container_running
       <div class="bg-surface-elevation-1 px-4 py-3">
         <div class="text-sm text-ink-gray-5">Installed and in a repo</div>
         <div class="mt-1 text-2xl font-semibold tabular-nums text-ink-gray-9">{{ catalog.data ? counts.both : '…' }}</div>
-        <div class="mt-0.5 text-xs text-ink-gray-5">on {{ instances.length }} {{ instances.length === 1 ? 'instance' : 'instances' }}, {{ running }} running</div>
+        <div class="mt-0.5 text-xs text-ink-gray-5">on {{ localInstances.length }} {{ localInstances.length === 1 ? 'instance' : 'instances' }}, {{ running }} running</div>
       </div>
       <div class="bg-surface-elevation-1 px-4 py-3">
         <div class="text-sm text-ink-gray-5">Only on a bench</div>

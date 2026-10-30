@@ -2,7 +2,7 @@
 // One site's backups (phase 1 of the Backups spec): the last-good badge, every set
 // in the store for this site with date, contents, size, reason and verdict, Back up
 // now, and per set Restore / Verify / Delete. Restore opens the wizard.
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { Badge, Button, Dropdown, Tooltip } from 'frappe-ui'
 import { backups, loadBackups, setsFor, freshness, FRESH_DOT, FRESH_TEXT, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
 import { createJob } from '../data/jobs'
@@ -14,22 +14,27 @@ import { can } from '../data/session'
 
 const props = defineProps({
   project: { type: String, required: true },
+  host: { type: String, default: null }, // a remote host's site: its own store, through the hub
   bench: { type: String, required: true },
   benchPath: { type: String, required: true },
   site: { type: String, required: true },
   running: { type: Boolean, default: false },
   compact: { type: Boolean, default: false },
 })
-onMounted(() => { if (!backups.data) loadBackups() })
-const sets = computed(() => setsFor(props.project, props.site))
-const fresh = computed(() => freshness(props.project, props.site))
-const drill = computed(() => lastDrill(props.project, props.site))
+function ensureLoaded() {
+  if (props.host ? !backups.remote[props.host] : !backups.data) loadBackups({ host: props.host })
+}
+onMounted(ensureLoaded)
+watch(() => props.host, ensureLoaded)
+const sets = computed(() => setsFor(props.project, props.site, props.host))
+const fresh = computed(() => freshness(props.project, props.site, props.host))
+const drill = computed(() => lastDrill(props.project, props.site, props.host))
 async function runDrill() {
-  const record = await createJob({ verb: 'restore-drill', target: { project: props.project, bench: props.bench, site: props.site }, args: {} })
-  trackJob(record.id)
+  const record = await createJob({ verb: 'restore-drill', target: { project: props.project, bench: props.bench, site: props.site }, args: {} }, props.host)
+  trackJob(record.id, props.host)
 }
 function backupNow() {
-  openJob('backup', { project: props.project, bench: props.bench, site: props.site, args: { store: true, with_files: true, reason: 'manual' } })
+  openJob('backup', { project: props.project, host: props.host, bench: props.bench, site: props.site, args: { store: true, with_files: true, reason: 'manual' } })
 }
 </script>
 
@@ -56,7 +61,7 @@ function backupNow() {
         <span class="tabular-nums text-ink-gray-7 max-md:hidden">{{ sizeText(s.size) }}</span>
         <span class="truncate text-ink-gray-7 max-md:hidden" :title="s.note || ''">{{ REASON_LABEL[s.reason] || s.reason }}<span v-if="s.note" class="text-ink-gray-4"> · {{ s.note }}</span></span>
         <span class="max-md:hidden"><Tooltip :text="s.checks.map((c) => `${c.name}: ${c.ok ? 'ok' : 'FAILED'} (${c.detail})`).join('\n') + (s.verified ? '' : '\nKept until you delete it by hand; retention never removes it.')"><span v-if="s.verified" class="inline-flex items-center gap-1 text-xs text-ink-green-6"><span class="lucide-shield-check size-3.5" aria-hidden="true" />pass</span><Badge v-else theme="red" variant="subtle" label="Unverified" /></Tooltip></span>
-        <Dropdown v-if="can('operator')" :options="setMenu(s)" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Set actions" /></Dropdown>
+        <Dropdown v-if="can('operator')" :options="setMenu(s, host)" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Set actions" /></Dropdown>
       </div>
     </div>
   </div>

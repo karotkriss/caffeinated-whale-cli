@@ -9,7 +9,7 @@
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { transferDialog } from '../data/transfer'
-import { instances, details, loadDetail } from '../data/fleet'
+import { localInstances, details, loadDetail } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
@@ -47,7 +47,7 @@ watch(() => d.open, (open) => {
   if (d.project) loadDetail(d.project)
 })
 watch(targetProject, (p) => { if (p) loadDetail(p) })
-const projectOptions = computed(() => instances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped)`, value: i.project })))
+const projectOptions = computed(() => localInstances.value.map((i) => ({ label: i.container_running ? i.project : `${i.project} (stopped)`, value: i.project })))
 const sourceBench = computed(() => (details[d.project]?.data?.benches || []).find((b) => String(b.index) === String(d.bench)))
 const benches = computed(() => details[targetProject.value]?.data?.benches || [])
 const benchOptions = computed(() => benches.value.map((b) => ({ label: `${b.label || b.path.split('/').pop()} (#${b.index}) · ${b.sites.length} sites`, value: String(b.index) })))
