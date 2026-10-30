@@ -1,19 +1,20 @@
 """``cwcli self-update`` human frontend over ``core.version.check``.
 
 Covers the honest exit-code matrix (dev/uvx no-op, up-to-date, upgrade run,
-subprocess failure, network failure) and ``--check`` vs the default run. The
-core lookup and the upgrade subprocess are faked; no network, no real upgrade.
+upgrade failure, a service that does not come back, network failure) and
+``--check`` vs the default run. The core lookup, the upgrade and the service
+restarts are faked; no network, no real upgrade, no process is touched.
 """
-
-import subprocess
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import self_update as su_mod
+from caffeinated_whale_cli.core import self_update as core_self_update
 from caffeinated_whale_cli.core import version as core_version
 from caffeinated_whale_cli.core.envelope import Message, Result, Status
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 runner = CliRunner()
 
@@ -43,15 +44,22 @@ def _patch_check(monkeypatch, info, *, warnings=None):
 
 @pytest.fixture()
 def no_real_subprocess(monkeypatch):
-    """Fail loudly if a test would actually shell out."""
+    """Record each upgrade the command asks the core for; nothing really runs."""
     calls = []
 
-    def fake_run(cmd, *a, **kw):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+    def fake_upgrade(info, *, on_output=lambda _l: None):
+        calls.append(info.upgrade_command)
+        on_output("Updated caffeinated-whale-cli\n")
+        return info.latest
 
-    monkeypatch.setattr(su_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(core_self_update, "upgrade", fake_upgrade)
+    monkeypatch.setattr(core_self_update, "running_services", lambda **kw: [])
+    monkeypatch.setattr(core_self_update, "restart", lambda services, version: [])
     return calls
+
+
+def _service(kind="ui", name="web UI (me, port 8765)"):
+    return core_self_update.Service(kind=kind, name=name, pid=4242)
 
 
 class TestDevAndUvxNoOp:
@@ -107,26 +115,79 @@ class TestDefaultRun:
         assert result.exit_code == 0
         assert no_real_subprocess == [["uv", "tool", "upgrade", "caffeinated-whale-cli"]]
 
-    def test_upgrade_subprocess_failure_exit_1(self, monkeypatch):
+    def test_upgrade_failure_exit_1_and_nothing_restarted(self, monkeypatch, no_real_subprocess):
         _patch_check(monkeypatch, _info())
+        restarted = []
+        monkeypatch.setattr(core_self_update, "running_services", lambda **kw: [_service()])
         monkeypatch.setattr(
-            su_mod.subprocess,
-            "run",
-            lambda cmd, *a, **kw: subprocess.CompletedProcess(cmd, 3),
+            core_self_update, "restart", lambda services, version: restarted.append(services)
+        )
+
+        def failing_upgrade(info, *, on_output=lambda _l: None):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "self_update.failed",
+                "The upgrade failed (uv exited 2: no space left). cwcli 0.35.0 is still installed",
+            )
+
+        monkeypatch.setattr(core_self_update, "upgrade", failing_upgrade)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 1
+        assert "no space left" in result.output
+        assert restarted == []  # a failed upgrade restarts nothing
+
+    def test_not_writable_names_sudo(self, monkeypatch, no_real_subprocess):
+        _patch_check(monkeypatch, _info())
+
+        def refused(info, *, on_output=lambda _l: None):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "self_update.not_writable",
+                "The shared cwcli install in /opt/x is not writable by this user",
+                hint="run `sudo cwcli self-update`",
+            )
+
+        monkeypatch.setattr(core_self_update, "upgrade", refused)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 1
+        assert "sudo cwcli self-update" in result.output
+
+    def test_services_running_before_are_restarted_and_reported(
+        self, monkeypatch, no_real_subprocess
+    ):
+        _patch_check(monkeypatch, _info())
+        seen = {}
+        monkeypatch.setattr(core_self_update, "running_services", lambda **kw: [_service()])
+
+        def fake_restart(services, version):
+            seen["args"] = (services, version)
+            return [
+                core_self_update.ServiceRestart(
+                    kind="ui", name=services[0].name, ok=True, pid=None, detail="running"
+                )
+            ]
+
+        monkeypatch.setattr(core_self_update, "restart", fake_restart)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert seen["args"] == ([_service()], "0.37.0")
+        assert "web UI (me, port 8765): running" in result.stdout
+
+    def test_a_service_that_does_not_come_back_exits_1(self, monkeypatch, no_real_subprocess):
+        _patch_check(monkeypatch, _info())
+        monkeypatch.setattr(core_self_update, "running_services", lambda **kw: [_service()])
+        monkeypatch.setattr(
+            core_self_update,
+            "restart",
+            lambda services, version: [
+                core_self_update.ServiceRestart(
+                    kind="ui", name="web UI", ok=False, pid=None, detail="did not start"
+                )
+            ],
         )
         result = runner.invoke(app, [])
         assert result.exit_code == 1
-
-    def test_upgrade_binary_missing_exit_1(self, monkeypatch):
-        _patch_check(monkeypatch, _info())
-
-        def fake_run(cmd, *a, **kw):
-            raise FileNotFoundError(cmd[0])
-
-        monkeypatch.setattr(su_mod.subprocess, "run", fake_run)
-        result = runner.invoke(app, [])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
+        assert "did not start" in result.output
 
     def test_network_failure_blocking_upgrade_exit_1(self, monkeypatch, no_real_subprocess):
         _patch_check(

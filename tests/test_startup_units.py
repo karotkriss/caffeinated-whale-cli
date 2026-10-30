@@ -277,6 +277,45 @@ def test_install_system_unit_writes_a_service_account_unit(home, tmp_path, monke
 def test_install_system_unit_refuses_off_linux(monkeypatch):
     monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
     with pytest.raises(OSError):
-        startup.install_system_unit(
-            startup.CRED_BRIDGE, user="cwcli", group="cwcli", pid_file="/x"
-        )
+        startup.install_system_unit(startup.CRED_BRIDGE, user="cwcli", group="cwcli", pid_file="/x")
+
+
+def test_scheduler_system_unit_is_simple_because_the_daemon_stays_in_the_foreground(
+    home, tmp_path, monkeypatch
+):
+    """`cwcli schedule daemon` never forks, so a Type=forking unit waits for a fork
+    that never comes, kills the scheduler at the start timeout and loops."""
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    (tmp_path / "systemd").mkdir()
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+
+    startup.install_system_unit(startup.SCHEDULER, user="cwcli", group="cwcli", pid_file="/p")
+    service = _service(startup.system_unit_path(startup.SCHEDULER))
+    assert service["Type"] == "simple"
+    assert "PIDFile" not in service
+    assert service["ExecStart"] == '"/usr/local/bin/cwcli" schedule daemon'
+
+
+def test_repair_system_unit_fixes_an_old_forking_scheduler_unit(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    old = (
+        "[Service]\nType=forking\nUser=cwcli\nGroup=cwcli\nPIDFile=/var/lib/cwcli/x.pid\n"
+        'ExecStart="/usr/local/bin/cwcli" schedule daemon\n'
+    )
+    path = startup.system_unit_path(startup.SCHEDULER)
+    path.write_text(old)
+
+    assert startup.repair_system_unit(startup.SCHEDULER) is True
+    service = _service(path)
+    assert service["Type"] == "simple"
+    assert "PIDFile" not in service
+    assert service["User"] == "cwcli"
+    assert startup.repair_system_unit(startup.SCHEDULER) is False  # already right
+
+
+def test_repair_system_unit_leaves_forking_units_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    path = startup.system_unit_path(startup.CRED_BRIDGE)
+    path.write_text("[Service]\nType=forking\nPIDFile=/p\n")
+    assert startup.repair_system_unit(startup.CRED_BRIDGE) is False
+    assert "Type=forking" in path.read_text()

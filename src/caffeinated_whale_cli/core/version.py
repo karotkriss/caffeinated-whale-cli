@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -354,7 +355,9 @@ def _detect_method() -> tuple[str, str | None]:
 
         dist = importlib.metadata.distribution(DIST)
         location = str(dist.locate_file("")).replace("\\", "/")
-        if "/uv/tools/" in location:
+        if "/uv/tools/" in location or tool_env() is not None:
+            # A uv tool env is identified by its receipt, wherever UV_TOOL_DIR put
+            # it (a shared install in /opt has no "/uv/tools/" in its path).
             return "uv", None
         if "/uv/" in location:
             # Under uv's dir but not a persistent tool -> an ephemeral `uvx` run;
@@ -363,6 +366,21 @@ def _detect_method() -> tuple[str, str | None]:
     except Exception:
         pass
     return "pip", None
+
+
+def install_root() -> Path:
+    """The environment the running cwcli is installed in (a uv tool env or a venv)."""
+    return Path(sys.prefix)
+
+
+def tool_env() -> Path | None:
+    """The uv tool environment the running cwcli lives in, or None.
+
+    uv writes ``uv-receipt.toml`` at the root of every tool environment (never in
+    an ephemeral ``uvx`` one), so the receipt, not the path, says "uv tool".
+    """
+    root = install_root()
+    return root if (root / "uv-receipt.toml").is_file() else None
 
 
 def _url_to_path(url: str) -> str | None:

@@ -30,6 +30,10 @@ class BootUnit(NamedTuple):
     task_name: str  # Windows Task Scheduler task name
     description: str  # human description (systemd Description=)
     start_args: tuple[str, ...]  # cwcli argv that starts the daemon
+    # True when start_args backgrounds the daemon and returns (``config <group>
+    # start``); False when it runs in the foreground (``schedule daemon``), which a
+    # systemd unit must start as Type=simple or systemd waits for it forever.
+    forks: bool = True
 
     @property
     def log_stem(self) -> str:
@@ -51,6 +55,7 @@ SCHEDULER = BootUnit(
     task_name="CaffeinatedWhaleCliScheduler",
     description="Caffeinated Whale CLI Scheduler",
     start_args=("schedule", "daemon"),
+    forks=False,
 )
 
 CRED_BRIDGE = BootUnit(
@@ -433,15 +438,15 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
     cwcli_path = get_cwcli_path()
     service_path = system_unit_path(unit)
     # No ExecStop, for the reason given above _write_linux_unit.
+    kind = f"Type=forking\nUser={user}\nGroup={group}\nPIDFile={pid_file}"
+    if not unit.forks:
+        kind = f"Type=simple\nUser={user}\nGroup={group}"
     service_content = f"""[Unit]
 Description={unit.description} (shared)
 After=network.target docker.service
 
 [Service]
-Type=forking
-User={user}
-Group={group}
-PIDFile={pid_file}
+{kind}
 ExecStart="{cwcli_path}" {" ".join(unit.start_args)}
 Restart=on-failure
 RestartSec=10
@@ -462,3 +467,27 @@ WantedBy=multi-user.target
     if result.returncode != 0 and result.stderr:
         print(f"systemctl enable failed: {result.stderr}", file=sys.stderr)
     return result.returncode == 0
+
+
+def repair_system_unit(unit: BootUnit) -> bool:
+    """Make an installed system unit for a foreground daemon ``Type=simple``.
+
+    Units written before :attr:`BootUnit.forks` existed start the scheduler as
+    ``Type=forking`` with a pid file nothing writes, so systemd waits for a fork
+    that never comes, kills the scheduler at the start timeout, and restarts it in
+    a loop. Returns True when the file was rewritten (the caller reloads systemd);
+    a forking unit, a missing file, or an already-correct one is left alone.
+    """
+    if unit.forks:
+        return False
+    path = system_unit_path(unit)
+    try:
+        original = path.read_text()
+    except OSError:
+        return False
+    lines = [line for line in original.splitlines(keepends=True) if not line.startswith("PIDFile=")]
+    repaired = "".join(lines).replace("Type=forking", "Type=simple")
+    if repaired == original:
+        return False
+    path.write_text(repaired)
+    return True
