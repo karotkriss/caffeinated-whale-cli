@@ -42,7 +42,13 @@ from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .update import FIX_BRANCHES_HELP, FORCE_HELP, NO_PREFLIGHT_HELP, run_app_update
+from .update import (
+    FIX_BRANCHES_HELP,
+    FORCE_HELP,
+    NO_PREFLIGHT_HELP,
+    SKIP_REQUIREMENTS_HELP,
+    run_app_update,
+)
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
 app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
@@ -628,6 +634,9 @@ def update_apps(
     skip_maintenance: bool = typer.Option(
         False, "--skip-maintenance", help="Skip maintenance mode during update."
     ),
+    skip_requirements: bool = typer.Option(
+        False, "--skip-requirements", help=SKIP_REQUIREMENTS_HELP
+    ),
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
@@ -654,6 +663,11 @@ def update_apps(
     --no-preflight does not skip this check. This is what the deprecated
     'cwcli update' now delegates to.
 
+    Before any site migrates, every update reinstalls the bench's Python requirements
+    for every app ('bench setup requirements --python'), so a package the new code
+    needs is installed even when it comes from another app than the one updated;
+    --skip-requirements opts out and the output says so.
+
     For any other app, --force hard-resets an app whose git update hits a CONFLICT
     (local changes) to its remote tracking branch, discarding those local changes,
     so the update completes; without --force such a conflict fails safely and
@@ -669,6 +683,7 @@ def update_apps(
         clear_website_cache=clear_website_cache,
         build=build,
         skip_maintenance=skip_maintenance,
+        skip_requirements=skip_requirements,
         no_recache=no_recache,
         force=force,
         no_preflight=no_preflight,

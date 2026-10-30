@@ -1898,6 +1898,14 @@ def axi_apps_update(
     skip_maintenance: bool = typer.Option(
         False, "--skip-maintenance", help="Skip maintenance mode during update."
     ),
+    skip_requirements: bool = typer.Option(
+        False,
+        "--skip-requirements",
+        help=(
+            "Do not run `bench setup requirements` before migrating; the report then "
+            "says `requirements: skipped`."
+        ),
+    ),
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
@@ -1946,6 +1954,12 @@ def axi_apps_update(
     starting a container is UI-coupled and the core stays UI-pure about it, so
     an agent composes `cwcli axi start` then this verb.
 
+    Before any site migrates, the bench's Python requirements are reinstalled for
+    every app (`bench setup requirements --python`), so a package the new code needs is
+    installed even when another app than the updated one declares it. `requirements`
+    reports `ok`/`failed`/`unknown`, or `skipped` under `--skip-requirements`; a
+    failed or unknown step migrates no site and exits 1.
+
     There is no `axi update`: the deprecated `cwcli update` spelling is not worth an
     agent-facing verb.
 
@@ -1979,6 +1993,7 @@ def axi_apps_update(
             clear_website_cache=clear_website_cache,
             build=build,
             skip_maintenance=skip_maintenance,
+            skip_requirements=skip_requirements,
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,

@@ -114,8 +114,10 @@ class UpdateReport:
     failed_cache_clears: list[str]
     failed_website_cache_clears: list[str]
     failed_maintenance_disable: list[str]  # STUCK: the site is DOWN, needs manual action
-    # The core update's `bench setup requirements`: "ok" | "failed" | "unknown", None
-    # when it did not run. Not ok means no site was migrated onto the new code.
+    # The bench's requirements step before any migrate (`bench setup requirements`,
+    # `--python` for a non-core update): "ok" | "failed" | "unknown" | "skipped"
+    # (--skip-requirements), None when no app was updated so it never ran. Failed or
+    # unknown means no site was migrated onto the new code.
     requirements: str | None
     # Sites discovery could not open (a rejected database login, a broken config):
     # the code moved under them and they were NOT migrated, so the run is not ok.
@@ -609,7 +611,7 @@ def _build_report(
         or failed_builds
         or unknown_builds
         or unreadable_sites
-        or requirements not in (None, "ok")
+        or requirements in ("failed", "unknown")
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
@@ -1028,6 +1030,7 @@ def update(
     clear_website_cache: bool = False,
     build: bool = False,
     skip_maintenance: bool = False,
+    skip_requirements: bool = False,
     no_recache: bool = False,
     force: bool = False,
     preflight: bool = True,
@@ -1036,6 +1039,13 @@ def update(
     on_event: OnEvent | None = None,
 ) -> Result[UpdateReport]:
     """Update ``apps`` and migrate every affected site. See the module docstring.
+
+    After the pull and before any site migrates, the bench's Python requirements are
+    reinstalled for EVERY app (``bench setup requirements --python``; the core path
+    runs the full ``bench setup requirements``), because a dependency the new code
+    needs can come from another app than the one updated - a frappe that gained
+    ``pyarrow`` fails the migrate of a site whose update named only a custom app.
+    ``skip_requirements`` opts out; the report then says ``requirements="skipped"``.
 
     ``fix_branches`` (the core path) lets the preflight SWITCH an app whose declared
     frappe-dependencies the bench cannot satisfy to the matching ``version-N`` branch
@@ -1144,6 +1154,7 @@ def update(
             clear_website_cache=clear_website_cache,
             build=build,
             skip_maintenance=skip_maintenance,
+            skip_requirements=skip_requirements,
             no_recache=no_recache,
             force=force,
             core_reset=core_reset,
@@ -1167,6 +1178,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     skip_maintenance: bool,
     no_recache: bool,
     force: bool,
+    skip_requirements: bool = False,
     core_reset: bool = False,
     preflight_findings: list[PreflightFinding] | None = None,
     discarding: list[str] | None = None,
@@ -1191,7 +1203,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     sites_to_migrate: list[str] = []  # the fan-out set; empty until we get that far
     app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
     unreadable_sites: list[str] = []  # could not be opened, so never discovered or migrated
-    requirements: str | None = None  # the core update's requirements step, when it ran
+    requirements: str | None = None  # the requirements step's outcome, when it was reached
     resync: supervision.ResyncOutcome | None = None
     aborted = False
     # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
@@ -1334,37 +1346,49 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     failed_apps.remove(app)
                     force_reset_apps.append(app)
 
-        if core_reset and any(a not in failed_apps and a not in unknown_apps for a in apps):
-            # New core code wants its new pins before any site migrates on it
-            # (bench's own update reinstalls requirements at this point too). A
-            # failure here migrates no site: migrating against half-installed
-            # dependencies is the one thing worse than not migrating.
-            requirements = _run_step(
-                frappe_container,
-                "bench setup requirements",
-                workdir=bench_path,
-                phase="requirements",
-                item="bench",
-                index=1,
-                total=1,
-                emit=emit,
-                warnings=warnings,
-                failed=[],
-                unknown=[],
-            )
-            if requirements != "ok":
+        if any(a not in failed_apps and a not in unknown_apps for a in apps):
+            # New code wants its new pins before any site migrates on it (bench's own
+            # update reinstalls requirements at this point too). For EVERY app on the
+            # bench, not only the updated ones: the new package can come from another
+            # app (a frappe that gained pyarrow failed a custom app's migrate on the
+            # captain's test server). A failure here migrates no site: migrating
+            # against half-installed dependencies is worse than not migrating.
+            if skip_requirements:
+                requirements = "skipped"
+                skipped_note = (
+                    "Skipped bench setup requirements (--skip-requirements): a Python "
+                    "package the updated code needs may be missing when the sites migrate."
+                )
+                warnings.append(Message("requirements.skipped", skipped_note))
+                emit(UpdateStepEnd(phase="requirements_skipped", message=skipped_note))
+            else:
+                requirements = _run_step(
+                    frappe_container,
+                    # The core path keeps the full step (Node too) it always ran.
+                    "bench setup requirements" + ("" if core_reset else " --python"),
+                    workdir=bench_path,
+                    phase="requirements",
+                    item="bench",
+                    index=1,
+                    total=1,
+                    emit=emit,
+                    warnings=warnings,
+                    failed=[],
+                    unknown=[],
+                )
+            if requirements in ("failed", "unknown"):
                 warnings.append(
                     Message(
                         "requirements.failed",
                         "bench setup requirements did not finish, so no site was migrated "
-                        "onto the new core code; its own output names the cause.",
+                        "onto the new code; its own output names the cause.",
                     )
                 )
 
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
         skipped = set(failed_apps) | set(unknown_apps)
-        if requirements not in (None, "ok"):
+        if requirements in ("failed", "unknown"):
             skipped = set(apps)
 
         # BUG-10: the pull landed on whatever `apps/<app>` physically resolves to;

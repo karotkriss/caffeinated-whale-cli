@@ -103,6 +103,7 @@ function next() {
             <Checkbox v-model="v.clear_cache" label="Clear cache" />
             <Checkbox v-model="v.clear_website_cache" label="Clear website cache" />
             <Checkbox v-model="v.skip_maintenance" label="Skip maintenance mode" />
+            <Checkbox v-model="v.skip_requirements" label="Skip reinstalling Python requirements before migrating" />
             <Checkbox v-if="can('admin')" v-model="v.force" label="Force: discard uncommitted and unpushed app work, re-own app repos" />
             <Checkbox v-model="v.fix_branches" label="Switch apps whose dependencies do not fit this bench to the matching version branch first" />
           </div>

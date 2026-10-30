@@ -105,6 +105,61 @@ def _remove_app_source(inst, *, required: bool = True) -> None:
         assert code == 0, out
 
 
+# A pure-Python package no Frappe bench ships, declared as a NEW frappe dependency.
+_NEW_DEP = "cowsay"
+_NEW_DEP_SPEC = "cowsay~=6.1"
+_PROBE_PATCH = "frappe.patches.cwe2e_requirements_probe"
+
+
+@contextmanager
+def _frappe_gains_a_dependency(inst):
+    """Reproduce the captain's test-server failure on the shared bench: the bench's
+    frappe code moved to a version needing a package the venv lacks (there it was
+    ``pyarrow``), and an update of ANOTHER app then migrates.
+
+    frappe declares the package in ``pyproject.toml`` and a new pending patch imports
+    it, so ``bench migrate`` dies with ``ModuleNotFoundError`` unless the update
+    reinstalled the whole bench's requirements first. A patch module is used rather
+    than an edit to a loaded module because ``bench serve`` reloads on changes to
+    modules it already imported; a new file is invisible to it. Everything is put
+    back in the ``finally``: both files, the package, and the patch's log row.
+    """
+    frappe_dir = f"{inst.bench}/apps/frappe"
+    py = f"{inst.bench}/env/bin/python"
+    edit = (
+        "import pathlib\n"
+        f"p = pathlib.Path('{frappe_dir}/pyproject.toml')\n"
+        "s = p.read_text()\n"
+        "assert 'dependencies = [' in s\n"
+        f"p.write_text(s.replace('dependencies = [', 'dependencies = [\\n    \"{_NEW_DEP_SPEC}\",', 1))\n"
+    )
+    code, out = harness.exec_in_frappe(
+        inst.name,
+        f"cd {frappe_dir} && cp pyproject.toml pyproject.toml.cwe2e-bak && "
+        "cp frappe/patches.txt frappe/patches.txt.cwe2e-bak && "
+        f"python3 -c {shlex.quote(edit)} && "
+        f"printf 'import {_NEW_DEP}  # noqa: F401\\n\\n\\ndef execute():\\n    pass\\n' "
+        "> frappe/patches/cwe2e_requirements_probe.py && "
+        f"printf '\\n{_PROBE_PATCH}\\n' >> frappe/patches.txt",
+    )
+    try:
+        assert code == 0, f"could not stage frappe's new dependency: {out}"
+        code, out = harness.exec_in_frappe(inst.name, f"{py} -c 'import {_NEW_DEP}'")
+        assert code != 0, f"{_NEW_DEP} is already installed, so the leg proves nothing: {out}"
+        yield
+    finally:
+        harness.exec_in_frappe(
+            inst.name,
+            f"cd {frappe_dir} && mv -f pyproject.toml.cwe2e-bak pyproject.toml; "
+            "mv -f frappe/patches.txt.cwe2e-bak frappe/patches.txt; "
+            "rm -f frappe/patches/cwe2e_requirements_probe.py; "
+            f"{py} -m pip uninstall -y {_NEW_DEP} >/dev/null 2>&1 || "
+            f"uv pip uninstall --python {py} {_NEW_DEP} >/dev/null 2>&1; "
+            f"cd {inst.bench} && bench --site {inst.site} execute frappe.db.delete "
+            f"--args {shlex.quote(json.dumps(['Patch Log', {'patch': _PROBE_PATCH}]))}",
+        )
+
+
 def _assert_resynchronised(
     inst, before: dict[str, int], *, verb: str, watcher_quiesced: bool = False
 ) -> dict[str, int]:
@@ -197,8 +252,17 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
         # --- update: the resync has to land AFTER maintenance mode is disabled, or
         # the site answers 503 and the proof can never be obtained. That ordering is
         # invisible to a mocked probe and is the whole reason this leg is real.
-        update = harness.run_cwcli("axi", "apps", "update", inst.name, _APP)
-        assert update.returncode == 0, update.stdout + update.stderr
+        # It runs while frappe needs a package the venv lacks: the update must
+        # reinstall the WHOLE bench's requirements (not only payments') before the
+        # migrate, or that migrate fails with ModuleNotFoundError.
+        with _frappe_gains_a_dependency(inst):
+            update = harness.run_cwcli("axi", "apps", "update", inst.name, _APP)
+            assert update.returncode == 0, update.stdout + update.stderr
+            assert "requirements: ok" in update.stdout
+            code, out = harness.exec_in_frappe(
+                inst.name, f"{inst.bench}/env/bin/python -c 'import {_NEW_DEP}'"
+            )
+            assert code == 0, f"the update did not install frappe's new dependency: {out}"
         assert "restarted_processes" in update.stdout
         assert "unserved_sites" in update.stdout
         assert "resync_error: null" in update.stdout

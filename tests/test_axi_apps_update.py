@@ -39,7 +39,7 @@ class _NoisyContainer(FakeFrappeContainer):
         # fail_on still wins: the base fake owns failure, this only adds output.
         if not any(sub in cmd_str for sub in self.fail_on) and (
             "migrate" in cmd_str
-            or cmd_str in ("git pull", "bench setup requirements")
+            or cmd_str in ("git pull", "bench setup requirements", "bench setup requirements --python")
             or cmd_str.startswith(("git fetch", "git reset --hard"))
         ):
             self.calls.append(cmd_str)
@@ -80,6 +80,7 @@ def _json_update(**kwargs):
         clear_website_cache=kwargs.pop("clear_website_cache", False),
         build=kwargs.pop("build", False),
         skip_maintenance=kwargs.pop("skip_maintenance", False),
+        skip_requirements=kwargs.pop("skip_requirements", False),
         no_recache=kwargs.pop("no_recache", True),
         force=kwargs.pop("force", False),
         no_preflight=kwargs.pop("no_preflight", False),
@@ -166,6 +167,7 @@ def _axi_update(**kwargs):
         clear_website_cache=False,
         build=False,
         skip_maintenance=False,
+        skip_requirements=kwargs.pop("skip_requirements", False),
         no_recache=True,
         force=kwargs.pop("force", False),
         no_preflight=kwargs.pop("no_preflight", False),
@@ -485,3 +487,66 @@ class TestPreflightOnTheStructuredSurfaces:
 
         assert calls == [("proj", True)]
         assert json.loads(capsys.readouterr().out)["preflight"] == []
+
+
+# ------------------------------------------------------ --skip-requirements opt-out
+
+
+class TestSkipRequirements:
+    """The requirements step runs by default before any migrate; --skip-requirements
+    opts out on both structured surfaces and the document says it was skipped."""
+
+    def test_json_reports_the_requirements_step_by_default(self, wired, capsys):
+        _json_update()
+
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["requirements"] == "ok"
+        assert "bench setup requirements --python" in wired.calls
+
+    def test_json_says_skipped_and_still_exits_zero(self, wired, capsys):
+        _json_update(skip_requirements=True)
+
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["requirements"] == "skipped" and doc["ok"] is True
+        assert not any("setup requirements" in str(c) for c in wired.calls)
+
+    def test_axi_says_skipped(self, wired, capsys):
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(skip_requirements=True)
+
+        assert exc.value.exit_code == 0
+        out = capsys.readouterr().out
+        assert "requirements: skipped" in out and "ok: true" in out
+
+    def test_axi_failed_requirements_exit_one(self, wired, capsys):
+        wired.fail_on = ["bench setup requirements"]
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update()
+
+        assert exc.value.exit_code == 1
+        assert "requirements: failed" in capsys.readouterr().out
+
+    def test_human_output_says_the_step_was_skipped(self, wired, capsys):
+        apps_mod.update_apps(
+            "proj",
+            ["payments"],
+            bench=None,
+            bench_path=BENCH,
+            sites=None,
+            clear_cache=False,
+            clear_website_cache=False,
+            build=False,
+            skip_maintenance=False,
+            skip_requirements=True,
+            no_recache=True,
+            force=False,
+            no_preflight=False,
+            fix_branches=False,
+            json_output=False,
+            yes=True,
+            verbose=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "Skipped bench setup requirements (--skip-requirements)" in out

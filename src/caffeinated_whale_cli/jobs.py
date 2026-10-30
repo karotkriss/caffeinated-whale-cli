@@ -1729,6 +1729,7 @@ def _dispatch(
             clear_website_cache=bool(args.get("clear_website_cache")),
             build=bool(args.get("build")),
             skip_maintenance=bool(args.get("skip_maintenance")),
+            skip_requirements=bool(args.get("skip_requirements")),
             no_recache=False,
             force=args.get("force") is True,
             preflight=not bool(args.get("no_preflight")),
