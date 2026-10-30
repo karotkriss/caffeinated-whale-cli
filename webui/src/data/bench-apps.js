@@ -16,9 +16,10 @@ export function splitBenchApps({ catalog = [], benchApps = [], project = null, b
 }
 
 // The bench's app list is LIVE only when inspect read the running bench ('partial' or
-// 'full'); 'cache' is what cwcli remembered (a stopped instance, or a failed read).
+// 'full'); 'cache' is what cwcli remembered (a stopped instance, or a failed read), and
+// so is an earlier answer kept after the latest read failed.
 export function inventoryState(detail) {
   if (!detail || detail.loading) return 'reading'
   if (!detail.data) return 'unknown'
-  return detail.data.served_from === 'cache' ? 'remembered' : 'live'
+  return detail.error || detail.data.served_from === 'cache' ? 'remembered' : 'live'
 }

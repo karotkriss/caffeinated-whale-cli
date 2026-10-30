@@ -611,12 +611,19 @@ def _refuse_if_installed(
     Runs BEFORE ``bench get-app``, so a refused install fetches nothing and leaves
     the bench exactly as it found it.
 
-    The name compared is :func:`derive_app_name` of the target, which is what
-    ``install-app`` would be handed when the ``apps/`` before/after diff is
-    inconclusive. When that derivation is wrong for an exotic URL the check simply
-    does not match and the install proceeds to bench's own behaviour - it can miss a
-    match, it cannot invent one, so it never refuses an install that was safe.
+    The name compared is the one ``install-app`` would be handed: the bench copy
+    :func:`_bench_copy_of` matches (by remote, so a ``single-window`` repository
+    holding ``single_window`` is checked as ``single_window``), else
+    :func:`derive_app_name` of the target. When that derivation is wrong for an
+    exotic URL the check simply does not match and the install proceeds to bench's
+    own behaviour - it can miss a match, it cannot invent one, so it never refuses an
+    install that was safe.
     """
+    on_bench = set(_available_apps(frappe_container, path)[1])
+    names = [
+        _bench_copy_of(frappe_container, path, target, on_bench) or derive_app_name(target)
+        for target in apps
+    ]
     targets = _target_sites(frappe_container, path, sites)
     for site, (site_apps, cause) in _read_installed_apps(
         frappe_container, path, targets, emit=emit
@@ -633,8 +640,7 @@ def _refuse_if_installed(
                     f"<project> --site {site}'."
                 ),
             )
-        for target in apps:
-            name = derive_app_name(target)
+        for name in names:
             if name in site_apps:
                 raise CwcliError(
                     ErrorKind.CONFLICT,
