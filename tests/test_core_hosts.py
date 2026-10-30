@@ -766,6 +766,20 @@ class TestManager:
         assert [i["project"] for i in off["instances"]] == ["p"] and [j["id"] for j in off["jobs"]] == ["j1"]
         return manager, rec
 
+    def test_turning_the_transport_off_tells_open_pages_the_hosts_instances_are_unknown(self):
+        """resync stops the link without removing the host: with its link state goes its
+        last-known snapshot, marked unknown, so no open tab keeps showing it live."""
+        published = []
+        manager, rec = self._off_after_a_link(published)
+        try:
+            (link_event, view), (snap_event, snap) = published[-2:]
+            assert (link_event, view["state"]) == ("host_link", hosts.TRANSPORT_OFF)
+            assert snap_event == "host_snapshot" and snap["host"] == rec.id and snap["stale"] is True
+            assert [(i["project"], i["overall"]) for i in snap["instances"]] == [("p", "unknown")]
+            assert [j["id"] for j in snap["jobs"]] == ["j1"]
+        finally:
+            manager.stop()
+
     def test_a_host_removed_while_it_has_no_link_is_announced_and_its_last_known_state_dropped(self):
         """With the integration off, or on a group member's web UI, a host has no running
         link; its removal must still reach every page and take its cached state with it."""

@@ -1,8 +1,8 @@
 """What the web UI makes of what a remote host sends, executed under node: the page
 prefills the Add host form from a pairing string (webui/src/data/hosts.js; the daemon
-validates it again), it renders a remote site's icon (webui/src/data/site-icons.js)
-from a URL that remote chose, and a remote host's app row never opens this machine's
-app panel (webui/src/data/app-panel.js).
+validates it again) and counts a quiet host's instances as unknown, it renders a remote
+site's icon (webui/src/data/site-icons.js) from a URL that remote chose, and a remote
+host's app row never opens this machine's app panel (webui/src/data/app-panel.js).
 
 The real modules are imported; only their browser-side imports (vue, the session
 store) are stubbed, the way tests/test_webui_start_gate.py loads the page's data modules."""
@@ -126,3 +126,20 @@ def test_a_remote_hosts_app_row_never_opens_this_machines_app_panel(node):
         "return { remote: remote ?? null, before, open: panel.appPanel.open, app: panel.appPanel.app.name }"
     )
     assert seen == {"remote": None, "before": False, "open": True, "app": "frappe"}
+
+
+def test_the_instances_headline_counts_a_quiet_hosts_instances_as_unknown_never_running(node):
+    """A host that is not readable is carried by its last snapshot, which may still say
+    `container_running: true`; the headline counts those instances as unknown."""
+    counts = node(
+        f"const h = await import({json.dumps((DATA / 'hosts.js').as_uri())})\n"
+        "h.replaceHosts([{ id: 'quiet', name: 'Quiet box', state: 'unreachable', readable: false }, { id: 'live', name: 'Live box', state: 'connected', readable: true }])\n"
+        "return h.runningCounts([\n"
+        "  { project: 'a', host: null, container_running: true },\n"
+        "  { project: 'b', host: null, container_running: false },\n"
+        "  { project: 'c', host: 'live', container_running: true },\n"
+        "  { project: 'd', host: 'quiet', container_running: true },\n"
+        "  { project: 'e', host: 'quiet', container_running: false },\n"
+        "])"
+    )
+    assert counts == {"up": 2, "unknown": 2}

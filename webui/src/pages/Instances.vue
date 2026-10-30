@@ -20,7 +20,7 @@ import { applySetting, settings } from '../data/settings'
 import { menuOption } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { can, session } from '../data/session'
-import { hostList, hasHosts, hostName, hostReadable, linkLook, linkAdvice, openAddHost, checkHost, removeHost, applyHostLink, dropHost, loadHosts } from '../data/hosts'
+import { hostList, hasHosts, hostName, staleInstance, runningCounts, linkLook, linkAdvice, openAddHost, checkHost, removeHost, applyHostLink, dropHost, loadHosts } from '../data/hosts'
 import { openSettings } from '../data/settings-dialog'
 // --- premium layer (see webui/src/premium/): the fleet hero ---
 import { Motion } from 'motion-v'
@@ -38,7 +38,7 @@ onMounted(() => {
 const query = ref('')
 const where = ref('all') // all | local | <host id>
 const activeJobsLabel = computed(() => (activeJobs.value.length ? `${activeJobs.value.length} active ${activeJobs.value.length === 1 ? 'job' : 'jobs'}` : 'no active jobs'))
-const up = computed(() => instances.value.filter((i) => i.container_running).length)
+const counts = computed(() => runningCounts(instances.value))
 // The hero label: a time-of-day greeting by the browser's local clock with the signed-in name.
 const now = useNow({ interval: 60000 })
 const greeting = computed(() => {
@@ -81,7 +81,6 @@ const meta = (i) => {
 }
 // A remote whose link is not readable shows its last snapshot: every instance unknown,
 // with the host's last-seen time instead of a live word.
-const stale = (i) => !!i.host && !hostReadable(i.host)
 const lastSeen = (i) => {
   const h = hostList.value.find((x) => x.id === i.host)
   return h?.last_seen ? `last seen ${ago(h.last_seen * 1000)}` : 'not seen yet'
@@ -138,7 +137,7 @@ const hostMenu = (h) => [
       <Motion as="div" class="relative flex flex-wrap items-end justify-between gap-4 px-5 py-6 sm:px-7 sm:py-8" :initial="{ opacity: 0, transform: effects.reducedMotion ? 'none' : 'translateY(8px)' }" :animate="{ opacity: 1, transform: 'translateY(0px)' }" :transition="{ duration: 0.28, ease: EASE }">
         <div>
           <p class="text-xs font-medium uppercase tracking-wide text-ink-gray-7">{{ greeting }}</p>
-          <h2 class="mt-1 text-3xl font-semibold leading-tight tracking-tight text-ink-gray-9 sm:text-4xl">{{ up }} of {{ instances.length }} {{ instances.length === 1 ? 'instance' : 'instances' }} running</h2>
+          <h2 class="mt-1 text-3xl font-semibold leading-tight tracking-tight text-ink-gray-9 sm:text-4xl">{{ counts.up }} of {{ instances.length }} {{ instances.length === 1 ? 'instance' : 'instances' }} running<template v-if="counts.unknown">, {{ counts.unknown }} unknown</template></h2>
           <p class="mt-1.5 text-base text-ink-gray-7">{{ benchCount }} {{ benchCount === 1 ? 'bench' : 'benches' }} · {{ siteTotal }} {{ siteTotal === 1 ? 'site' : 'sites' }}<template v-if="hasHosts"> · {{ machines }} machines</template> · {{ activeJobsLabel }}</p>
         </div>
       </Motion>
@@ -182,13 +181,13 @@ const hostMenu = (h) => [
     </EmptyState>
     <EmptyState v-else-if="!rows.length" icon="lucide-boxes" title="No instance matches" description="Clear the search or pick another machine." compact />
     <div v-else class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-      <router-link v-for="i in rows" :key="i.key" :to="instancePath(i)" class="group flex items-center gap-3 rounded-6 border border-outline-gray-1 bg-surface-elevation-1 p-3 transition hover:border-outline-gray-3 hover:shadow-sm" :class="stale(i) && 'opacity-70'">
+      <router-link v-for="i in rows" :key="i.key" :to="instancePath(i)" class="group flex items-center gap-3 rounded-6 border border-outline-gray-1 bg-surface-elevation-1 p-3 transition hover:border-outline-gray-3 hover:shadow-sm" :class="staleInstance(i) && 'opacity-70'">
         <span class="flex size-10 shrink-0 items-center justify-center rounded-lg border border-outline-gray-1 bg-surface-gray-1 text-ink-gray-6"><span class="lucide-boxes size-5" aria-hidden="true" /></span>
         <span class="min-w-0 flex-1">
           <span class="flex items-center gap-2">
             <span class="truncate text-base-medium text-ink-gray-9">{{ i.project }}</span>
             <Badge v-if="updatesFor(i.project, null, i.host).length" size="sm" :theme="updatesFor(i.project, null, i.host).some((u) => u.core) ? 'orange' : 'blue'" variant="subtle" :label="`${updatesFor(i.project, null, i.host).length} ${updatesFor(i.project, null, i.host).length === 1 ? 'update' : 'updates'}`" />
-            <Tooltip v-if="stale(i)" :text="linkAdvice(hostList.find((h) => h.id === i.host))">
+            <Tooltip v-if="staleInstance(i)" :text="linkAdvice(hostList.find((h) => h.id === i.host))">
               <span class="flex items-center gap-1 text-xs text-ink-gray-5"><span class="size-1.5 rounded-full" :class="DOT.unknown" />unknown · {{ lastSeen(i) }}</span>
             </Tooltip>
             <Tooltip v-else-if="QUIET[i.overall] !== null" :text="`container ${i.docker_status}`">

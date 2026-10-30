@@ -23,6 +23,7 @@ The same sequence is the committed real-SSH E2E, `tests/e2e/test_remote_hosts_e2
 - **Revocation reaches the connection that is already open.** `cwcli remote revoke --hub hub-lab` on the remote removed the line and ended the one running bridge process (the hub's held stream); with the hub's multiplexed SSH connection still open, the next forwarded read got the bridge's `403 bridge.revoked`, `check` answered `auth_refused: this host no longer accepts this hub`, and after `allow` again the link was `connected`.
 - **A changed host key is a hard stop.** Re-pinning a different key on the hub (the Admin's explicit act, which also drops the old multiplexed connection) and checking answered `host_key_changed`; the link never reconnects by itself, and re-pinning the real key brought it back (unit-pinned and in the E2E).
 - **Presence is reported, never acted on.** Stopping the remote daemon turned the link `daemon_down` with its `last_seen` kept; the hub's snapshot still carried the remote's instances, every one `unknown`, and an action on it was refused `409 host.not_connected`; nothing was started or retried, and restarting the daemon brought the link back (E2E).
+  The E2E now stops the remote's sshd instead of its daemon, so the link it checks reads `unreachable`.
 - **The files.** `hosts.json`, `keys/hub_ed25519` and `keys/known_hosts` on the hub are all 0600; no API answer contains the private key or any token (`GET /api/v1/hosts` carries the public key line only).
 
 ## Screenshots

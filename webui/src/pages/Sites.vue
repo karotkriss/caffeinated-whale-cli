@@ -25,7 +25,7 @@ import { loadSiteIcons, refreshSiteIcons, siteIcons, siteIcon } from '../data/si
 import { openNewSite } from '../data/new-site-dialog'
 import { can } from '../data/session'
 import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publicationAt, SHOWN_PARTS } from '../data/publish'
-import { hostName, hostReadable } from '../data/hosts'
+import { hostName, staleInstance } from '../data/hosts'
 
 onMounted(() => {
   setFocus(null)
@@ -43,7 +43,7 @@ const QUIET = { running: 'serving', degraded: 'degraded', online: 'started, not 
 const rows = computed(() => {
   const out = []
   for (const i of instances.value) {
-    const stale = !!i.host && !hostReadable(i.host)
+    const stale = staleInstance(i)
     for (const b of detailOf(i.project, i.host)?.data?.benches || []) {
       for (const s of b.sites || []) {
         const health = i.container_running ? i.benches?.find((h) => String(h.index) === String(b.index)) : null

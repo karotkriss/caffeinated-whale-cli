@@ -17,6 +17,14 @@ export const onHost = (id) => (id ? ` on ${hostName(id)}` : '')
 // Actions on a remote need its link `connected`, which includes an equal protocol.
 export const actionsAllowed = (id) => !id || !!hosts.byId[id]?.actions_allowed
 export const hostReadable = (id) => !id || !!hosts.byId[id]?.readable
+// A remote instance whose host is not readable is its last snapshot: unknown, never
+// running, whatever that snapshot said.
+export const staleInstance = (i) => !!i.host && !hostReadable(i.host)
+// The Instances headline: how many run, and how many are unknown because their host is quiet.
+export const runningCounts = (list) => ({
+  up: list.filter((i) => i.container_running && !staleInstance(i)).length,
+  unknown: list.filter(staleInstance).length,
+})
 
 export async function loadHosts() {
   hosts.loading = true
