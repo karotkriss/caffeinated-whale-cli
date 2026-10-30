@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from caffeinated_whale_cli.core import db_access, new_bench, new_site, rm_site
+from caffeinated_whale_cli.core.init import InitStepStart
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
@@ -64,6 +65,14 @@ class TestVerifyRootPassword:
             db_access.verify_root_password(Db(DENIED), "acme", SECRET)
         assert "Leave the password out" in (exc.value.hint or "")
 
+    def test_a_rejected_saved_password_is_called_out_of_date(self, monkeypatch):
+        monkeypatch.setattr(db_access.db_password, "remembered", lambda project: "saved")
+        with pytest.raises(CwcliError) as exc:
+            db_access.verify_root_password(Db(DENIED), "acme", None)
+        hint = exc.value.hint or ""
+        assert "out of date" in hint and "--db-root-password" in hint
+        assert "Leave the password out" not in hint
+
     def test_a_right_password_passes_with_one_connection(self):
         db = Db()
         assert db_access.verify_root_password(db, "acme", "right") is None
@@ -97,6 +106,7 @@ class TestNewBenchCleanup:
         db = Db()
 
         def init_bench(project, **kw):
+            kw["on_event"](InitStepStart(phase="bench_init", item="b2"))
             db.dirs |= {"/workspace/b2", "/workspace/b2/sites/b2.localhost"}
             raise CwcliError(ErrorKind.DOCKER, "init.exec_failed", "bench new-site failed.")
 
@@ -121,6 +131,19 @@ class TestNewBenchCleanup:
         assert "/workspace/b2" in db.dirs
         assert not [c for c, _env in db.calls if c[:2] == ["rm", "-rf"]]
 
+    def test_a_bench_another_run_created_meanwhile_is_never_removed(self, monkeypatch):
+        db = Db()
+
+        def init_bench(project, **kw):
+            db.dirs.add("/workspace/b2")  # a concurrent run's bench, not this call's
+            raise CwcliError(ErrorKind.CONFLICT, "bench.exists", "Bench exists.")
+
+        with pytest.raises(CwcliError) as exc:
+            _new_bench(monkeypatch, db, init_bench)()
+        assert exc.value.message == "Bench exists."
+        assert "/workspace/b2" in db.dirs
+        assert not [c for c, _env in db.calls if c[:2] == ["rm", "-rf"]]
+
     def test_a_refused_password_built_nothing_and_says_nothing_was_removed(self, monkeypatch):
         def init_bench(project, **kw):
             raise CwcliError(ErrorKind.PRECONDITION, "db.root_password_wrong", "Wrong.")
@@ -133,6 +156,7 @@ class TestNewBenchCleanup:
         db = Db()
 
         def init_bench(project, **kw):
+            kw["on_event"](InitStepStart(phase="bench_init", item="b2"))
             db.dirs.add("/workspace/b2")
             raise CwcliError(ErrorKind.DOCKER, "init.exec_failed", "bench init failed.")
 

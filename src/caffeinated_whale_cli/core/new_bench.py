@@ -77,7 +77,14 @@ def new_bench(
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
     planned_path = f"{bench_parent.rstrip('/') or '/workspace'}/{bench_name}"
-    existed = core_init._directory_exists(container, planned_path)
+    built = False
+
+    def watch(event: Any) -> None:
+        nonlocal built
+        if isinstance(event, core_init.InitStepStart) and event.phase == "bench_init":
+            built = True
+        emit(event)
+
     try:
         init_result = core_init.init_bench(
             project,
@@ -92,13 +99,14 @@ def new_bench(
             install_erpnext=install_erpnext,
             erpnext_branch=erpnext_branch or ref,
             stream_output=True,
-            on_event=emit,
+            on_event=watch,
         )
     except Exception as exc:
-        # A bench this call started is removed, so a retry with the same name works
-        # (an existing bench was refused untouched, and a lost exec may still be
-        # writing the directory, so neither is removed).
-        if existed or getattr(exc, "code", None) == "exec.stream_lost":
+        # A bench this call's own `bench init` started is removed, so a retry with the
+        # same name works (anything refused before that step, such as an existing
+        # bench, was left untouched, and a lost exec may still be writing the
+        # directory, so neither is removed).
+        if not built or getattr(exc, "code", None) == "exec.stream_lost":
             raise
         try:
             removed = _remove_half_built(
