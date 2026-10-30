@@ -2340,7 +2340,7 @@ cwcli remote key                 # this hub's public key and the command a remot
 
 # On each remote, as the user who runs cwcli there:
 cwcli remote allow --hub <hub name> --key "<hub public key>" [--max-role operator]
-cwcli remote hubs                # the hubs this machine lets in, with their caps
+cwcli remote hubs                # the hubs this machine lets in, with their caps and homes
 cwcli remote revoke --hub <name> # withdraw a hub: removes its line and ends its running connections
 
 # On the hub: paste the pairing string `allow` printed (Settings > Remote hosts > Add host), or
@@ -2358,6 +2358,8 @@ The bridge reads exactly one HTTP request per SSH channel, drops every credentia
 The hub never holds a remote's token, and the remote never learns the hub's private key (`~/.cwcli/keys/hub_ed25519`, 0600, returned by no API).
 The bridge also re-reads the grant on every channel and requires the exact line the channel runs under (its command names the key's fingerprint), so `cwcli remote revoke`, or a new cap or key from `cwcli remote allow`, takes effect for a connection that was already open: the hub reconnects against the line as it is now.
 Revoking or replacing a hub's line also ends the bridge processes that hub still has running.
+On a shared install each group member grants under their own login: the line goes into that member's `authorized_keys` and names the shared home, so the hub logs in as that member and reaches the `cwcli ui` daemon they run there, and only that member's `cwcli remote revoke` removes it.
+`allow` records which file holds each hub's line in the cwcli home, so `cwcli remote hubs` from any account lists each recorded grant along with the lines in its own `authorized_keys`, and names a file it cannot read as `not readable from this account`; a `revoke` that cannot read a file says so and exits 1, because any line there stays in place.
 
 **Pairing.** `allow` prints a pairing string that carries the SSH user, address, port and this machine's SSH host key (from `/etc/ssh/ssh_host_ed25519_key.pub`; `--host-key-file` names another).
 The hub pins that key when the host is added (`StrictHostKeyChecking=yes` against its own `known_hosts`) and refuses to add a host without one.

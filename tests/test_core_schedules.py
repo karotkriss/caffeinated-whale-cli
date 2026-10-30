@@ -359,12 +359,16 @@ class TestAdminOnlySchedules:
 
     def test_a_grant_line_this_home_never_recorded_still_counts(self, tmp_path, monkeypatch):
         """The bridge honours a grant line in the default authorized_keys whether or not this
-        cwcli home recorded it, so the schedule check counts it, until a revoke removes it."""
+        cwcli home recorded it (a reset home), so the schedule check counts it while the line's
+        bridge serves this home, until a revoke removes it."""
         from caffeinated_whale_cli.core import remote_access
+        from caffeinated_whale_cli.utils import config_utils
 
         monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
-        self._grant(tmp_path, "admin", home=tmp_path / "another-home")
+        self._grant(tmp_path, "admin")
+        remote_access.grants_record().unlink()
         assert remote_access.recorded_grants() == {}
+        assert [g.home for g in remote_access.list_grants()] == [str(config_utils.cwcli_home())]
         fleet = Fleet()
         self._prune("alice@hub-x", "hub")
         (made,) = run_tick(fleet, now=T0.replace(hour=2))
@@ -373,27 +377,45 @@ class TestAdminOnlySchedules:
         assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
         assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
 
-    def test_on_a_shared_install_the_tick_reads_the_grant_the_service_account_wrote(self, tmp_path, monkeypatch):
-        """The service account ran `cwcli remote allow` (its own ~/.ssh/authorized_keys); a
-        tick run by another account on the shared home still reads that grant, and when it
-        cannot read the file it says which one, never that the hub lost its Admin cap."""
+    def test_a_grant_line_for_another_home_does_not_keep_an_admin_only_schedule_running(self, tmp_path, monkeypatch):
+        """A line's bridge reaches only the cwcli home its command names: once the hub is
+        granted for another home instead, it has no way into this one, so this home's
+        Admin-only schedule stops, though that line still caps the hub at Admin."""
+        monkeypatch.setenv("HOME", str(tmp_path / "remote-user"))
+        fleet = Fleet()
+        self._prune("alice@hub-x", "hub")
+        self._grant(tmp_path, "admin")
+        (made,) = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made)
+        self._grant(tmp_path, "admin", home=tmp_path / "another-home")
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        assert "no longer lets act as an Admin" in self._last_run(1)["reason"]
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_on_a_shared_install_the_tick_reads_a_members_grant_or_names_the_file(self, tmp_path, monkeypatch):
+        """A group member ran `cwcli remote allow` (their own ~/.ssh/authorized_keys, naming the
+        shared home); the shared scheduler, another account, reads that grant through the
+        record, and when that member's 0700 .ssh keeps it out it names the file, never a
+        traceback and never that the hub lost its Admin cap."""
         marker = tmp_path / "shared.toml"
         marker.write_text(f'enabled = true\nstate_dir = "{tmp_path / "shared"}"\n')
         monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
         monkeypatch.delenv("CWCLI_HOME", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path / "cwcli-service"))
-        self._grant(tmp_path, "admin")
-        service_keys = tmp_path / "cwcli-service" / ".ssh" / "authorized_keys"
         monkeypatch.setenv("HOME", str(tmp_path / "member"))
+        self._grant(tmp_path, "admin")
+        member_keys = tmp_path / "member" / ".ssh" / "authorized_keys"
+        monkeypatch.setenv("HOME", str(tmp_path / "shared"))  # the service account's home
         fleet = Fleet()
         self._prune("alice@hub-x", "hub")
         (made,) = run_tick(fleet, now=T0.replace(hour=2))
         fleet.finish(made)
-        service_keys.unlink()
-        service_keys.mkdir()
-        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        os.chmod(member_keys.parent, 0)
+        try:
+            assert run_tick(fleet, now=T0 + timedelta(days=1, hours=2)) == []
+        finally:
+            os.chmod(member_keys.parent, 0o700)
         reason = self._last_run(1)["reason"]
-        assert str(service_keys) in reason and "could not be confirmed" in reason
+        assert str(member_keys) in reason and "could not be confirmed" in reason
         assert "no longer lets act as an Admin" not in reason
 
     def test_an_owner_saved_before_roles_keeps_running(self):

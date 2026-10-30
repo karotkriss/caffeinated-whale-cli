@@ -187,6 +187,34 @@ class TestGrantsAndRevocation:
         _allow(keys, host_key_file, home=None, hub="hub-home", key=OTHER_KEY)
         assert remote_access.recorded_grants() == {"hub-home": str(keys)}
 
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads any file")
+    def test_a_recorded_file_this_account_cannot_read_is_named_never_a_traceback(self, keys, host_key_file, tmp_path, monkeypatch):
+        """Another account's grant recorded in a shared home sits behind that account's 0700
+        .ssh, which this account cannot even look into: every scan names the file as
+        unreadable, the record keeps it, and a revoke still does all it can."""
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cw"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        scanned = []
+        monkeypatch.setattr(remote_access, "bridge_pids", lambda hub, **kw: scanned.append(hub) or [])
+        theirs = tmp_path / "alice" / ".ssh" / "authorized_keys"
+        _allow(theirs, host_key_file, home=None, cap="admin")
+        _allow(keys, host_key_file, home=tmp_path / "elsewhere")  # the same hub, recorded elsewhere
+        os.chmod(theirs.parent, 0)
+        try:
+            listed = {(g.keys_path, g.hub, g.cap, bool(g.unreadable)) for g in remote_access.list_grants()}
+            assert listed == {(str(keys), HUB, "operator", False), (str(theirs), HUB, "", True)}
+            with pytest.raises(CwcliError) as e:
+                remote_access.grant_cap(HUB)
+            assert str(theirs) in e.value.message
+            _allow(keys, host_key_file, home=None, hub="hub-home", key=OTHER_KEY)
+            assert remote_access.recorded_grants() == {HUB: str(theirs), "hub-home": str(keys)}
+            done = remote_access.revoke(hub=HUB, proc_root=keys.parent)
+        finally:
+            os.chmod(theirs.parent, 0o700)
+        assert done.files == {str(keys): 1} and str(theirs) in done.unreadable[str(theirs)]
+        assert scanned and set(scanned) == {HUB}
+        assert remote_access.recorded_grants()[HUB] == str(theirs) and HUB in theirs.read_text()
+
     def test_hubs_are_listed_with_their_caps(self, keys, host_key_file):
         _allow(keys, host_key_file)
         _allow(keys, host_key_file, hub="hub-home", cap="admin", key=OTHER_KEY)
