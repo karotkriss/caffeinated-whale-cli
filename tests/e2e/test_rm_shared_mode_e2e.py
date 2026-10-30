@@ -33,6 +33,9 @@ import pytest
 pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 _IMAGE = "python:3.12-slim"
+# The stand-in frappe container's image: a local frappe/bench tag on _IMAGE, the
+# repository the root removal helper looks in, without pulling a real bench image.
+_STANDIN = f"frappe/bench:cwe2e-standin-{uuid.uuid4().hex[:8]}"
 _SOCK = "/var/run/docker.sock"
 
 _SCRIPT = r"""
@@ -134,6 +137,9 @@ def scratch():
     root = Path(tempfile.mkdtemp(prefix="cwrmshared-", dir="/var/tmp"))
     root.chmod(0o755)
     project = f"cwe2e-rmsh{uuid.uuid4().hex[:6]}"
+    if subprocess.run(["docker", "image", "inspect", _IMAGE], capture_output=True).returncode:
+        _docker("pull", _IMAGE)
+    subprocess.run(["docker", "tag", _IMAGE, _STANDIN], check=True, capture_output=True)
     try:
         yield root, project
     finally:
@@ -148,6 +154,7 @@ def scratch():
         # The tree holds files owned by the sandbox's uids; remove it as root.
         _docker("run", "--rm", "-v", f"{root}:/scratch", _IMAGE, "rm", "-rf", "/scratch")
         subprocess.run(["rm", "-rf", str(root)], capture_output=True)
+        _docker("rmi", _STANDIN)
 
 
 @pytest.mark.skipif(
@@ -182,7 +189,7 @@ def test_shared_mode_member_rm_removes_the_service_owned_project_dir(scratch):
             "-e",
             f"P={project}",
             "-e",
-            f"IMAGE={_IMAGE}",
+            f"IMAGE={_STANDIN}",
             _IMAGE,
             "bash",
             "/smoke.sh",
