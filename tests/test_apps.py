@@ -212,6 +212,8 @@ def _install_container(fail_on=None):
     # already-present bench, which install correctly skips the fetch for.
     return FakeFrappeContainer(
         available_apps=["frappe"],
+        # Every real site has frappe installed; uninstall reads this list before and after.
+        installed={"a.localhost": ["frappe"], "b.localhost": ["frappe"]},
         fail_on=fail_on or [],
         get_app_creates={"payments": "payments"},
     )

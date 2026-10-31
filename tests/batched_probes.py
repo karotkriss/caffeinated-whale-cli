@@ -168,6 +168,14 @@ def _full_read(container, args: list[str]):
                 found["installed"] = _installed(container, bench, site)
                 if found["installed"] is None:
                     found["error"] = "frappe.get_installed_apps failed (RuntimeError)"
+            if opts.get("required"):
+                # Each installed app's ``required_apps`` hook, from the fake's
+                # bench-wide ``required_apps`` map (hooks live in the app's code).
+                hooks = getattr(container, "required_apps", {})
+                apps = _installed(container, bench, site)
+                found["required"] = (
+                    None if apps is None else {app: hooks.get(app, []) for app in apps}
+                )
             record["sites"][site] = found
         lines.append(bench_read.SENTINEL + json.dumps(record))
     return (0, ("\n" + "\n".join(lines) + "\n").encode())

@@ -16,6 +16,9 @@ The per-site answers are exactly what the bench commands print:
   ``frappe.get_installed_apps()`` names.
 - ``installed`` is ``frappe.get_installed_apps()``, the value
   ``bench --site X execute frappe.get_installed_apps`` prints.
+- ``required`` is each installed app's ``required_apps`` hook, read with
+  ``frappe.get_hooks`` exactly as ``bench uninstall-app`` reads it to refuse
+  removing an app another installed app requires.
 
 The process only READS. It carries RAW facts; every interpretation (config JSON,
 the marker, site verdicts, the import comparison, line splitting) stays on the
@@ -111,6 +114,18 @@ def list_apps(frappe):
     return "\\n".join(frappe.get_installed_apps())
 
 
+def required_apps(frappe):
+    # An installed app whose code is gone from the bench has no hooks to read and,
+    # as in Frappe's own uninstall check, cannot require anything.
+    found = {}
+    for app in frappe.get_installed_apps():
+        try:
+            found[app] = list(frappe.get_hooks("required_apps", app_name=app) or [])
+        except ImportError:
+            pass
+    return found
+
+
 rec = {"path": bench, "venv": venv, "sites": {}}
 if opts["files"]:
     rec["apps"] = run(["ls", "-1", bench + "/apps"])
@@ -122,7 +137,7 @@ if opts["files"]:
     rec["current"] = read(bench + "/sites/currentsite.txt", strict=True)
     rec["marker"] = read(root + "/" + MARKER_REL)
 
-asked = opts["list_apps"] or opts["installed"]
+asked = opts["list_apps"] or opts["installed"] or opts["required"]
 if asked and not venv:
     rec["error"] = "no bench virtualenv python at " + root + "/env/bin/python"
 
@@ -162,6 +177,9 @@ if venv and sites and asked:
             if opts["installed"]:
                 step = "frappe.get_installed_apps"
                 found["installed"] = list(frappe.get_installed_apps())
+            if opts["required"]:
+                step = "required_apps"
+                found["required"] = required_apps(frappe)
         except KeyboardInterrupt:
             raise
         except BaseException as error:
@@ -224,6 +242,9 @@ class SiteRead:
     list_apps: list[str] | None
     installed: list[str] | None
     error: str | None = None
+    # Installed app -> its ``required_apps`` hook entries; None when not asked or
+    # the read failed.
+    required: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -277,6 +298,7 @@ def read_benches(
     sites: list[str] | None = None,
     list_apps: bool = False,
     installed: bool = False,
+    required: bool = False,
     files: bool = False,
 ) -> BatchRead:
     """Read ``bench_paths`` in one exec.
@@ -284,14 +306,20 @@ def read_benches(
     ``files`` reads the inspect facts (``apps/``, the import probe, the configs, the
     default-site pointer, the label marker). ``sites`` names the sites to read;
     ``None`` lists each bench's real sites with the shared ``list_sites`` rules.
-    ``list_apps`` and ``installed`` ask Frappe the two per-site questions.
+    ``list_apps``, ``installed`` and ``required`` ask Frappe the per-site questions.
 
     Raises what ``exec_run`` raises (a lost Docker connection); a failed exec or an
     unparseable record leaves the bench out of ``benches``, with its cause in
     ``errors``.
     """
     opts = json.dumps(
-        {"sites": sites, "list_apps": list_apps, "installed": installed, "files": files}
+        {
+            "sites": sites,
+            "list_apps": list_apps,
+            "installed": installed,
+            "required": required,
+            "files": files,
+        }
     )
     exit_code, output = container.exec_run(
         ["sh", "-c", _READ_SH, "sh", _READ_PY, opts, *bench_paths]
@@ -336,6 +364,15 @@ def _str_list_or_none(value) -> list[str] | None:
     return None
 
 
+def _required_or_none(value) -> dict[str, list[str]] | None:
+    if not isinstance(value, dict):
+        return None
+    found = {app: _str_list_or_none(apps) for app, apps in value.items()}
+    if not all(isinstance(app, str) and apps is not None for app, apps in found.items()):
+        return None
+    return {app: apps for app, apps in found.items() if apps is not None}
+
+
 def _bench_read(record: dict, explicit_sites: list[str] | None) -> BenchRead:
     path = record["path"]
     if not isinstance(path, str):
@@ -378,6 +415,7 @@ def _bench_read(record: dict, explicit_sites: list[str] | None) -> BenchRead:
                     site_config=parse_config(_str_or_none(facts.get("config"))),
                     list_apps=output_lines(list_apps_text) if list_apps_text is not None else None,
                     installed=_str_list_or_none(facts.get("installed")),
+                    required=_required_or_none(facts.get("required")),
                     error=_str_or_none(facts.get("error")) or bench_error,
                 )
             )

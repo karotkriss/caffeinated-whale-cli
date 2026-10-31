@@ -274,7 +274,10 @@ def test_uninstall_proceeds_after_an_interactive_confirmation(
     this, "user typed y" would be untested.
     """
     container = _wire_container(
-        monkeypatch, FakeFrappeContainer(available_apps=["frappe", "payments"])
+        monkeypatch,
+        FakeFrappeContainer(
+            available_apps=["frappe", "payments"], installed={"a.localhost": ["frappe"]}
+        ),
     )
     asked = []
 
