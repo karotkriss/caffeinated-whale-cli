@@ -34,7 +34,6 @@ import sys
 
 import typer
 
-from ..core import app_deps as core_app_deps
 from ..core import apps as core_apps
 from ..core.apps import AppsAnnounce, AppsCommand, AppsOutput, AppsStepEnd
 from ..core.envelope import Status
@@ -730,74 +729,3 @@ def update_apps(
         sites=sites,
         json_output=json_output,
     )
-
-
-# ------------------------------------------------------------------------------- plan
-
-
-@app.command("plan")
-@handle_docker_errors
-def plan_app(
-    project_name: str = typer.Argument(
-        ..., help="The Docker Compose project name.", autocompletion=complete_project_names
-    ),
-    app_name: str = typer.Argument(
-        ..., metavar="APP", help="App name or git URL to plan.", autocompletion=complete_app_names
-    ),
-    bench: str = typer.Option(
-        None, "--bench", help="Which bench to target: its numeric index or label."
-    ),
-    bench_path: str = typer.Option(
-        None, "--path", "-p", help="Explicit bench directory (lower-level alternative to --bench)."
-    ),
-    sites: list[str] = typer.Option(
-        None, "--site", help="Plan for the named site(s). Repeatable. Omit for every site."
-    ),
-    branch: str = typer.Option(None, "--branch", help="The branch or tag that would be fetched."),
-    fetch_only: bool = typer.Option(
-        False, "--fetch-only", help="Plan a fetch into the bench, with no site install."
-    ),
-    dep_source: list[str] = typer.Option(None, "--dep-source", help=deps_ui.DEP_SOURCE_HELP),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
-    yes: bool = typer.Option(
-        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
-    ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
-):
-    """Show what installing an app would do, changing nothing.
-
-    Reads the app's Frappe range ([tool.bench.frappe-dependencies]) and required apps
-    (hooks.py) at the ref that would land, compares them with the bench, finds each
-    missing required app in the apps catalog, and prints the install order. Exits 1
-    when something would refuse the install.
-    """
-    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
-    resolved = _resolve_bench(project_name, bench, bench_path, verbose)
-    try:
-        result = core_app_deps.plan(
-            project_name,
-            [(app_name, branch)],
-            bench_path=resolved,
-            sites=list(sites) if isinstance(sites, list) and sites else None,
-            fetch_only=fetch_only is True,
-            dep_sources=deps_ui.parse_dep_sources(
-                dep_source if isinstance(dep_source, list) else None
-            ),
-        )
-    except CwcliError as e:
-        _exit_on_exec_error(e)
-    if result.status is Status.NEEDS_CHOICE and result.choice is not None:
-        stderr_console.print(f"[bold red]Error:[/bold red] {result.choice.prompt}")
-        raise typer.Exit(code=1)
-    plan = result.data
-    assert plan is not None
-    if json_output:
-        typer.echo(json.dumps(core_app_deps.plan_as_dict(plan), indent=2))
-    else:
-        deps_ui.render_plan(plan)
-        if plan.ok and not plan.needs_choice:
-            flag = " --with-deps" if plan.needs_consent else ""
-            console.print(
-                f"[bold green]✓[/bold green] Nothing blocks the install{'; it needs --with-deps for the required apps' if flag else ''}."
-            )
-    raise typer.Exit(code=0 if plan.ok else 1)

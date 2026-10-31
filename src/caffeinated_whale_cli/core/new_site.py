@@ -60,6 +60,15 @@ def check_site_name(site: str) -> None:
         )
 
 
+def _app_missing(project: str, bench_path: str, app: str) -> CwcliError:
+    return CwcliError(
+        ErrorKind.NOT_FOUND,
+        "new_site.app_missing",
+        f"App '{app}' is not on this bench (no {bench_path}/apps/{app}).",
+        hint=f"Fetch it first: cwcli apps install {project} <repo-url> --bench <bench> --fetch-only",
+    )
+
+
 def frappe_major(container, bench_path: str) -> int | None:
     """The bench's Frappe major, through the shared declarations reader."""
     return app_deps.bench_frappe_major(container, bench_path)
@@ -132,9 +141,10 @@ def new_site(
             f"A site named '{site}' already exists on {bench_path}.",
             hint="Pick another name, or open the existing site.",
         )
-    picks: list[tuple[str, str | None]] = [(u, None) for u in (fetch or []) if u]
+    urls = [u for u in (fetch or []) if u]
+    picks: list[tuple[str, str | None]] = [(u, None) for u in urls]
     picks += [(a, None) for a in wanted]
-    to_fetch: list[tuple[str, str | None]] = [(u, None) for u in (fetch or []) if u]
+    to_fetch: list[tuple[str, str | None]] = []
     if picks:
         on_bench = app_deps.read_bench_state(container, bench_path, sites=[site], new_site=site)
         plan = app_deps.build_plan(
@@ -144,6 +154,9 @@ def new_site(
             dep_sources=dep_sources,
             ignore_frappe_range=ignore_frappe_range,
         )
+        for n in plan.nodes:
+            if n.requested and not n.on_bench and n.requested_as not in urls:
+                raise _app_missing(project, bench_path, n.app)
         asked = app_deps.enforce(plan, with_deps=with_deps)
         if asked is not None:
             return Result(status=asked.status, choice=asked.choice, warnings=warnings)
@@ -170,12 +183,7 @@ def new_site(
             )
     for a in wanted:
         if not _directory_exists(container, f"{bench_path}/apps/{a}"):
-            raise CwcliError(
-                ErrorKind.NOT_FOUND,
-                "new_site.app_missing",
-                f"App '{a}' is not on this bench (no {bench_path}/apps/{a}).",
-                hint=f"Fetch it first: cwcli apps install {project} <repo-url> --bench <bench> --fetch-only",
-            )
+            raise _app_missing(project, bench_path, a)
 
     # A wrong root password fails here in seconds, not at bench new-site.
     from . import db_access

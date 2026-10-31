@@ -15,7 +15,6 @@ from typing import Any
 import questionary
 import typer
 
-from ..core import app_deps
 from ..core.envelope import Result, Status
 from ..core.errors import CwcliError
 from ..utils.console import stderr_console
@@ -75,17 +74,6 @@ def render_rows(rows: list[dict], *, frappe: str | None = None, order: str | Non
         )
     if order:
         stderr_console.print(f"  [dim]{order[0].upper() + order[1:]}[/dim]")
-
-
-def render_plan(plan: app_deps.DependencyPlan) -> None:
-    render_rows(app_deps.plan_rows(plan), frappe=plan.frappe_version, order=app_deps.describe(plan))
-    for problem in plan.problems:
-        color = {"blocker": "red", "consent": "cyan", "choice": "yellow"}.get(
-            problem.severity, "dim"
-        )
-        stderr_console.print(f"  [{color}]{problem.severity}[/{color}] {problem.message}")
-        if problem.remedy and problem.severity in ("blocker", "choice"):
-            stderr_console.print(f"    [dim]{problem.remedy}[/dim]")
 
 
 def render_error(error: CwcliError) -> None:
