@@ -422,7 +422,7 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
 | `--with-deps` | Fetch and install the apps each `--app` requires first; the apps are checked after the bench is built, so without it an app with a missing required app is reported as failed |
 | `--ignore-frappe-range` | Install an extra app although its declared Frappe range does not fit the new bench |
-| `--dep-source APP=URL` | The repository for a required app the apps catalog holds several of (repeatable) |
+| `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
 | `--admin-password TEXT` | Administrator password for the first site |
 | `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
@@ -460,7 +460,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 | `-a`, `--app TEXT` | An app already on the bench to install on the site (repeatable) |
 | `--with-deps` | Fetch and install the apps the picked apps require first (see [compatibility and required apps](#apps---manage-frappe-apps)); a script without it refuses when one is missing |
 | `--ignore-frappe-range` | Install although an app's declared Frappe range does not fit the bench |
-| `--dep-source APP=URL` | The repository for a required app the apps catalog holds several of (repeatable) |
+| `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
 | `--default` | Make it the bench's default site |
 | `--dev-mode` | Turn developer mode on for the new site |
 | `--admin-password TEXT` | Administrator password |
@@ -1319,7 +1319,7 @@ A range that names another app (`toolkit = ">=0.22.0"`) and does not fit is refu
 A required app that the bench does not have, or that a target site does not have installed, is shown as an ordered plan, dependencies first, and fetched and installed only with your consent: a terminal shows the plan and asks once, `--with-deps` answers yes for a script, and a script without it refuses with exit 1 and names the flag.
 cwcli finds a missing required app in the apps catalog only (your GitHub, every glab host, and Frappe's marketplace index), never by guessing a repository name; an `org/repo` entry only narrows the catalog match to that repository.
 A required app the catalog does not hold refuses the install as not found in your app sources: add its source to the apps catalog, or fetch it yourself with `--fetch-only`.
-When the catalog holds several repositories with that name, a terminal asks which to fetch, preselecting the one whose own Frappe range fits; a script passes `--dep-source APP=URL`.
+When the catalog holds several repositories with that name, a terminal asks which to fetch, preselecting the one whose own Frappe range fits; a script passes `--dep-source APP=URL`, which picks only among those repositories (a URL the catalog does not hold is refused before anything is fetched).
 A required app is fetched at the same branch name as the app that requires it, else `version-N` for the bench's Frappe, else its default branch, and only at a ref whose own Frappe range fits.
 After each fetch, install reads the fetched copy again and stops before any site install if its declarations changed since the check (the repository moved in between).
 An app that declares nothing is never given a constraint it did not state, and a declaration that could not be read is reported as a note, never treated as a pass or a refusal.
@@ -1350,7 +1350,7 @@ Any other check that cannot run or times out is reported as unverified and never
 No preflight can predict a failing patch, schema sync or asset build in the new code; those still surface only in the real run.
 **Required apps and ranges, for every update.** Every `apps update`, not only a core update, first fetches each named app's tracked branch (objects only, never the checked-out code) and reads what its new code declares.
 A `required_apps` entry the bench does not have, or that a site with the app installed lacks, refuses the update with nothing pulled, because neither bench nor the migrate would fetch or install it.
-`--with-deps` fetches and installs those apps on the affected sites first (with the same catalog lookup, branch rule and checks as `apps install`), then the pull and migrate run as usual; `--dep-source APP=URL` picks a source when the catalog holds several.
+`--with-deps` fetches and installs those apps on the affected sites first (with the same catalog lookup, branch rule and checks as `apps install`), then the pull and migrate run as usual; `--dep-source APP=URL` picks among the catalog's repositories when it holds several.
 A new Frappe range that no longer fits the bench is the same `frappe-dependencies` blocker as for a core update, and `--fix-branches` switches the app the same way.
 `--no-preflight` skips the checks, for a false positive such as a remote that only a proxy-configured fetch can reach; bench then fails wherever it fails.
 It does not skip the data-loss guard below.
