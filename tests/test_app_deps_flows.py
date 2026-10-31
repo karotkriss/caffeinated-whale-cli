@@ -25,6 +25,7 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from tests.test_core_app_deps import BOOKING, TOOLKIT, _booking_world
 from tests.test_core_apps import BENCH, _cache, container  # noqa: F401 - the fixture
 
+
 @pytest.fixture(autouse=True)
 def _docker_present(monkeypatch):
     """The CLI verbs here sit behind ``handle_docker_errors``, which checks for a docker
@@ -535,6 +536,45 @@ def test_with_deps_fetches_a_pinned_required_app_from_the_pinned_repository(monk
     monkeypatch.setattr(core_update.core_apps, "install_apps", install)
     core_update.update("proj", ["jobboard"], with_deps=True)
     assert seen == [{"toolkit": TOOLKIT}]
+
+
+def test_with_deps_stops_at_the_first_failed_install_and_reports_the_bench_as_it_is(
+    monkeypatch,
+):
+    bench = _UpdateBench(tip_required=("toolkit", "ledger", "extra"))
+    _wire_update(
+        monkeypatch,
+        bench,
+        {"jobs.localhost": ["frappe", "jobboard"]},
+        catalog=("toolkit", "ledger", "extra"),
+    )
+    _wire_update_verb(monkeypatch, bench)
+    tried, pulled = [], []
+
+    def install(project, apps, **kw):
+        tried.extend(apps)
+        landed = apps != ["ledger"]
+        if landed:
+            bench.apps[apps[0]] = {}
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=landed),
+        )
+
+    monkeypatch.setattr(core_update.core_apps, "install_apps", install)
+    monkeypatch.setattr(
+        core_update.core_apps,
+        "_read_installed_apps",
+        lambda _c, _p, sites, emit: {
+            s: (["frappe", "jobboard"] + [a for a in tried if a in bench.apps], None) for s in sites
+        },
+    )
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert tried == ["toolkit", "ledger"] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    missing = {f.message.split(" requires ")[1].split(" ")[0] for f in report.preflight}
+    assert missing == {"ledger", "extra"}
 
 
 def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkeypatch):

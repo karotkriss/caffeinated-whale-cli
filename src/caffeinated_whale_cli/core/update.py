@@ -1094,9 +1094,10 @@ def _install_required(
     dep_sources: dict[str, str] | None,
     emit: OnEvent,
     warnings: list[Message],
-) -> bool:
+) -> None:
     """``--with-deps``: fetch and install every required app the facts name, on the
-    sites that have its dependent, BEFORE the pull. True when every one landed.
+    sites that have its dependent, BEFORE the pull. Stops at the first that fails, as
+    the update will refuse then; the caller re-checks either way.
 
     Each goes through ``core.apps.install_apps`` with the same plan an install gets
     (catalog source, the dependent's branch name first, its own range checked, its own
@@ -1114,7 +1115,6 @@ def _install_required(
         )
         sites.update(fact.get("sites") or ([fact["site"]] if fact.get("site") else []))
         wanted[fact["dep"]] = (sites, branch, parent)
-    ok = True
     for dep, (sites, branch, parent) in wanted.items():
         emit(
             UpdateStepStart(
@@ -1153,11 +1153,10 @@ def _install_required(
                 status, why = "failed", f"installing {dep} failed"
         except CwcliError as error:
             status, why = "failed", error.message
-        if status != "ok":
-            ok = False
-            warnings.append(Message("app.required_app_install_failed", f"{dep}: {why}"))
         emit(UpdateStepEnd(phase="install_required", item=dep, status=status, message=why))
-    return ok
+        if status != "ok":
+            warnings.append(Message("app.required_app_install_failed", f"{dep}: {why}"))
+            return
 
 
 def _app_checks(
@@ -1201,10 +1200,8 @@ def _app_checks(
         if _switch_mismatched_apps(project_name, bench_path, facts, emit, warnings):
             facts = check()
     findings = classify(facts)
-    if (
-        with_deps
-        and _installable(findings)
-        and _install_required(
+    if with_deps and _installable(findings):
+        _install_required(
             project_name,
             bench_path=bench_path,
             facts=facts,
@@ -1212,7 +1209,6 @@ def _app_checks(
             emit=emit,
             warnings=warnings,
         )
-    ):
         findings = classify(check())
     blocked = any(f.severity == update_preflight.BLOCKER for f in findings)
     emit(
@@ -1362,11 +1358,8 @@ def _frappe_checks(
         return relabelled, at_risk
 
     relabelled, at_risk = assess(outcome)
-    if (
-        with_deps
-        and (force or not at_risk)
-        and _installable(outcome.findings)
-        and _install_required(
+    if with_deps and (force or not at_risk) and _installable(outcome.findings):
+        _install_required(
             project_name,
             bench_path=bench_path,
             facts=outcome.facts,
@@ -1374,7 +1367,6 @@ def _frappe_checks(
             emit=emit,
             warnings=warnings,
         )
-    ):
         outcome = check()
         relabelled, at_risk = assess(outcome)
     findings = relabelled if preflight else at_risk
