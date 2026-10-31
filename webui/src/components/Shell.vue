@@ -31,7 +31,7 @@ import JobToasts from './JobToasts.vue'
 import HostIcon from './HostIcon.vue'
 import SettingsDialog from './SettingsDialog.vue'
 // --- premium layer (see webui/src/premium/): the Appearance row (theme picker entry + the animated light/dark/system toggle) ---
-// --- the gradient sidebar surface, the sidebar's bottom boundary, the logo and the route crossfade ---
+// --- the gradient sidebar surface, the sidebar's bottom boundary and the logo (the page cross-fade is wired in main.js) ---
 import ShaderGradient from '../premium/ShaderGradient.vue'
 import GradientPicker from '../premium/GradientPicker.vue'
 import { openPicker } from '../premium/picker'
@@ -234,8 +234,11 @@ watch(() => route.name, (name) => {
           <p v-if="fleet.docker.error" class="max-w-xl break-words font-mono text-xs text-ink-gray-4">{{ fleet.docker.error }}</p>
         </EmptyState>
       </div>
+      <!-- Keyed by path, not fullPath: a tab change (?tab=) keeps the page mounted. The cross-fade
+           between pages is a View Transition started by the router (premium/page-transition.js),
+           never a <Transition> here - an out-in fade empties the main area between pages. -->
       <router-view v-else v-slot="{ Component }">
-        <Transition :name="motion ? 'cw-fade' : ''" mode="out-in" appear><div :key="route.fullPath"><component :is="Component" /></div></Transition>
+        <component :is="Component" :key="route.path" />
       </router-view>
     </DesktopShell>
     <ActionDialog />

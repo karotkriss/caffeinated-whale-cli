@@ -544,8 +544,12 @@ def test_a_remote_read_refuses_a_non_url_or_an_option_ref_without_running_git(
 
 def _remote_app(tmp_path, *, with_hooks=True):
     """A real one-commit repository holding a Frappe app that declares a range."""
+    import os
     import subprocess
 
+    # Ignore the host's global/system git config, so no commit signing or credential
+    # helper there makes each commit wait on an agent (the unit tier's slow guard).
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     repo = tmp_path / "rangeapp"
     (repo / "rangeapp").mkdir(parents=True)
     (repo / "pyproject.toml").write_text(
@@ -556,9 +560,9 @@ def _remote_app(tmp_path, *, with_hooks=True):
     if with_hooks:
         (repo / "rangeapp" / "hooks.py").write_text('required_apps = ["payments"]\n')
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
-    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, env=env)
+    subprocess.run([*git, "add", "-A"], check=True, env=env)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True, env=env)
     return repo
 
 
