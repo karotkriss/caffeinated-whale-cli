@@ -184,8 +184,17 @@ class TestUpgrade:
         with pytest.raises(CwcliError) as e:
             su.upgrade(_info())
         assert e.value.code == "self_update.not_writable"
-        assert e.value.hint == "run `sudo cwcli self-update`"
+        assert "reinstall cwcli as this user" in e.value.hint
+        assert "the user who ran sudo" in e.value.hint
         assert fake.calls == []
+
+    def test_an_unwritable_shared_install_names_sudo(self, tool_env, monkeypatch):
+        FakeUpgrade(monkeypatch)
+        monkeypatch.setattr(su.os, "access", lambda path, mode: False)
+        monkeypatch.setattr(su.shared_home, "shared_mode", lambda: True)
+        with pytest.raises(CwcliError) as e:
+            su.upgrade(_info())
+        assert e.value.hint == "run `sudo cwcli self-update`"
 
     def test_pip_runs_its_own_command_without_a_backup(self, tool_env, monkeypatch):
         argv = [sys.executable, "-m", "pip", "install", "--upgrade", core_version.DIST]
@@ -255,6 +264,33 @@ class TestRunningServices:
         assert [(s.kind, s.unit) for s in services] == [
             ("cred-bridge", "cwcli-cred-bridge.service")
         ]
+
+
+    def test_under_sudo_the_invoking_users_daemons_are_found(self, daemons, tmp_path, monkeypatch):
+        # root's own ~/.cwcli has nothing; alice's daemons live in hers.
+        run, spawn = daemons
+        alice_run = tmp_path / "alice" / ".cwcli" / "run"
+        alice_run.mkdir(parents=True)
+        ui_pid = spawn(alice_run / "ui.pid")
+        (alice_run / "ui.json").write_text('{"port": 18765, "token": "t"}')
+        inspect_pid = spawn(alice_run / "auto-inspect.pid")
+        monkeypatch.delenv("CWCLI_HOME")
+        monkeypatch.setenv("SUDO_USER", "alice")
+        monkeypatch.setattr(su.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(su.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(su, "_home_of", lambda user: str(tmp_path / "alice"))
+        found = {s.kind: s for s in su.running_services()}
+        assert found["ui"].pid == ui_pid and found["ui"].port == 18765
+        assert found["auto-inspect"].pid == inspect_pid
+
+        def fake_start(argv, **kw):
+            spawn(alice_run / "auto-inspect.pid")  # the restarted daemon records itself there
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(su.subprocess, "run", fake_start)
+        monkeypatch.setattr(su, "_user_env", lambda uid: {})
+        (result,) = su.restart([found["auto-inspect"]], "1.1.0")
+        assert result.ok, result.detail
 
 
 class TestRestart:
