@@ -141,6 +141,34 @@ class TestUpgrade:
         assert marker.read_text() == "old"  # nothing in the live env was deleted
         assert tool_env.with_name(tool_env.name + ".cwcli-rollback").is_dir()
 
+    def test_an_interrupted_upgrade_stops_the_upgrader_before_rolling_back(
+        self, tool_env, monkeypatch
+    ):
+        marker = tool_env / "lib" / "site-packages" / "marker.txt"
+        events = []
+
+        def lines():
+            yield "Updated\n"
+            raise KeyboardInterrupt  # a SIGTERM to cwcli alone, unwound by utils/signals
+
+        class Proc:
+            def __init__(self, argv, **kw):
+                marker.write_text("new")
+                self.stdout = lines()
+
+            def terminate(self):
+                events.append(("terminate", marker.read_text()))
+
+            def wait(self, timeout=None):
+                events.append(("wait", marker.read_text()))
+                return -15
+
+        monkeypatch.setattr(su.subprocess, "Popen", Proc)
+        with pytest.raises(KeyboardInterrupt):
+            su.upgrade(_info())
+        assert events[:2] == [("terminate", "new"), ("wait", "new")]  # stopped first
+        assert marker.read_text() == "old"  # then rolled back
+
     def test_an_upgrade_that_changed_nothing_is_not_reported_as_done(self, tool_env, monkeypatch):
         # The sudo bug: uv upgraded a different install and exited 0.
         FakeUpgrade(monkeypatch, lines=("Nothing to upgrade\n",))
@@ -283,6 +311,16 @@ class TestRestart:
         assert not results["auto-inspect"].ok
         assert "Docker is down" in results["auto-inspect"].detail
         assert results["ui"].ok
+
+    def test_a_recycled_pid_is_never_signalled(self, daemons, monkeypatch):
+        # The daemon stopped during the upgrade and an unrelated process took its pid.
+        run, spawn = daemons
+        stranger = spawn(run / "other.pid")
+        svc = su.Service(kind="auto-inspect", name="auto-inspect", pid=stranger, started="gone")
+        monkeypatch.setattr(su.subprocess, "run", lambda *a, **kw: pytest.fail("restarted"))
+        (result,) = su.restart([svc], "1.1.0")
+        assert daemon_identity.pid_alive(stranger)
+        assert result.ok and "left stopped" in result.detail
 
     def test_another_users_daemon_needs_sudo(self, daemons, monkeypatch):
         svc = su.Service(kind="ui", name="web UI (bob)", pid=1, owner=12345, port=1)
