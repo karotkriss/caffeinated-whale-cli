@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-10-30
+
+### Changed
+
+- **Neutral example names** - example names, comments and test fixtures use neutral values, and CI checks for environment-specific names.
+
 ## [3.5.0] - 2026-10-29
 
 ### Added
