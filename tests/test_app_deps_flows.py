@@ -345,8 +345,17 @@ class _UpdateBench:
         return 0, b""
 
 
-def _wire_update(monkeypatch, bench, installed):
+def _wire_update(monkeypatch, bench, installed, *, catalog=("toolkit",)):
     monkeypatch.setattr(core_update.bench_sites, "list_sites", lambda *a, **k: list(installed))
+    monkeypatch.setattr(
+        app_deps,
+        "find_sources",
+        lambda module, pin=None: (
+            [app_deps.Source(url=TOOLKIT, key=TOOLKIT.split("://", 1)[1])]
+            if module in catalog
+            else []
+        ),
+    )
     monkeypatch.setattr(
         core_update.core_apps,
         "_read_installed_apps",
@@ -477,6 +486,22 @@ def test_with_deps_installs_the_required_app_then_updates(monkeypatch):
     assert core_update.update("proj", ["jobboard"], with_deps=True) == "updated"
     assert installs == [(["toolkit"], ["jobs.localhost"], "master", True)]
     assert ran
+
+
+def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkeypatch):
+    """Catalog-only: a bare name would reach bench's own github.com/frappe guess."""
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]}, catalog=())
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    (blocker,) = [f for f in report.preflight if f.severity == "blocker"]
+    assert blocker.code == "app.required_app_source_unknown"
+    assert "app sources" in blocker.message and "--with-deps" not in blocker.remedy
 
 
 # ---------------------------------------------------------------------- surfaces

@@ -822,6 +822,14 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "sites that have {app} first, or fetch it yourself: cwcli apps install {q_project} "
         "<{dep} repository URL>{selector_flag} --fetch-only",
     ),
+    "app.required_app_source_unknown": (
+        BLOCKER,
+        "the new code at {ref} requires {dep} (required_apps), which is not on this bench "
+        "and was not found in your app sources",
+        "add {dep}'s source to the apps catalog and run the update again, or fetch it "
+        "yourself: cwcli apps install {q_project} <{dep} repository URL>{selector_flag} "
+        "--fetch-only",
+    ),
     "app.required_app_not_installed": (
         BLOCKER,
         "site '{site}' has {app} installed but not {dep}, which the new code at {ref} "
