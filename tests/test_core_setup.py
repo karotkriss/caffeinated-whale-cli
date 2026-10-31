@@ -202,7 +202,7 @@ class TestConsolidate:
         (bench / "sites" / "assets").mkdir(parents=True)
         (bench / "env" / "bin").mkdir(parents=True)
         # A real bench links to paths that exist only inside the container, so on
-        # the host they dangle - the captain's `shutil.Error` on the gov host.
+        # the host they dangle - the `shutil.Error` a real host hit.
         container_only = tmp_path / "container-only"
         os.symlink(container_only / "python3", bench / "env" / "bin" / "python3")
         os.symlink(container_only / "node_modules", bench / "apps" / "frappe" / "node_modules")

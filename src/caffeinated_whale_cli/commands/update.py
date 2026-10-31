@@ -434,7 +434,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
 
     if successful_apps > 0 and not report.aborted:
         # "Successfully" only when the run IS a success: a site the update could not
-        # migrate makes it "updated the code, but" (captain, staging16 2026-10-28).
+        # migrate makes it "updated the code, but" (captain, a staging server, 2026-10-28).
         site_trouble = bool(
             report.failed_migrations
             or report.unknown_migrations
@@ -581,7 +581,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         for site in report.failed_migrations:
             console.print(f"  • {site}: Migration failed")
             # The migrate's own last lines (the failing patch, fixture or lock) - the
-            # reason lives nowhere else (captain, staging16 2026-10-28: the report
+            # reason lives nowhere else (captain, a staging server, 2026-10-28: the report
             # named the wrong stage).
             tail = (pull_tails or {}).get(site, "").strip()
             for text_line in tail.splitlines()[-4:]:

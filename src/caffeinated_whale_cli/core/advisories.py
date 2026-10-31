@@ -1,8 +1,8 @@
 """Advisories: security feeds merged, deduplicated and matched against what the
-machine's instances actually run, built on the research in
-``firstmate/data/cwcli-advisories-research/report.md`` (which corrects the first
-spec in places). Detection and matching only; the fix is always named, and a
-one-click action is offered only where cwcli already has the verb.
+machine's instances actually run, built on an internal research note
+(which corrects the first spec in places). Detection and matching only; the fix
+is always named, and a one-click action is offered only where cwcli already has
+the verb.
 
 What the research settled, and this module follows:
 
@@ -27,7 +27,7 @@ What the research settled, and this module follows:
   global tier is CISA KEV + EPSS + CIRT.gy's ``page-data.json`` alerts; Alpine
   secdb is kept natively; service binaries are matched on their upstream
   versions (MariaDB/server and redis/redis repository advisories, nginx.org).
-  gitlab.example.com and NVD are out of phase 1.
+  Self-hosted forges and NVD are out of phase 1.
 
 Every source is fetched with its own validators (ETag / If-Modified-Since,
 body hash otherwise) and records its own freshness and error, so one dead feed

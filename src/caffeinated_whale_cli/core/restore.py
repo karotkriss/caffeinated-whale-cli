@@ -904,7 +904,7 @@ def _restore_encryption_key(
 
 
 # Keys that belong to the TARGET site's database, never to the set being restored
-# (captain decision, 2026-10-27: the "db_user trap" of the staging16 move).
+# (captain decision, 2026-10-27: the "db_user trap" of a staging-server move).
 DB_CONFIG_KEYS = ("db_name", "db_user", "db_password", "db_type", "db_host", "db_port", "db_socket")
 
 

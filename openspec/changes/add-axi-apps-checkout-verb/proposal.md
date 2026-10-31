@@ -10,7 +10,7 @@ Verified against this branch's live registry, not against prose: `cwcli axi apps
 An agent driving a delivery workflow can update every app to its tracked upstream, but it cannot put ONE branch under test.
 It cannot compose its way there either, because there is deliberately no `axi run` / `axi exec` passthrough (`tests/test_axi.py::TestNoAxiRunVerb`), so no arbitrary in-container `git` is reachable from the agent surface.
 
-Found by frappemate on 2026-07-19 while doing exactly that work.
+Found by an agent on 2026-07-19 while doing exactly that work.
 
 ## The recorded deferral, and why it does not decide this
 

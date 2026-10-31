@@ -476,9 +476,9 @@ parse_frappe_backup_filename('20251109_225726-development_localhost-database.sql
 
 ## Real-World Example Analysis
 
-### EPA Staging Environment
+### Example Staging Environment
 
-**Site:** `development.localhost` (Guyana Environmental Protection Agency)
+**Site:** `development.localhost`
 **Environment:** Staging server
 **Date:** November 9, 2025
 
@@ -500,8 +500,8 @@ Three backups captured within **3 minutes**:
 The `private/files/` directory contains **200+ files**, including:
 
 **Document Categories:**
-- Environmental permits and authorizations
-- Government application forms
+- Permits and authorizations
+- Application forms
 - Incident reports and declarations
 - Budget proposals and financial documents
 - Legal documents (Acts, regulations)
@@ -524,7 +524,7 @@ The `private/files/` directory contains **200+ files**, including:
 
 1. **Production-like data in staging**: Real or realistic documents in use
 2. **PII present**: Personal Identifiable Information requires protection
-3. **Government data**: High security and compliance standards
+3. **Regulated data**: High security and compliance standards
 4. **Multi-format files**: Various file types including spaces in names
 
 **Validation of cwcli Security Measures:**
@@ -538,7 +538,7 @@ The `private/files/` directory contains **200+ files**, including:
 
 Based on typical Frappe installations:
 
-| Component | Typical Size | EPA Staging Estimate |
+| Component | Typical Size | Example Staging Estimate |
 |-----------|--------------|---------------------|
 | Database | 10-500 MB | ~45 MB (small staging DB) |
 | Public files | 100 MB - 10 GB | ~1.8 GB uncompressed |

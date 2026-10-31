@@ -55,6 +55,22 @@ jobs:
       - name: Run packaging tests
         run: uv run pytest -m packaging
 
+      # The terms come only from the repository secret, never from the tree, and
+      # only this step sees them. A fork (its own push or its PR) gets no secret
+      # and skips the scans; any other run without it fails, so a lost secret
+      # cannot pass silently.
+      - name: Scan the tree and the built artifacts for private names
+        env:
+          PRIVATE_TERMS_DENYLIST: ${{ secrets.PRIVATE_TERMS_DENYLIST }}
+          FROM_FORK: ${{ github.event.repository.fork || github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ -z "$PRIVATE_TERMS_DENYLIST" ] && [ "$FROM_FORK" != "true" ]; then
+            echo "::error::The PRIVATE_TERMS_DENYLIST secret is empty or missing; only a fork may skip this scan."
+            exit 1
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          uv run pytest -m "unit or packaging" -k private_infrastructure tests/test_no_private_refs.py tests/test_packaging_contents.py
+
   # Every other job here runs ubuntu-latest, which is precisely how Windows-only
   # defects hide. Two live in this repo's history:
   #   - utils/auto_inspect.py: os.kill(pid, 0) is an inert liveness probe on POSIX,

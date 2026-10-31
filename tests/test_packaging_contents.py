@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_no_private_refs import denylist, find_private_refs
+
 pytestmark = pytest.mark.packaging
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -76,20 +78,28 @@ def _build(tmp_path: Path, kind: str) -> Path:
 
 
 @pytest.fixture(scope="module")
-def sdist_names(tmp_path_factory) -> list[str]:
+def sdist_archive(tmp_path_factory) -> Path:
+    return _build(tmp_path_factory.mktemp("sdist-build"), "sdist")
+
+
+@pytest.fixture(scope="module")
+def wheel_archive(tmp_path_factory) -> Path:
+    return _build(tmp_path_factory.mktemp("wheel-build"), "wheel")
+
+
+@pytest.fixture(scope="module")
+def sdist_names(sdist_archive) -> list[str]:
     """Every path inside the built sdist, relative to its root directory."""
-    archive = _build(tmp_path_factory.mktemp("sdist-build"), "sdist")
-    with tarfile.open(archive) as tar:
+    with tarfile.open(sdist_archive) as tar:
         members = [m.name for m in tar.getmembers() if m.isfile()]
     # Strip the `caffeinated_whale_cli-<version>/` prefix every sdist member has.
     return sorted(name.split("/", 1)[1] for name in members if "/" in name)
 
 
 @pytest.fixture(scope="module")
-def wheel_names(tmp_path_factory) -> list[str]:
+def wheel_names(wheel_archive) -> list[str]:
     """Every path inside the built wheel."""
-    archive = _build(tmp_path_factory.mktemp("wheel-build"), "wheel")
-    with zipfile.ZipFile(archive) as zf:
+    with zipfile.ZipFile(wheel_archive) as zf:
         return sorted(n for n in zf.namelist() if not n.endswith("/"))
 
 
@@ -158,3 +168,21 @@ class TestTheSdistShipsWhatABuildNeeds:
             and not name.startswith(f"src/{DIST_NAME}.egg-info/")
         ]
         assert unexpected == [], f"sdist contains paths outside its allow-list: {unexpected}"
+
+
+def test_no_artifact_names_private_infrastructure(sdist_archive, wheel_archive):
+    """The published files, README-as-package-page and built web UI included."""
+    pattern = denylist()
+    hits: list[str] = []
+    with tarfile.open(sdist_archive) as tar:
+        members = [m for m in tar.getmembers() if m.isfile()]
+        assert members, "sdist is empty; the scan would be vacuous"
+        for m in members:
+            data = tar.extractfile(m).read()  # type: ignore[union-attr]
+            hits += find_private_refs(f"sdist/{m.name}", data, pattern)
+    with zipfile.ZipFile(wheel_archive) as zf:
+        names = [n for n in zf.namelist() if not n.endswith("/")]
+        assert names, "wheel is empty; the scan would be vacuous"
+        for n in names:
+            hits += find_private_refs(f"wheel/{n}", zf.read(n), pattern)
+    assert not hits, "replace with a neutral placeholder:\n" + "\n".join(hits)

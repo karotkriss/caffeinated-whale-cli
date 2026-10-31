@@ -25,7 +25,7 @@ from caffeinated_whale_cli.utils import shared_home
 
 HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFmBvLshzLAzHjvkIyGPGlSs9uXUe8kK/zwyIT14B3QM"
 PAIRING_FIELDS = {
-    "v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "10.9.8.7",
+    "v": 1, "hub": "hub-x", "cap": "operator", "user": "frappe", "address": "192.0.2.7",
     "port": 22, "name": "Build box", "host_key": HOST_KEY,
 }  # fmt: skip
 
@@ -94,7 +94,7 @@ class TestPairing:
         fields = hosts.parse_pairing(hosts.make_pairing(PAIRING_FIELDS))
         assert fields == {
             "user": "frappe",
-            "address": "10.9.8.7",
+            "address": "192.0.2.7",
             "port": 22,
             "name": "Build box",
             "hub": "hub-x",
@@ -190,7 +190,7 @@ class TestStore:
         with pytest.raises(CwcliError) as e:
             hosts.add_host(hosts.make_pairing(PAIRING_FIELDS))
         assert e.value.code == "host.exists"
-        second = hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.8"}))
+        second = hosts.add_host(hosts.make_pairing({**PAIRING_FIELDS, "address": "192.0.2.8"}))
         assert second.id == "build-box-2"
 
     def test_remove_and_repin_rewrite_the_pins(self):
@@ -212,7 +212,7 @@ class TestStore:
 
         def add_second():
             hosts.add_host(
-                hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.9", "name": "Second"}),
+                hosts.make_pairing({**PAIRING_FIELDS, "address": "192.0.2.9", "name": "Second"}),
                 now=2.0,
             )
             done.set()
@@ -227,7 +227,7 @@ class TestStore:
             data["hosts"]["other"] = {
                 "name": "Other",
                 "transport": "ssh",
-                "address": "10.9.8.10",
+                "address": "192.0.2.10",
                 "port": 22,
                 "user": "frappe",
                 "host_key": HOST_KEY,
@@ -564,7 +564,7 @@ def _rec():
         id="build-box",
         name="Build box",
         transport="ssh",
-        address="10.9.8.7",
+        address="192.0.2.7",
         port=22,
         user="frappe",
         host_key=HOST_KEY,
@@ -1166,12 +1166,12 @@ class TestManager:
             if not one_resync:
                 manager.resync()
             again = hosts.add_host(
-                hosts.make_pairing({**PAIRING_FIELDS, "address": "10.9.8.8"}), now=2.0
+                hosts.make_pairing({**PAIRING_FIELDS, "address": "192.0.2.8"}), now=2.0
             )
             manager.resync()
             assert again.id == rec.id and ("host_removed", {"host": rec.id}) in published
             (snap,) = manager.snapshot()
-            assert snap["address"] == "10.9.8.8" and snap["instances"] == [] and snap["jobs"] == []
+            assert snap["address"] == "192.0.2.8" and snap["instances"] == [] and snap["jobs"] == []
         finally:
             manager.stop()
 

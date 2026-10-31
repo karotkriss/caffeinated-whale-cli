@@ -4,7 +4,7 @@ the frappe container no longer has is detected and repaired.
 Frappe creates each site's MariaDB user host-scoped to the client it saw at
 ``bench new-site`` - in Docker the frappe container's IP - so a restart that moves the
 container to a new IP refuses every login with ``Access denied for user
-'_<hash>'@'<new ip>'`` and the site answers a bare 500 (the captain's staging16, 2026-10-28).
+'_<hash>'@'<new ip>'`` and the site answers a bare 500 (seen on a staging server, 2026-10-28).
 This plants that shape on the session site deterministically (the user renamed to an
 address nobody has), shows the symptom, and proves ``cwcli db-access check`` names it on
 both surfaces and ``cwcli db-access repair --yes`` makes it ``'<user>'@'%'`` so the site
@@ -62,7 +62,7 @@ def test_a_host_scoped_site_user_is_detected_and_repaired(running_instance):
     ]
     assert before, "the session site has no database user?"
     try:
-        # Plant the staging16 shape: every grant row scoped to an address nobody has.
+        # Plant the staging-server shape: every grant row scoped to an address nobody has.
         for h in before:
             _root_sql(inst, f"RENAME USER '{q}'@'{h}' TO '{q}'@'{WRONG_HOST}'; FLUSH PRIVILEGES")
             break  # one row suffices; MariaDB refuses duplicate targets

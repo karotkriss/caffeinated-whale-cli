@@ -522,7 +522,7 @@ class TestRequirementsBeforeMigrate:
 class TestFrappeFork:
     """The core update (frappe, erpnext) is scoped to those apps: a fetch and a reset
     to the remote branch for EACH named core app, never bench's bench-wide
-    `bench update --reset` (captain, staging16 2026-10-28: it hard-reset every app on
+    `bench update --reset` (captain, a staging server, 2026-10-28: it hard-reset every app on
     the bench), with every site's locks cleared first, the requirements reinstalled,
     then the ordinary per-site migrate under cwcli's own maintenance lifecycle."""
 
@@ -656,7 +656,7 @@ class TestFrappeFork:
         assert "git reset --hard upstream/version-16" in calls and "git pull" in calls
 
     def test_a_site_that_cannot_be_opened_fails_the_run_and_is_named(self, monkeypatch, wired):
-        # The staging16 shape with the preflight off: the only site's database login is
+        # The staging-server shape with the preflight off: the only site's database login is
         # rejected, discovery cannot read it, the core code has already moved. That is
         # a failed update naming the site, never "successfully updated, 0 sites".
         def unreadable(project, bench_path, app, container, warnings, unreadable=None):
@@ -1014,7 +1014,7 @@ class TestFrappeDataLossGuard:
         assert calls == [] and report.ok is True and report.data_loss_refused is False
 
 
-class TestStaging16PreflightFixes:
+class TestStagingServerPreflightFixes:
     """040: an app on a branch its remote does not fetch is widened in place and logged;
     an app whose declared frappe-dependencies the bench cannot satisfy refuses with the
     switch named, and --fix-branches performs it through `cwcli apps checkout`."""

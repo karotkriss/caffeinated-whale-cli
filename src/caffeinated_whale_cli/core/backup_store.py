@@ -7,7 +7,7 @@ every operator of the box manages every instance's sets. A set is a VERIFIED cop
 artifacts stream out to the host, each part is checked (the dump gunzips to its end and
 carries mariadb-dump's completion marker, the file tars list, the config parses), the
 manifest records the verdict, and only a fully verified set has its in-bench copies
-removed - so backups never fill the bench disk again (the staging16 move's lesson), and
+removed - so backups never fill the bench disk again (the lesson of a staging-server move), and
 a failed verification keeps every byte where it was.
 
 Restoring a set composes the existing restore slice: the parts are copied back into the
