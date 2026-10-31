@@ -1019,8 +1019,21 @@ def _dependency_facts(
                 for site in unread
             )
         for entry in decl.required:
-            dep, _pin = app_deps.entry_module(entry)
+            dep, pin = app_deps.entry_module(entry)
             if dep in ("frappe", app):
+                continue
+            if dep not in bench and not app_deps.find_sources(dep, pin):
+                # Catalog-only: --with-deps would hand a bare name to bench's own
+                # github.com/frappe|erpnext guess, so this one is never offered it.
+                facts.append(
+                    {
+                        "code": "app.required_app_source_unknown",
+                        "app": app,
+                        "dep": dep,
+                        "ref": ref,
+                        "branch": branch,
+                    }
+                )
                 continue
             if dep not in bench:
                 facts.append(

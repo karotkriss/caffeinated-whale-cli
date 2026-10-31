@@ -16,9 +16,14 @@ Three proofs on the SHARED instance, none of which installs anything into the be
 
 from __future__ import annotations
 
+import json
+import os
 import shlex
+from pathlib import Path
 
 import pytest
+
+from caffeinated_whale_cli.core import app_catalog
 
 from . import harness
 
@@ -59,11 +64,30 @@ def test_an_app_built_for_another_frappe_is_refused_before_anything_is_fetched(
     assert harness.exec_in_frappe(inst.name, "test -e apps/hrms", workdir=inst.bench)[0] != 0
 
 
+def _seed_catalog_with_erpnext() -> None:
+    """Required apps come from the apps catalog only, and the session's isolated home
+    has none (no `cwcli ui` scan runs here), so record the one source the plan needs,
+    in the catalog's own on-disk format."""
+    path = Path(os.environ["CWCLI_HOME"]) / "cache" / "app-catalog" / "catalog.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = "github.com/frappe/erpnext"
+    path.write_text(
+        json.dumps(
+            {
+                "version": app_catalog.CATALOG_VERSION,
+                "remote": {key: {"name": "erpnext", "source": {"url": f"https://{key}"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_axi_apps_plan_orders_the_required_app_first_and_changes_nothing(running_instance):
     inst = running_instance
     major = _major(inst)
     if major < 15:
         pytest.skip("hrms declares frappe/erpnext in required_apps from version-15 on")
+    _seed_catalog_with_erpnext()
     before = _sh(inst, "ls -1 apps")
     result = harness.run_cwcli(
         "axi", "apps", "plan", inst.name, HRMS, "--branch", f"version-{major}", "--site", inst.site,
@@ -109,13 +133,21 @@ def test_an_update_whose_new_code_needs_another_app_stops_before_the_pull(runnin
         )
         text = harness.collapse_ws(harness.strip_ansi(result.stdout + result.stderr))
         assert result.returncode == 1, text
-        assert "cwe2e_not_on_this_bench" in text and "--with-deps" in text, text
+        # The catalog does not hold it, so --with-deps is not offered: it is never
+        # fetched by bare name (bench's own github.com/frappe|erpnext guess).
+        assert "cwe2e_not_on_this_bench" in text and "app sources" in text, text
+        assert "--with-deps" not in text, text
         # Nothing was pulled: the checkout is still at the old commit.
         assert _sh(inst, f"git -C apps/{PLANTED} rev-parse HEAD").strip() == head
-        doc = harness.run_cwcli("axi", "apps", "update", inst.name, PLANTED, "--no-recache")
+        doc = harness.run_cwcli(
+            "axi", "apps", "update", inst.name, PLANTED, "--no-recache", "--with-deps"
+        )
         assert doc.returncode == 1, doc.stdout
         assert "preflight_blocked: true" in doc.stdout, doc.stdout
-        assert "app.required_app_missing" in doc.stdout, doc.stdout
+        assert "app.required_app_source_unknown" in doc.stdout, doc.stdout
+        assert "get-app" not in doc.stdout + doc.stderr, doc.stderr
+        assert _sh(inst, "test -e apps/cwe2e_not_on_this_bench || echo absent").strip() == "absent"
+        assert _sh(inst, f"git -C apps/{PLANTED} rev-parse HEAD").strip() == head
     finally:
         harness.exec_in_frappe(
             inst.name,
