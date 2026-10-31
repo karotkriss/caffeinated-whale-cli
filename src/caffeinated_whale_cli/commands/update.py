@@ -863,13 +863,14 @@ UPDATE_WITH_DEPS_HELP = (
     "the update refuses with nothing pulled."
 )
 FIX_BRANCHES_HELP = (
-    "Updating frappe: when an app's declared frappe-dependencies do not fit this bench "
+    "When an app's declared frappe-dependencies do not fit this bench "
     "(the preflight refuses otherwise), switch that app to the matching version-N branch "
     "first (cwcli apps checkout; a dirty tree still refuses), then re-check and update."
 )
 NO_PREFLIGHT_HELP = (
-    "Core updates only: skip the checks that run before the frappe/erpnext reset "
-    "(app remotes and branches, sites, services, migrate locks). Use when a check is "
+    "Skip the checks that run before the update: an app's required apps and Frappe "
+    "range at its new tip, and for a core update the checks before the frappe/erpnext "
+    "reset (app remotes and branches, sites, services, migrate locks). Use when a check is "
     "a false positive; bench then fails wherever it fails. The check for local work "
     "the reset would discard still runs; only --force passes it."
 )

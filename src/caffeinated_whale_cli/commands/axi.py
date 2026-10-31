@@ -1972,8 +1972,9 @@ def axi_apps_update(
         False,
         "--no-preflight",
         help=(
-            "Updating frappe only: skip the checks before the core reset (for a "
-            "false positive); the run then fails wherever it fails. The local-work check "
+            "Skip the checks before the update (required apps and Frappe ranges; for "
+            "frappe, also the core-reset preflight), for a false positive; the run then "
+            "fails wherever it fails. The local-work check "
             "still runs; only --force passes it."
         ),
     ),
@@ -1981,7 +1982,7 @@ def axi_apps_update(
         False,
         "--fix-branches",
         help=(
-            "Updating frappe: switch an app whose declared frappe-dependencies do not fit "
+            "Switch an app whose declared frappe-dependencies do not fit "
             "this bench to the matching version-N branch first (otherwise that mismatch "
             "refuses the update, naming the switch)."
         ),

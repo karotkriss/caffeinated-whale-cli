@@ -1432,16 +1432,16 @@ def update(
     ``app.frappe_dependency_unsatisfied``, as it is for the core path, and
     ``fix_branches`` switches it the same way.
 
-    ``fix_branches`` (the core path) lets the preflight SWITCH an app whose declared
+    ``fix_branches`` lets the preflight SWITCH an app whose declared
     frappe-dependencies the bench cannot satisfy to the matching ``version-N`` branch
     (``cwcli apps checkout``, dirty-tree guarded) before the update; without it such
     a mismatch refuses with the switch named. A branch the remote's fetch refspec
     does not cover is always widened in place and logged, since bench's and cwcli's
     reset both need ``<remote>/<branch>`` to exist.
 
-    ``preflight`` (the frappe path only) checks, before ``bench update --reset``
-    starts, everything that would make it fail late - see
-    :mod:`.update_preflight`. A blocker returns a report with
+    ``preflight`` runs the dependency tier above for every update and, on the frappe
+    path, also checks before the core reset starts everything that would make it
+    fail late - see :mod:`.update_preflight`. A blocker returns a report with
     ``preflight_blocked=True`` and nothing run.
 
     ``force`` on the frappe path accepts the data loss ``bench update --reset``
