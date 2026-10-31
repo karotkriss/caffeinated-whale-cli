@@ -334,7 +334,7 @@ def manifest(app, read):
     init = read(app + "/__init__.py") or ""
     match = re.search(r"^(\s*__version__\s*=\s*['\"])(.+?)(['\"])", init, re.S | re.M)
     return {"pyproject": read("pyproject.toml"), "package_json": read("package.json"),
-            "hooks": read(app + "/hooks.py"), "version": match.group(2) if match else None}
+            "version": match.group(2) if match else None}
 
 
 def local_manifest(app):
