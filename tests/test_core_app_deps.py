@@ -344,6 +344,20 @@ class TestPlan:
         assert node.ref == "v2.0.0" and node.version == "2.0.0"
         assert "app.frappe_range_mismatch" in [p.code for p in plan.problems]
 
+    def test_the_source_choice_for_a_named_ref_is_offered_at_that_ref(self):
+        world = _booking_world()
+        fork = "https://github.com/someone/toolkit"
+        world.repo(fork, "toolkit", branches=["main"], default="main")
+        world.catalog["toolkit"].reverse()  # the fork first: it fits at its own branch
+        world.repos[TOOLKIT]["v2.0.0"] = Declarations(
+            app="toolkit", version="2.0.0", branch="v2.0.0"
+        )
+        plan = world.plan(_bench(), [("toolkit", "v2.0.0")])
+        (choice,) = [p for p in plan.problems if p.severity == "choice"]
+        assert {o["value"]: o["ok"] for o in choice.options} == {fork: False, TOOLKIT: True}
+        assert all(" at v2.0.0" in o["label"] for o in choice.options)
+        assert choice.default == TOOLKIT and plan.nodes[0].target == TOOLKIT
+
     def test_a_required_app_on_the_bench_but_not_on_the_site_is_installed_first(self):
         world = _booking_world()
         bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
