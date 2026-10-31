@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import contextlib
 import os
-import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -21,8 +21,6 @@ from caffeinated_whale_cli.core import self_update as su
 from caffeinated_whale_cli.core import version as core_version
 from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.utils import auto_inspect, cred_daemon, daemon_identity, startup
-
-_REAL_RUN = subprocess.run  # the start commands are faked; spawning the stand-ins is not
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX processes")
 
@@ -217,23 +215,21 @@ def daemons(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_inspect, "PID_FILE", run / "auto-inspect.pid")
     monkeypatch.setattr(cred_daemon, "PID_FILE", run / "credbridge.pid")
     monkeypatch.setattr(su, "_unit_running", lambda unit: False)
-    pids: list[int] = []
+    procs: list[subprocess.Popen] = []
 
     def spawn(pid_file: Path) -> int:
-        # Backgrounded by a shell that exits at once, so init reaps it when it is
-        # killed - a child of the test would linger as a zombie that reads alive.
-        out = _REAL_RUN(
-            ["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"], capture_output=True, text=True
-        )
-        pid = int(out.stdout.strip())
-        pids.append(pid)
-        pid_file.write_text(f"{pid}\n{daemon_identity.process_start_time(pid)}\n")
-        return pid
+        # Reaped by a thread the moment it dies: a killed process nobody reaps stays a
+        # zombie that reads alive, and a container's PID 1 may never reap orphans.
+        proc = subprocess.Popen(["sleep", "60"], stdout=subprocess.DEVNULL)
+        threading.Thread(target=proc.wait, daemon=True).start()
+        procs.append(proc)
+        pid_file.write_text(f"{proc.pid}\n{daemon_identity.process_start_time(proc.pid)}\n")
+        return proc.pid
 
     yield run, spawn
-    for pid in pids:
+    for proc in procs:
         with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+            proc.kill()
 
 
 class TestRunningServices:
