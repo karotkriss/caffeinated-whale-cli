@@ -1747,6 +1747,7 @@ def _dispatch(
             no_recache=False,
             force=args.get("force") is True,
             preflight=not bool(args.get("no_preflight")),
+            dependency_checks=not bool(args.get("no_preflight")),
             fix_branches=bool(args.get("fix_branches")),
             with_deps=args.get("with_deps") is True,
             dep_sources=_dep_sources(args),

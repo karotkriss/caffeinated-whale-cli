@@ -1254,6 +1254,7 @@ def _frappe_checks(
     bench_path: str,
     apps: list[str],
     preflight: bool,
+    dependency_checks: bool,
     force: bool,
     fix_branches: bool = False,
     with_deps: bool = False,
@@ -1267,7 +1268,9 @@ def _frappe_checks(
     instead of running it.
 
     ``preflight`` runs every prediction (:mod:`.update_preflight`); without it only
-    the local tier runs, for the data-loss guard. The guard is not a prediction, so
+    the local tier runs, for the data-loss guard. ``dependency_checks`` runs the
+    dependency tier (required apps, and the named apps' Frappe ranges when the
+    predictions that already check them are skipped) either way. The guard is not a prediction, so
     ``--no-preflight`` never skips it and only ``--force`` passes it - the ``apps
     checkout`` dirty-tree rule, where only ``--reset`` passes a dirty tree. ``--force``
     never passes a blocker. It first re-owns any app repo git refuses for dubious
@@ -1278,6 +1281,7 @@ def _frappe_checks(
     stops at the first problem it meets, after backing up every site.
     """
     emit(UpdateStepStart(phase="preflight" if preflight else "local_work"))
+    dependency: list[PreflightFinding] = []
 
     def check() -> update_preflight.PreflightOutcome:
         outcome = update_preflight.run_preflight(
@@ -1288,20 +1292,21 @@ def _frappe_checks(
             path=path,
             local_only=not preflight,
         )
-        if not preflight:
+        if not dependency_checks:
             return outcome
-        # The dependency tier's required apps; the content tier already checks every
-        # app's frappe-dependencies range at its fetched tip.
+        # The dependency tier's required apps; the content tier, when it runs, already
+        # checks every app's frappe-dependencies range at its fetched tip.
         extra = _dependency_facts(
             frappe_container,
             bench_path=bench_path,
             apps=apps,
             sites_filter=sites_filter,
-            ranges=False,
+            ranges=not preflight,
         )
+        added = update_preflight.classify(extra, project=project_name, bench=bench, path=path)
+        dependency[:] = added
         if not extra:
             return outcome
-        added = update_preflight.classify(extra, project=project_name, bench=bench, path=path)
         return dataclasses.replace(
             outcome,
             facts=outcome.facts + extra,
@@ -1355,10 +1360,13 @@ def _frappe_checks(
         at_risk = [
             f for f in update_preflight.local_work(relabelled) if not f.app or f.app in wanted
         ]
-        return relabelled, at_risk
+        return (relabelled if preflight else at_risk + dependency), at_risk
 
-    relabelled, at_risk = assess(outcome)
-    if with_deps and (force or not at_risk) and _installable(outcome.findings):
+    def blocking() -> list[PreflightFinding]:
+        return outcome.findings if preflight else dependency
+
+    findings, at_risk = assess(outcome)
+    if with_deps and (force or not at_risk) and _installable(blocking()):
         _install_required(
             project_name,
             bench_path=bench_path,
@@ -1368,9 +1376,8 @@ def _frappe_checks(
             warnings=warnings,
         )
         outcome = check()
-        relabelled, at_risk = assess(outcome)
-    findings = relabelled if preflight else at_risk
-    blocked = preflight and outcome.blocked
+        findings, at_risk = assess(outcome)
+    blocked = any(f.severity == update_preflight.BLOCKER for f in blocking())
     refused = bool(at_risk) and not force
     at_risk_apps = list(dict.fromkeys(f.app for f in at_risk if f.app))
     emit(
@@ -1428,6 +1435,7 @@ def update(
     no_recache: bool = False,
     force: bool = False,
     preflight: bool = True,
+    dependency_checks: bool = True,
     fix_branches: bool = False,
     with_deps: bool = False,
     dep_sources: dict[str, str] | None = None,
@@ -1459,9 +1467,10 @@ def update(
     does not cover is always widened in place and logged, since bench's and cwcli's
     reset both need ``<remote>/<branch>`` to exist.
 
-    ``preflight`` runs the dependency tier above for every update and, on the frappe
-    path, also checks before the core reset starts everything that would make it
-    fail late - see :mod:`.update_preflight`. A blocker returns a report with
+    ``dependency_checks`` runs the dependency tier above for every update; only a
+    surface that offers the Frappe-range override turns it off. ``preflight``, on the
+    frappe path, also checks before the core reset starts everything that would make
+    it fail late - see :mod:`.update_preflight`. A blocker returns a report with
     ``preflight_blocked=True`` and nothing run.
 
     ``force`` on the frappe path accepts the data loss ``bench update --reset``
@@ -1540,6 +1549,7 @@ def update(
                 bench_path=bench_path,
                 apps=apps,
                 preflight=preflight,
+                dependency_checks=dependency_checks,
                 force=force,
                 fix_branches=fix_branches,
                 with_deps=with_deps,
@@ -1551,7 +1561,7 @@ def update(
             if refusal is not None:
                 return refusal
             build = True  # a core update rebuilds assets, as bench's own update does
-        elif preflight:
+        elif dependency_checks:
             findings, refusal = _app_checks(
                 frappe_container,
                 project_name=project_name,

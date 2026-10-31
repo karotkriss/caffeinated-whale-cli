@@ -577,6 +577,33 @@ def test_with_deps_stops_at_the_first_failed_install_and_reports_the_bench_as_it
     assert missing == {"ledger", "extra"}
 
 
+def _range_breaking_update(monkeypatch):
+    bench = _UpdateBench(tip_required=())
+    bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    pulled: list = []
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    return pulled
+
+
+def test_axi_no_preflight_never_overrides_a_frappe_range_that_does_not_fit(monkeypatch):
+    from caffeinated_whale_cli.commands import axi
+
+    pulled = _range_breaking_update(monkeypatch)
+    result = CliRunner().invoke(axi.app, ["apps", "update", "proj", "jobboard", "--no-preflight"])
+    assert result.exit_code == 1, result.output
+    assert pulled == []
+    assert "preflight_blocked: true" in result.output
+    assert "app.frappe_dependency_unsatisfied" in result.output
+
+
+def test_the_human_override_turns_the_dependency_checks_off(monkeypatch):
+    pulled = _range_breaking_update(monkeypatch)
+    core_update.update("proj", ["jobboard"], preflight=False, dependency_checks=False)
+    assert pulled == [1]
+
+
 def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkeypatch):
     """Catalog-only: a bare name would reach bench's own github.com/frappe guess."""
     bench = _UpdateBench()

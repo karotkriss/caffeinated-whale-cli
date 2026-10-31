@@ -1973,10 +1973,10 @@ def axi_apps_update(
         False,
         "--no-preflight",
         help=(
-            "Skip the checks before the update (required apps and Frappe ranges; for "
-            "frappe, also the core-reset preflight), for a false positive; the run then "
-            "fails wherever it fails. The local-work check "
-            "still runs; only --force passes it."
+            "Updating frappe only: skip the checks before the core reset (for a "
+            "false positive); the run then fails wherever it fails. The required-apps "
+            "and Frappe-range checks and the local-work check still run; only --force "
+            "passes the local-work check."
         ),
     ),
     fix_branches: bool = typer.Option(

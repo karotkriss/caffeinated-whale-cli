@@ -800,6 +800,7 @@ def run_app_update(
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,
+            dependency_checks=not no_preflight,
             fix_branches=fix_branches,
             with_deps=with_deps,
             dep_sources=dep_sources or None,

@@ -3129,6 +3129,7 @@ Use `cwcli open`'s banner for the host address and `cwcli status` for the HTTP o
 Updating `frappe` runs the same preflight as the human command before the core reset.
 Its findings are the `preflight` table (`severity,code,app,site,message,remedy`); branch on `code`, never on the message.
 A blocker sets `preflight_blocked: true` and exits 1 with nothing run, and `--no-preflight` is available here too, because it skips predictions rather than a safety gate.
+On this verb `--no-preflight` skips only those core-reset predictions: the required-apps and Frappe-range check still runs for every update and still blocks, because the agent surface has no Frappe-range override.
 The data-loss guard runs here too, under `--no-preflight` as well: uncommitted or unpushed work in any app (or work that could not be checked) sets `data_loss_refused: true`, names the apps in `data_loss_apps`, and exits 1 with nothing run.
 `--force` accepts the loss; the reset then runs and `data_loss_apps` names the apps it was allowed to discard work in.
 
