@@ -113,6 +113,34 @@ class TestUpgrade:
         assert executable.readlink() == tool_env / "bin" / "cwcli"
         assert not tool_env.with_name(tool_env.name + ".cwcli-rollback").exists()
 
+    def test_a_locked_env_that_cannot_be_moved_aside_is_left_intact(self, tool_env, monkeypatch):
+        # Windows locks the running interpreter's files, so the env cannot be renamed.
+        marker = tool_env / "lib" / "site-packages" / "marker.txt"
+        FakeUpgrade(monkeypatch, code=1, lines=("error: network unreachable\n",))
+        monkeypatch.setattr(su, "installed_version", lambda: "1.0.0")
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if Path(src) == tool_env:
+                raise PermissionError("in use")
+            real_replace(src, dst)
+
+        real_rmtree = su.shutil.rmtree
+
+        def rmtree(path, ignore_errors=False):
+            if Path(path) == tool_env:  # deletes what it can and leaves the locked files
+                marker.unlink(missing_ok=True)
+                return
+            real_rmtree(path, ignore_errors=ignore_errors)
+
+        monkeypatch.setattr(su.os, "replace", replace)
+        monkeypatch.setattr(su.shutil, "rmtree", rmtree)
+        with pytest.raises(CwcliError) as e:
+            su.upgrade(_info())
+        assert "cwcli 1.0.0 is still installed" in e.value.message
+        assert marker.read_text() == "old"  # nothing in the live env was deleted
+        assert tool_env.with_name(tool_env.name + ".cwcli-rollback").is_dir()
+
     def test_an_upgrade_that_changed_nothing_is_not_reported_as_done(self, tool_env, monkeypatch):
         # The sudo bug: uv upgraded a different install and exited 0.
         FakeUpgrade(monkeypatch, lines=("Nothing to upgrade\n",))
