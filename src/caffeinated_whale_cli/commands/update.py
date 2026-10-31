@@ -323,7 +323,7 @@ class _Renderer:
 _PREFLIGHT_GROUPS = (
     (
         update_preflight.BLOCKER,
-        "Blocking - the core update would fail:",
+        "Blocking - the update would fail:",
         "[bold red]✗[/bold red]",
     ),
     (
