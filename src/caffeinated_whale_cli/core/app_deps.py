@@ -3,7 +3,7 @@
 A Frappe app declares two things about what it needs:
 
 - ``[tool.bench.frappe-dependencies]`` in ``pyproject.toml``: a version range per app
-  key (``frappe = ">=15.0.0,<17.0.0"``, ``customization = ">=0.22.0"``). bench only
+  key (``frappe = ">=15.0.0,<17.0.0"``, ``toolkit = ">=0.22.0"``). bench only
   prints a warning about it after the clone, and Frappe never reads it, so a v16 app
   lands on a v15 bench and fails at migrate.
 - ``required_apps`` in ``<module>/hooks.py``: apps that must be installed first.

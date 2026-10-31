@@ -1314,7 +1314,7 @@ Each app is a known app name **or** a git URL (passed straight to `bench get-app
 An app already on the bench is read from that copy; any other app is read from its repository on the host, so nothing reaches the instance until the check passes.
 Each range is compared with the version on the bench in bench's own dialect (semantic_version's `SimpleSpec`, so `>=16.0.0` does not accept a `16.0.0-dev` Frappe), and a range bench cannot parse (a space-separated `">=15.0.0 <16.0.0"`) is refused, because bench stops on it too.
 A Frappe range that does not fit the bench refuses the install with nothing fetched and names the `version-N` branch to pick; `--ignore-frappe-range` installs anyway when you know the declared range is wrong.
-A range that names another app (`customization = ">=0.22.0"`) and does not fit is refused too, with no override: cwcli never switches another app's branch as part of an install, because that moves it for every site on the bench.
+A range that names another app (`toolkit = ">=0.22.0"`) and does not fit is refused too, with no override: cwcli never switches another app's branch as part of an install, because that moves it for every site on the bench.
 A required app that the bench does not have, or that a target site does not have installed, is shown as an ordered plan, dependencies first, and fetched and installed only with your consent: a terminal shows the plan and asks once, `--with-deps` answers yes for a script, and a script without it refuses with exit 1 and names the flag.
 cwcli finds a missing required app in the apps catalog (your GitHub, every glab host, and Frappe's marketplace index; an `org/repo` entry pins GitHub), never by guessing a repository name.
 When the catalog holds several repositories with that name, a terminal asks which to fetch, preselecting the one whose own Frappe range fits; a script passes `--dep-source APP=URL`.
@@ -3063,7 +3063,7 @@ cwcli axi apps install frappe-one hrms --site erp.localhost --if-not-present
 # An app that requires another app the site lacks is exit 2 naming --with-deps;
 # a Frappe range that does not fit is exit 1 with nothing fetched (there is no
 # override here: the human `cwcli apps install --ignore-frappe-range` is the hatch).
-cwcli axi apps install frappe-one appointments --site erp.localhost --with-deps
+cwcli axi apps install frappe-one booking --site erp.localhost --with-deps
 
 # Read-only: what installing an app would do, as TOON (the order, each range
 # against the bench, where each required app comes from). Exit 1 when it would refuse.

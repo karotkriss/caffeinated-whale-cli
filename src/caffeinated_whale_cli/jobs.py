@@ -1597,7 +1597,7 @@ def _dispatch(
                 )
                 if unverified is not None:
                     emit.lifecycle("db_password_unverified", unverified.text)
-        # Captain note 49: a remote pick is fetched onto the bench FIRST (no site install
+        # A remote pick is fetched onto the bench FIRST (no site install
         # yet), after the dependency plan of every pick; a refusal or a failed fetch stops
         # the job before any site exists.
         result = core_new_site.new_site(
