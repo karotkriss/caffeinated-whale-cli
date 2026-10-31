@@ -1057,7 +1057,7 @@ def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, 
     assert exc.value.exit_code == 1
     out = " ".join(capsys.readouterr().out.split())
     assert "Preflight: 3 app(s), 6 site(s) on /workspace/frappe-bench (0.4s)" in out
-    assert "Blocking - the core update would fail:" in out
+    assert "Blocking - the update would fail:" in out
     assert "localbranch git.branch_not_on_remote message" in out
     assert "fix: cwcli apps checkout proj localbranch <published-branch>" in out
     assert "Notices:" in out
@@ -1091,7 +1091,7 @@ def test_update_frappe_preflight_long_rows_wrap_under_their_own_column(monkeypat
         core_update.UpdatePreflight(findings=[finding], summary="1 app(s)", blocked=True)
     )
 
-    rows = out.getvalue().split("Blocking - the core update would fail:")[1]
+    rows = out.getvalue().split("Blocking - the update would fail:")[1]
     lines = [line for line in rows.splitlines() if line.strip()]
     assert len(lines) > 2  # the message and the remedy both wrapped
     text_column = lines[0].index("remote 'upstream'")
