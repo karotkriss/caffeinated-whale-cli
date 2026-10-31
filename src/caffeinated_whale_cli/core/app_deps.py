@@ -549,8 +549,8 @@ def find_sources(module: str, pin: str | None = None) -> list[Source]:
     """Where the apps catalog says ``module`` lives (member GitHub repositories, every
     glab host, Frappe's marketplace index), deduplicated by remote.
 
-    An ``org/repo`` entry pins GitHub: only that repository answers, from the catalog
-    when it is there, else as the bare URL. bench's own guess (``github.com/frappe``
+    An ``org/repo`` entry only narrows the catalog match to that repository; a
+    repository the catalog does not hold is never a source. bench's own guess (``github.com/frappe``
     and ``github.com/erpnext``) is deliberately not used: it misses every self-hosted
     app and can pick a same-named public repository.
     """
@@ -566,9 +566,6 @@ def find_sources(module: str, pin: str | None = None) -> list[Source]:
         url = app_catalog._safe_remote_url(source.get("url") or f"https://{key}")
         if url and key not in found:
             found[key] = Source(url=url, key=key, default_branch=source.get("default_branch"))
-    pin_url = app_catalog._safe_remote_url(pin)
-    if pin_key and pin_url and pin_key not in found:
-        found[pin_key] = Source(url=pin_url, key=pin_key)
     return list(found.values())
 
 
@@ -901,12 +898,13 @@ class _Planner:
                 "app.required_app_source_unknown",
                 "blocker",
                 module,
-                f"{parent} requires {module}, which is not on this bench, and the apps catalog "
-                f"knows no repository for it.",
+                f"{parent} requires {module}, which is not on this bench and was not found "
+                f"in your app sources"
+                + (f" as {app_catalog.remote_key(pin) or pin}." if pin else "."),
                 remedy=(
-                    f"Fetch it yourself first: cwcli apps install {self.project} "
-                    f"<{module} repository URL> --fetch-only, or add its source to the apps "
-                    f"catalog and run the check again."
+                    f"Add {module}'s source to the apps catalog and run the check again, or "
+                    f"fetch it yourself first: cwcli apps install {self.project} "
+                    f"<{module} repository URL> --fetch-only."
                 ),
             )
             return None
@@ -1397,8 +1395,8 @@ def plan(
     ignore_frappe_range: bool = False,
     prefer_ref: str | None = None,
 ) -> Result[DependencyPlan]:
-    """The read-only plan for installing ``targets`` on a bench (``cwcli apps plan``,
-    ``cwcli axi apps plan``, the dialogs' preview). It changes nothing.
+    """The read-only plan for installing ``targets`` on a bench (``cwcli axi apps plan``,
+    the dialogs' preview). It changes nothing.
 
     ``sites`` filters the target sites (default: every site); ``new_site`` names a
     site that does not exist yet, holding frappe alone.

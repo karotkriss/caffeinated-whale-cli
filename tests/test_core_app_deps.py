@@ -305,9 +305,10 @@ class TestPlan:
         world = _booking_world()
         world.catalog.clear()
         plan = world.plan(_bench(), [(BOOKING, "master")])
-        assert [p.code for p in plan.problems if p.severity == "blocker"] == [
-            "app.required_app_source_unknown"
-        ]
+        (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
+        assert blocker.code == "app.required_app_source_unknown"
+        assert "not found in your app sources" in blocker.message
+        assert "apps catalog" in blocker.remedy and "--fetch-only" in blocker.remedy
 
     def test_several_sources_are_a_choice_with_the_fitting_one_preselected(self):
         world = _booking_world()
@@ -524,3 +525,19 @@ def test_a_remote_read_refuses_a_non_url_or_an_option_ref_without_running_git(
     monkeypatch.setattr(app_deps, "_git", lambda args, cwd, timeout=0: ran.append(args))
     decl = app_deps._read_remote(url, ref)
     assert not decl.readable and ran == []
+
+
+def test_a_pinned_required_app_comes_from_the_catalog_only(monkeypatch):
+    catalog = {
+        "remote": {
+            "gitlab.example.com/tools/toolkit": {
+                "name": "toolkit",
+                "source": {"url": TOOLKIT, "default_branch": "develop"},
+            }
+        }
+    }
+    monkeypatch.setattr(app_deps.app_catalog, "_load_disk", lambda: catalog)
+    (found,) = app_deps.find_sources("toolkit")
+    assert found.url == TOOLKIT and found.default_branch == "develop"
+    assert app_deps.find_sources("toolkit", f"{TOOLKIT}.git") == [found]
+    assert app_deps.find_sources("toolkit", "https://github.com/someone/toolkit") == []

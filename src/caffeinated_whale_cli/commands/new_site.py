@@ -27,11 +27,7 @@ def new_site(
     site: str = typer.Argument(..., help="The new site's name, e.g. shop.localhost."),
     bench: str = typer.Option(None, "--bench", help="Which bench: its numeric index or label."),
     apps: list[str] = typer.Option(
-        None,
-        "--app",
-        "-a",
-        help="An app to install on the site (repeatable): a bench app's name, or a git URL "
-        "to fetch onto the bench first.",
+        None, "--app", "-a", help="An app already on the bench to install on the site (repeatable)."
     ),
     default: bool = typer.Option(
         False, "--default", help="Make it the bench's default site (bench use)."
@@ -85,18 +81,13 @@ def new_site(
         elif verbose and isinstance(event, InitOutput):
             stderr_console.print(event.text, end="")
 
-    picked = [a for a in (apps if isinstance(apps, list) else []) if a]
-    # A URL is fetched onto the bench first; a name must already be on it.
-    urls = [a for a in picked if "/" in a or ":" in a]
-
     def _create(**answers):
         return core_new_site.new_site(
             project_name,
             site=site,
             admin_password=password,
             bench_path=bench_path,
-            apps=[a for a in picked if a not in urls],
-            fetch=urls,
+            apps=list(apps if isinstance(apps, list) else []),
             default=default,
             developer_mode=dev_mode,
             db_root_password=db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD"),

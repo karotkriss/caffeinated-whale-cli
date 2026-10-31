@@ -21,7 +21,7 @@ from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import update as core_update
 from caffeinated_whale_cli.core.app_deps import Declarations
 from caffeinated_whale_cli.core.envelope import Choice, Result, Status
-from caffeinated_whale_cli.core.errors import CwcliError
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from tests.test_core_app_deps import BOOKING, TOOLKIT, _booking_world
 from tests.test_core_apps import BENCH, _cache, container  # noqa: F401 - the fixture
 
@@ -173,6 +173,56 @@ def test_a_failed_required_app_fetch_installs_nothing(world, container):  # noqa
     )
     assert not result.data.ok and _installs(container) == []
     assert any(w.code == "app.required_app_fetch_failed" for w in result.warnings)
+
+
+def _wire_new_site(monkeypatch, container):  # noqa: F811
+    from caffeinated_whale_cli.core import new_site
+
+    monkeypatch.setattr(new_site.core_docker, "get_frappe_container", lambda _p: container)
+    monkeypatch.setattr(
+        new_site.resolvers, "resolve_container_state", lambda *a, **k: Result(status=Status.OK)
+    )
+    monkeypatch.setattr(
+        new_site.resolvers, "resolve_bench", lambda *a: Result(status=Status.OK, data=BENCH)
+    )
+    monkeypatch.setattr(new_site.resolvers, "require_bench_dir", lambda *a: None)
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, _p: False)
+    return new_site
+
+
+def test_new_site_never_fetches_a_named_app_the_bench_lacks(
+    world, container, monkeypatch  # noqa: F811
+):
+    """A name the catalog knows is still refused: only explicit URLs (the web job's
+    fetch list) and required apps are fetched onto the bench."""
+    new_site = _wire_new_site(monkeypatch, container)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj", site="shop.localhost", admin_password="a", apps=["toolkit"], with_deps=True
+        )
+    assert raised.value.code == "new_site.app_missing"
+    assert _gets(container) == []
+
+
+def test_human_new_site_passes_app_as_a_bench_app_name_never_a_fetch(monkeypatch):
+    from caffeinated_whale_cli import main
+    from caffeinated_whale_cli.commands import new_site as new_site_cmd
+
+    seen: dict = {}
+
+    def fake(project, **kw):
+        seen.update(kw)
+        raise CwcliError(ErrorKind.NOT_FOUND, "new_site.app_missing", "stop")
+
+    monkeypatch.setattr(new_site_cmd, "ensure_containers_running", lambda *a, **k: None)
+    monkeypatch.setattr(new_site_cmd, "resolve_bench_path", lambda *a, **k: BENCH)
+    monkeypatch.setattr(new_site_cmd.core_new_site, "new_site", fake)
+    result = CliRunner().invoke(
+        main.app,
+        ["new-site", "proj", "shop.localhost", "--app", BOOKING, "--admin-password", "a"],
+    )
+    assert result.exit_code == 1
+    assert seen["apps"] == [BOOKING] and "fetch" not in seen
 
 
 # ------------------------------------------------------------------------ update

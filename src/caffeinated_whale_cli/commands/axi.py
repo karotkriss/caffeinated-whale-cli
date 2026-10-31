@@ -893,9 +893,7 @@ def axi_new_site(
     site: str = typer.Argument(..., help="The new site's name, e.g. shop.localhost."),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
     apps: list[str] = typer.Option(
-        None,
-        "--app",
-        help="An app to install (repeatable): a bench app's name, or a git URL fetched first.",
+        None, "--app", help="An app already on the bench to install (repeatable)."
     ),
     with_deps: bool = typer.Option(False, "--with-deps", help=_AXI_WITH_DEPS_HELP),
     dep_source: list[str] = typer.Option(None, "--dep-source", help=_AXI_DEP_SOURCE_HELP),
@@ -931,16 +929,13 @@ def axi_new_site(
             )
         )
         raise typer.Exit(2)
-    picked = [a for a in (apps or []) if a]
-    urls = [a for a in picked if "/" in a or ":" in a]
     try:
         result = core_new_site.new_site(
             project,
             site=site,
             admin_password=password,
             bench=bench,
-            apps=[a for a in picked if a not in urls],
-            fetch=urls,
+            apps=list(apps or []),
             with_deps=with_deps is True,
             dep_sources=_axi_dep_sources(dep_source),
             default=default,

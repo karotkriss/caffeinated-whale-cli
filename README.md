@@ -455,7 +455,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 | Option | Description |
 |--------|-------------|
 | `--bench TEXT` | Which bench: its numeric index or label |
-| `-a`, `--app TEXT` | An app to install on the site (repeatable): a bench app's name, or a git URL fetched onto the bench first |
+| `-a`, `--app TEXT` | An app already on the bench to install on the site (repeatable) |
 | `--with-deps` | Fetch and install the apps the picked apps require first (see [compatibility and required apps](#apps---manage-frappe-apps)); a script without it refuses when one is missing |
 | `--ignore-frappe-range` | Install although an app's declared Frappe range does not fit the bench |
 | `--dep-source APP=URL` | The repository for a required app the apps catalog holds several of (repeatable) |
@@ -467,7 +467,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 | `-v`, `--verbose` | Stream bench's output |
 
 The Administrator password is resolved the same way as for `new-bench`: the flag, then `CWCLI_ADMIN_PASSWORD`, then a hidden prompt, and a non-interactive session with neither refuses with exit 2.
-A site name that already exists on the bench is refused, and an `--app` name must already be in the bench's `apps/` folder (a git URL is fetched first).
+A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
 cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
 Every picked app's Frappe range and required apps are checked before the site is created, exactly as for `apps install`, and the apps are installed in dependency order, so a refusal leaves no site behind.
 
@@ -1300,7 +1300,6 @@ cwcli apps install [OPTIONS] PROJECT_NAME [APP ...]   # or -a/--app APP
 cwcli apps uninstall [OPTIONS] PROJECT_NAME --app APP [--app APP ...]
 cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
-cwcli apps plan [OPTIONS] PROJECT_NAME APP
 ```
 
 **`apps list`** - lists apps available in the bench (live `ls apps/`); with `--installed`/`--site` it also lists the apps installed per site (all sites by default, grouped by site).
@@ -1316,7 +1315,8 @@ Each range is compared with the version on the bench in bench's own dialect (sem
 A Frappe range that does not fit the bench refuses the install with nothing fetched and names the `version-N` branch to pick; `--ignore-frappe-range` installs anyway when you know the declared range is wrong.
 A range that names another app (`toolkit = ">=0.22.0"`) and does not fit is refused too, with no override: cwcli never switches another app's branch as part of an install, because that moves it for every site on the bench.
 A required app that the bench does not have, or that a target site does not have installed, is shown as an ordered plan, dependencies first, and fetched and installed only with your consent: a terminal shows the plan and asks once, `--with-deps` answers yes for a script, and a script without it refuses with exit 1 and names the flag.
-cwcli finds a missing required app in the apps catalog (your GitHub, every glab host, and Frappe's marketplace index; an `org/repo` entry pins GitHub), never by guessing a repository name.
+cwcli finds a missing required app in the apps catalog only (your GitHub, every glab host, and Frappe's marketplace index), never by guessing a repository name; an `org/repo` entry only narrows the catalog match to that repository.
+A required app the catalog does not hold refuses the install as not found in your app sources: add its source to the apps catalog, or fetch it yourself with `--fetch-only`.
 When the catalog holds several repositories with that name, a terminal asks which to fetch, preselecting the one whose own Frappe range fits; a script passes `--dep-source APP=URL`.
 A required app is fetched at the same branch name as the app that requires it, else `version-N` for the bench's Frappe, else its default branch, and only at a ref whose own Frappe range fits.
 After each fetch, install reads the fetched copy again and stops before any site install if its declarations changed since the check (the repository moved in between).
@@ -1328,9 +1328,6 @@ A running manager that cwcli does not own is verified without being restarted; a
 `socketio`, `watch`, and the redis programs are deliberately left alone: they import no Frappe app, and cycling redis would drop the cache and the job queue for nothing.
 Restarting a worker does interrupt a job in flight, which is the honest cost of not leaving background jobs running code that no longer exists.
 A bench that was not running is left alone.
-
-**`apps plan`** - shows what `apps install` would do with an app, changing nothing: each app at the ref that would land, its Frappe range against the bench, which required apps would be fetched or installed and from where, and the install order.
-It takes the same `--branch`, `--site`, `--fetch-only` and `--dep-source` as install, prints the plan (`--json` for the document), and exits 1 when something would refuse the install.
 
 **`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses). It uses the same resynchronise-and-verify step as install, so no supervised process - web, scheduler, or worker - can keep running against the code and tables of an app that is gone. Frappe refuses to uninstall an app that another installed app lists in its `required_apps` hook, but it only prints a warning and exits 0, so cwcli checks first: it refuses before asking for confirmation and names the dependent apps (apps are removed in the order given, so list a dependent before the app it requires to remove both in one call). A site whose apps cannot be read for that check is skipped with a warning. After each uninstall it also re-reads the site's installed apps, and an app still installed is reported as a failure with a non-zero exit.
 

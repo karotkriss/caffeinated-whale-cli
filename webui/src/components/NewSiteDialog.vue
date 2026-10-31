@@ -221,13 +221,14 @@ const ready = computed(() => !!project.value && bench.value != null && nameState
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
-  // A remote pick is a URL: new-site fetches it onto the bench before the site exists.
-  for (const v of apps.value) line += ` --app ${q(remoteApp(v)?.source?.url || v)}`
+  let deps = joined.value.length ? ' --with-deps' : ''
+  for (const [a, u] of Object.entries(depSources.value)) deps += ` --dep-source ${q(`${a}=${u}`)}`
+  if (override.value) deps += ' --ignore-frappe-range'
+  for (const a of appNames.value) line += ` --app ${q(a)}`
   if (makeDefault.value) line += ' --default'
   if (devMode.value) line += ' --dev-mode'
-  if (joined.value.length) line += ' --with-deps'
-  for (const [a, u] of Object.entries(depSources.value)) line += ` --dep-source ${q(`${a}=${u}`)}`
-  if (override.value) line += ' --ignore-frappe-range'
+  line += deps
+  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${deps} && ` + line
   return line
 })
 function toggleApp(name, on) {
