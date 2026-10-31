@@ -782,11 +782,20 @@ class _Planner:
         return target if target in self.bench_apps else None
 
     def choose_ref(
-        self, url: str, parent_ref: str | None, default: str | None, need: object = None
+        self,
+        url: str,
+        parent_ref: str | None,
+        default: str | None,
+        need: object = None,
+        *,
+        ref: str | None = None,
     ) -> tuple[str | None, Declarations]:
-        """Same branch name as the parent, else version-N, else the default branch;
-        the first whose own frappe range passes and whose version fits ``need`` (the
-        range the requiring app declares for it), else the first candidate."""
+        """``ref`` when one was asked for; else the same branch name as the parent, else
+        version-N, else the default branch: the first whose own frappe range passes and
+        whose version fits ``need`` (the range the requiring app declares for it), else
+        the first candidate."""
+        if ref:
+            return ref, self.read(url, ref)
         branches = self.branches(url)
         candidates: list[str | None] = []
         if branches is not None:
@@ -823,7 +832,12 @@ class _Planner:
         return first
 
     def source_options(
-        self, found: list[Source], parent_ref: str | None, need: object = None
+        self,
+        found: list[Source],
+        parent_ref: str | None,
+        need: object = None,
+        *,
+        ref: str | None = None,
     ) -> list[dict]:
         """Each candidate repository at the ref it would be fetched at, and whether its
         own Frappe range fits this bench (reads are memoised, so this costs nothing
@@ -831,7 +845,7 @@ class _Planner:
         have = self.frappe_have()
         options = []
         for src in found:
-            ref, decl = self.choose_ref(src.url, parent_ref, src.default_branch, need)
+            at, decl = self.choose_ref(src.url, parent_ref, src.default_branch, need, ref=ref)
             spec = decl.ranges.get("frappe")
             ok = decl.readable and (
                 not isinstance(spec, str) or not have or bool(simple_spec(spec, have))
@@ -839,7 +853,7 @@ class _Planner:
             options.append(
                 {
                     "value": src.url,
-                    "label": f"{src.key} at {ref or 'its default branch'}"
+                    "label": f"{src.key} at {at or 'its default branch'}"
                     + (f" ({decl.version})" if decl.version else ""),
                     "ok": ok,
                 }
@@ -858,14 +872,17 @@ class _Planner:
         parent: str,
         parent_ref: str | None,
         need: object = None,
+        *,
+        ref: str | None = None,
     ):
-        """(url, key, ref, declarations) for a required app not on the bench, or None."""
+        """(url, key, ref, declarations) for an app not on the bench, or None; ``ref``
+        forces the ref every candidate is read at."""
         found = self.sources(module, pin)
         if module in self.dep_sources:
             url = self.dep_sources[module]
             known = next((f for f in found if f.url == url), None)
-            ref, decl = self.choose_ref(
-                url, parent_ref, known.default_branch if known else None, need
+            at, decl = self.choose_ref(
+                url, parent_ref, known.default_branch if known else None, need, ref=ref
             )
             if len(found) > 1:
                 # Still name the alternatives, so a dialog can show (and change) the pick.
@@ -875,10 +892,10 @@ class _Planner:
                     module,
                     f"{module} is fetched from {app_catalog.remote_key(url) or url}, as picked "
                     f"from the {len(found)} repositories named {module} in the apps catalog.",
-                    options=self.source_options(found, parent_ref, need),
+                    options=self.source_options(found, parent_ref, need, ref=ref),
                     default=url,
                 )
-            return url, app_catalog.remote_key(url), ref, decl
+            return url, app_catalog.remote_key(url), at, decl
         if not found:
             self.problem(
                 "app.required_app_source_unknown",
@@ -893,9 +910,11 @@ class _Planner:
                 ),
             )
             return None
-        picked = [(s, *self.choose_ref(s.url, parent_ref, s.default_branch, need)) for s in found]
+        picked = [
+            (s, *self.choose_ref(s.url, parent_ref, s.default_branch, need, ref=ref)) for s in found
+        ]
         if len(picked) > 1:
-            options = self.source_options(found, parent_ref, need)
+            options = self.source_options(found, parent_ref, need, ref=ref)
             default = next((o["value"] for o in options if o["ok"]), options[0]["value"])
             self.problem(
                 "app.required_app_source_ambiguous",
@@ -907,10 +926,10 @@ class _Planner:
                 options=options,
                 default=default,
             )
-            src, ref, decl = next(p for p in picked if p[0].url == default)
+            src, at, decl = next(p for p in picked if p[0].url == default)
         else:
-            src, ref, decl = picked[0]
-        return src.url, src.key, ref, decl
+            src, at, decl = picked[0]
+        return src.url, src.key, at, decl
 
     def visit(
         self,
@@ -1179,12 +1198,11 @@ def build_plan(
         found = planner.sources(target, None)
         if len(found) == 1 or (target in planner.dep_sources):
             url = planner.dep_sources.get(target) or found[0].url
-            chosen_ref, decl = (
-                (ref, planner.read(url, ref))
-                if ref
-                else planner.choose_ref(
-                    url, prefer_ref, next((f.default_branch for f in found if f.url == url), None)
-                )
+            chosen_ref, decl = planner.choose_ref(
+                url,
+                prefer_ref,
+                next((f.default_branch for f in found if f.url == url), None),
+                ref=ref,
             )
             planner.visit(
                 target,
@@ -1197,12 +1215,10 @@ def build_plan(
                 stack=[],
             )
         elif len(found) > 1:
-            resolved = planner.resolve_source(target, None, "this install", prefer_ref or ref)
+            resolved = planner.resolve_source(target, None, "this install", prefer_ref, ref=ref)
             if resolved is None:
                 continue
             url, key, chosen_ref, decl = resolved
-            if ref:
-                chosen_ref, decl = ref, planner.read(url, ref)
             planner.visit(
                 target,
                 target=url,
