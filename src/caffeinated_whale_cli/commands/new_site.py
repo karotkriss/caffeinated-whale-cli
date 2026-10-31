@@ -15,6 +15,7 @@ from ..core.init import InitOutput, InitStepStart
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
+from . import deps_ui
 from .utils import ensure_containers_running, resolve_bench_path
 
 
@@ -44,6 +45,11 @@ def new_site(
         "--db-root-password",
         help="The instance's EXISTING MariaDB root password (checked before any work; it does not set a new one); default: the one saved at init, else 123.",
     ),
+    with_deps: bool = typer.Option(False, "--with-deps", help=deps_ui.WITH_DEPS_HELP),
+    ignore_frappe_range: bool = typer.Option(
+        False, "--ignore-frappe-range", help=deps_ui.IGNORE_RANGE_HELP
+    ),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=deps_ui.DEP_SOURCE_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start a stopped instance without prompting."
     ),
@@ -75,22 +81,32 @@ def new_site(
         elif verbose and isinstance(event, InitOutput):
             stderr_console.print(event.text, end="")
 
-    try:
-        result = core_new_site.new_site(
+    def _create(**answers):
+        return core_new_site.new_site(
             project_name,
             site=site,
             admin_password=password,
             bench_path=bench_path,
-            apps=list(apps or []),
+            apps=list(apps if isinstance(apps, list) else []),
             default=default,
             developer_mode=dev_mode,
             db_root_password=db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
+            ignore_frappe_range=ignore_frappe_range is True,
             on_event=on_event,
+            **answers,
+        )
+
+    try:
+        result = deps_ui.run_with_answers(
+            _create,
+            with_deps=with_deps is True,
+            dep_sources=deps_ui.parse_dep_sources(
+                dep_source if isinstance(dep_source, list) else None
+            ),
+            interactive=deps_ui.interactive(),
         )
     except CwcliError as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
-        if e.hint:
-            stderr_console.print(f"[dim]{e.hint}[/dim]")
+        deps_ui.render_error(e)
         raise typer.Exit(code=1) from e
     if result.status is Status.NEEDS_CHOICE:
         stderr_console.print(

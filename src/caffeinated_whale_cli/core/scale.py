@@ -54,8 +54,8 @@ from dataclasses import dataclass
 
 from ..utils import config_utils
 from ..utils.port_utils import check_ports_in_use, format_port_list
+from . import app_deps, resolvers
 from . import docker as core_docker
-from . import resolvers
 from . import start as core_start
 from .docker import align_container_user_to_host
 from .envelope import Choice, Message, Result, Status
@@ -294,17 +294,10 @@ def _python_ok(container, bench_path: str) -> bool:
 
 
 def _bench_frappe_major(container, bench_path: str) -> int | None:
-    """The bench's Frappe major, read from ``apps/frappe/frappe/__init__.py``.
-
-    Read from the source file (not ``env/bin/python -c import frappe``) precisely
-    because we only ask this when the venv interpreter is broken.
-    """
-    version_file = f"{bench_path.rstrip('/')}/apps/frappe/frappe/__init__.py"
-    exit_code, output = container.exec_run(["bash", "-lc", f"cat {version_file}"])
-    if exit_code != 0:
-        return None
-    match = re.search(r"""__version__\s*=\s*['"](\d+)\.""", _decode(output))
-    return int(match.group(1)) if match else None
+    """The bench's Frappe major, read from its source files by the shared reader
+    (never ``env/bin/python -c import frappe``: this is asked precisely when the venv
+    interpreter is broken, and the reader prefers the system python3)."""
+    return app_deps.bench_frappe_major(container, bench_path)
 
 
 def _repair_toolchains(

@@ -1,0 +1,862 @@
+"""The dependency check where it acts: ``apps install``, ``apps update``, and the
+human and agent surfaces' consent (both modes, per the project's standard).
+
+``core.app_deps``' own rules are pinned in ``test_core_app_deps.py``; here the plan is
+the one a planner builds from an injected world, and what is asserted is what each
+surface does with it: refuse before anything is fetched, ask (a terminal) or refuse
+naming ``--with-deps`` (a script), and fetch and install required apps first, in
+order, only with consent.
+"""
+
+from __future__ import annotations
+
+import json
+import types
+
+import pytest
+from typer.testing import CliRunner
+
+from caffeinated_whale_cli.core import app_deps
+from caffeinated_whale_cli.core import apps as core_apps
+from caffeinated_whale_cli.core import update as core_update
+from caffeinated_whale_cli.core.app_deps import Declarations
+from caffeinated_whale_cli.core.envelope import Choice, Result, Status
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests.test_core_app_deps import BOOKING, TOOLKIT, _booking_world
+from tests.test_core_apps import BENCH, _cache, container  # noqa: F401 - the fixture
+
+
+@pytest.fixture(autouse=True)
+def _docker_present(monkeypatch):
+    """The CLI verbs here sit behind ``handle_docker_errors``, which checks for a docker
+    binary and a daemon that answers before the command runs. These tests stub every
+    container the command touches, so the guard must not depend on whether the machine
+    running them has Docker (a CI runner without it refused every one)."""
+    from caffeinated_whale_cli.utils import docker_utils
+
+    class _Client:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_utils.docker, "from_env", lambda: _Client())
+
+
+# ----------------------------------------------------------------------- install
+
+
+@pytest.fixture()
+def world(monkeypatch, container):  # noqa: F811 - the imported fixture
+    """The booking/toolkit world behind ``install_apps``' plan."""
+    w = _booking_world()
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    def state(_container, path, *, sites, new_site=None):
+        return app_deps.BenchState(
+            bench_path=path,
+            apps={
+                name: Declarations(app=name, version="15.125.0" if name == "frappe" else "1.0")
+                for name in container.available
+            },
+            sites=list(sites),
+            installed={s: {"frappe"} for s in sites},
+            frappe_version="15.125.0",
+        )
+
+    real_build = app_deps.build_plan
+    monkeypatch.setattr(app_deps, "read_bench_state", state)
+    monkeypatch.setattr(
+        app_deps,
+        "build_plan",
+        lambda project, st, targets, **kw: real_build(
+            project,
+            st,
+            targets,
+            reader=w.read,
+            brancher=w.branches,
+            sourcer=w.sources,
+            **kw,
+        ),
+    )
+    # What landed on disk is what the plan read (no drift) unless a test says otherwise.
+    w.landed = {}
+    monkeypatch.setattr(
+        app_deps,
+        "read_bench_apps",
+        lambda _c, _p: {
+            "toolkit": w.landed.get("toolkit", w.repos[TOOLKIT]["master"]),
+            "booking": w.landed.get("booking", w.repos[BOOKING]["master"]),
+        },
+    )
+    # The fake bench names a fetched repository after its URL's last segment.
+    return w
+
+
+def _gets(c):
+    return [x for x in c.calls if x.startswith("bench get-app")]
+
+
+def _installs(c):
+    return [x for x in c.calls if "install-app" in x]
+
+
+def test_missing_required_apps_ask_before_anything_is_fetched(world, container):  # noqa: F811
+    result = core_apps.install_apps("proj", [BOOKING], branch="master", sites=["a.localhost"])
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "confirm_required_apps"
+    assert _gets(container) == [] and _installs(container) == []
+
+
+def test_with_deps_fetches_and_installs_the_required_app_first(world, container):  # noqa: F811
+    result = core_apps.install_apps(
+        "proj", [BOOKING], branch="master", sites=["a.localhost"], with_deps=True
+    )
+    assert result.data.ok, result.data.results
+    gets = _gets(container)
+    assert len(gets) == 2
+    assert TOOLKIT in gets[0] and "--branch master" in gets[0]
+    assert BOOKING in gets[1]
+    assert _installs(container) == [
+        "bench --site a.localhost install-app toolkit",
+        "bench --site a.localhost install-app booking",
+    ]
+
+
+def test_a_plain_name_found_in_the_catalog_is_fetched_from_where_the_plan_read_it(
+    world, container  # noqa: F811
+):
+    """Not ``bench get-app <name>``: bench's own lookup lands that repository's default
+    branch, which the plan did not read (a real run fetched payments' develop branch,
+    built for the next Frappe major, when the plan had chosen version-16)."""
+    result = core_apps.install_apps("proj", ["toolkit"], sites=["a.localhost"])
+    assert result.data.ok, result.data.results
+    (get,) = _gets(container)
+    assert TOOLKIT in get and "--branch develop" in get
+
+
+def test_a_blocker_refuses_with_nothing_fetched(world, container):  # noqa: F811
+    world.repos[BOOKING]["master"] = Declarations(
+        app="booking", ranges={"frappe": ">=16.0.0,<17.0.0"}, branch="master"
+    )
+    with pytest.raises(CwcliError) as raised:
+        core_apps.install_apps(
+            "proj", [BOOKING], branch="master", sites=["a.localhost"], with_deps=True
+        )
+    assert raised.value.code == "app.frappe_range_mismatch"
+    assert _gets(container) == [] and _installs(container) == []
+
+
+def test_the_human_override_passes_a_frappe_range(world, container):  # noqa: F811
+    world.repos[BOOKING]["master"] = Declarations(
+        app="booking",
+        ranges={"frappe": ">=16.0.0,<17.0.0"},
+        required=["toolkit"],
+        branch="master",
+    )
+    world.landed["booking"] = world.repos[BOOKING]["master"]
+    result = core_apps.install_apps(
+        "proj",
+        [BOOKING],
+        branch="master",
+        sites=["a.localhost"],
+        with_deps=True,
+        ignore_frappe_range=True,
+    )
+    assert result.data.ok
+    assert any(w.code == "app.frappe_range_mismatch" for w in result.warnings)
+
+
+def test_a_remote_that_moved_since_the_check_stops_before_any_site_install(
+    world, container  # noqa: F811
+):
+    world.landed["toolkit"] = Declarations(
+        app="toolkit", required=["payments"], ranges={"frappe": ">=15.0.0,<17.0.0"}
+    )
+    result = core_apps.install_apps(
+        "proj", [BOOKING], branch="master", sites=["a.localhost"], with_deps=True
+    )
+    assert not result.data.ok
+    assert ("toolkit", "verify-dependencies", False) in [
+        (r.app, r.action, r.ok) for r in result.data.results
+    ]
+    assert _installs(container) == []
+    assert any(w.code == "app.dependencies_changed" for w in result.warnings)
+
+
+def test_a_dep_source_outside_the_catalog_is_refused_with_nothing_fetched(
+    world, container  # noqa: F811
+):
+    with pytest.raises(CwcliError) as raised:
+        core_apps.install_apps(
+            "proj",
+            [BOOKING],
+            branch="master",
+            sites=["a.localhost"],
+            with_deps=True,
+            dep_sources={"toolkit": "https://github.com/elsewhere/toolkit"},
+        )
+    assert raised.value.code == "app.dep_source_not_in_catalog"
+    assert "app sources" in raised.value.hint
+    assert _gets(container) == [] and _installs(container) == []
+
+
+def test_a_failed_required_app_fetch_installs_nothing(world, container):  # noqa: F811
+    container.fail_on = [f"get-app --branch master {TOOLKIT}"]
+    result = core_apps.install_apps(
+        "proj", [BOOKING], branch="master", sites=["a.localhost"], with_deps=True
+    )
+    assert not result.data.ok and _installs(container) == []
+    assert any(w.code == "app.required_app_fetch_failed" for w in result.warnings)
+
+
+def _wire_new_site(monkeypatch, container):  # noqa: F811
+    from caffeinated_whale_cli.core import new_site
+
+    monkeypatch.setattr(new_site.core_docker, "get_frappe_container", lambda _p: container)
+    monkeypatch.setattr(
+        new_site.resolvers, "resolve_container_state", lambda *a, **k: Result(status=Status.OK)
+    )
+    monkeypatch.setattr(
+        new_site.resolvers, "resolve_bench", lambda *a: Result(status=Status.OK, data=BENCH)
+    )
+    monkeypatch.setattr(new_site.resolvers, "require_bench_dir", lambda *a: None)
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, _p: False)
+    return new_site
+
+
+def test_new_site_never_fetches_a_named_app_the_bench_lacks(
+    world, container, monkeypatch  # noqa: F811
+):
+    """A name the catalog knows is still refused: only explicit URLs (the web job's
+    fetch list) and required apps are fetched onto the bench."""
+    new_site = _wire_new_site(monkeypatch, container)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj", site="shop.localhost", admin_password="a", apps=["toolkit"], with_deps=True
+        )
+    assert raised.value.code == "new_site.app_missing"
+    assert _gets(container) == []
+
+
+def _stop_before_the_site(monkeypatch, new_site):
+    from caffeinated_whale_cli.core import db_access
+
+    def stop(*_a, **_k):
+        raise CwcliError(ErrorKind.PRECONDITION, "test.reached_site_creation", "stop")
+
+    monkeypatch.setattr(db_access, "verify_root_password", stop)
+
+
+def test_new_site_does_not_refuse_an_app_on_a_bench_whose_apps_cannot_be_read(
+    world, container, monkeypatch  # noqa: F811
+):
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    monkeypatch.setattr(
+        app_deps,
+        "read_bench_state",
+        lambda _c, path, *, sites, new_site=None: app_deps.BenchState(
+            bench_path=path, apps=None, sites=list(sites), installed={}, frappe_version=None
+        ),
+    )
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site("proj", site="shop.localhost", admin_password="a", apps=["toolkit"])
+    assert raised.value.code == "test.reached_site_creation"
+    assert _gets(container) == []
+
+
+def test_new_site_fetches_a_web_pick_whose_repository_name_differs_from_its_app(
+    world, container, monkeypatch  # noqa: F811
+):
+    """The web job sends a remote pick as a URL and as its app name; an unreadable URL
+    is named after its repository, so only the catalog ties the two together."""
+    fork = "https://gitlab.example.com/team/frappe-booking"
+    world.catalog["booking"] = [
+        app_deps.Source(url=fork, key="gitlab.example.com/team/frappe-booking")
+    ]
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(
+        app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
+    )
+    monkeypatch.setattr(
+        new_site, "_directory_exists", lambda _c, path: "/apps/" in path and bool(_gets(container))
+    )
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["booking"],
+            fetch=[fork],
+        )
+    assert raised.value.code == "test.reached_site_creation"
+    (get,) = _gets(container)
+    assert fork in get
+
+
+def test_human_new_site_passes_app_as_a_bench_app_name_never_a_fetch(monkeypatch):
+    from caffeinated_whale_cli import main
+    from caffeinated_whale_cli.commands import new_site as new_site_cmd
+
+    seen: dict = {}
+
+    def fake(project, **kw):
+        seen.update(kw)
+        raise CwcliError(ErrorKind.NOT_FOUND, "new_site.app_missing", "stop")
+
+    monkeypatch.setattr(new_site_cmd, "ensure_containers_running", lambda *a, **k: None)
+    monkeypatch.setattr(new_site_cmd, "resolve_bench_path", lambda *a, **k: BENCH)
+    monkeypatch.setattr(new_site_cmd.core_new_site, "new_site", fake)
+    result = CliRunner().invoke(
+        main.app,
+        ["new-site", "proj", "shop.localhost", "--app", BOOKING, "--admin-password", "a"],
+    )
+    assert result.exit_code == 1
+    assert seen["apps"] == [BOOKING] and "fetch" not in seen
+
+
+# ------------------------------------------------------------------------ update
+
+
+class _UpdateBench:
+    """A bench whose ``jobboard`` app's new tip adds ``required_apps = ["toolkit"]``."""
+
+    def __init__(self, *, has_toolkit=False, tip_required=("toolkit",)):
+        self.apps = {
+            "frappe": {"init": '__version__ = "15.125.0"\n'},
+            "jobboard": {"pyproject": "", "hooks": ""},
+        }
+        if has_toolkit:
+            self.apps["toolkit"] = {"pyproject": '[project]\nversion = "0.23.3"\n'}
+        self.tip = {
+            "pyproject.toml": '[tool.bench.frappe-dependencies]\nfrappe = ">=15.0.0,<16.0.0"\n',
+            "jobboard/hooks.py": f"required_apps = {list(tip_required)!r}\n",
+        }
+        self.calls: list = []
+
+    def exec_run(self, cmd, workdir=None, **_kw):
+        self.calls.append(cmd)
+        if isinstance(cmd, list) and len(cmd) >= 6 and app_deps.SENTINEL in cmd[4]:
+            record = {
+                name: {
+                    "pyproject": f.get("pyproject"),
+                    "hooks": f.get("hooks"),
+                    "init": f.get("init"),
+                    "urls": [],
+                }
+                for name, f in self.apps.items()
+            }
+            return 0, ("\n" + app_deps.SENTINEL + json.dumps(record) + "\n").encode()
+        text = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if text == "git remote":
+            return 0, b"upstream\n"
+        if text == "git rev-parse --abbrev-ref HEAD":
+            return 0, b"master\n"
+        if text.startswith("git fetch"):
+            return 0, b""
+        if text.startswith("git show FETCH_HEAD:"):
+            body = self.tip.get(text.split("FETCH_HEAD:", 1)[1])
+            return (0, body.encode()) if body is not None else (128, b"fatal: no such path")
+        return 0, b""
+
+
+def _wire_update(monkeypatch, bench, installed, *, catalog=("toolkit",)):
+    monkeypatch.setattr(core_update.bench_sites, "list_sites", lambda *a, **k: list(installed))
+    monkeypatch.setattr(
+        app_deps,
+        "find_sources",
+        lambda module, pin=None: (
+            [app_deps.Source(url=TOOLKIT, key=TOOLKIT.split("://", 1)[1])]
+            if module in catalog
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        core_update.core_apps,
+        "_read_installed_apps",
+        lambda _c, _p, sites, emit: {s: (installed[s], None) for s in sites},
+    )
+
+
+def test_the_tier_names_a_new_required_app_missing_from_the_bench(monkeypatch):
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    facts = core_update._dependency_facts(
+        bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=True
+    )
+    (fact,) = facts
+    assert fact["code"] == "app.required_app_missing"
+    assert fact["dep"] == "toolkit" and fact["sites"] == ["jobs.localhost"]
+    assert fact["ref"] == "upstream/master"
+
+
+def test_the_tier_names_a_site_that_lacks_a_bench_present_required_app(monkeypatch):
+    bench = _UpdateBench(has_toolkit=True)
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    (fact,) = core_update._dependency_facts(
+        bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=True
+    )
+    assert fact["code"] == "app.required_app_not_installed" and fact["site"] == "jobs.localhost"
+
+
+def test_the_tier_finds_nothing_when_the_tip_requires_nothing_new(monkeypatch):
+    bench = _UpdateBench(tip_required=())
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    assert (
+        core_update._dependency_facts(
+            bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=True
+        )
+        == []
+    )
+
+
+def test_a_site_whose_installed_apps_cannot_be_read_is_unverified_not_passed(monkeypatch):
+    bench = _UpdateBench(has_toolkit=True, tip_required=("toolkit",))
+    _wire_update(
+        monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"], "dark.localhost": None}
+    )
+    facts = core_update._dependency_facts(
+        bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=False
+    )
+    assert {(f["code"], f.get("site")) for f in facts} == {
+        ("app.required_app_not_installed", "jobs.localhost"),
+        ("app.dependencies_unverified", None),
+    }
+    (unverified,) = [f for f in facts if f["code"] == "app.dependencies_unverified"]
+    assert "dark.localhost" in unverified["error"]
+
+
+def test_a_frappe_range_the_new_tip_breaks_is_the_existing_blocker_for_any_app(monkeypatch):
+    bench = _UpdateBench(tip_required=())
+    bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    (fact,) = core_update._dependency_facts(
+        bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=True
+    )
+    assert fact["code"] == "app.frappe_dependency_unsatisfied"
+    assert fact["fix_app"] == "jobboard" and fact["fix_branch"] == "version-15"
+
+
+def _wire_update_verb(monkeypatch, bench):
+    monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda _p: bench)
+    monkeypatch.setattr(
+        core_update.resolvers,
+        "resolve_container_state",
+        lambda *a, **k: Result(status=Status.OK),
+    )
+    monkeypatch.setattr(
+        core_update.resolvers, "resolve_bench", lambda *a, **k: Result(status=Status.OK, data=BENCH)
+    )
+    monkeypatch.setattr(core_update, "_require_bench_dirs", lambda *a: None)
+
+    class _Bridge:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(core_update.credbridge, "credential_bridge", lambda *a, **k: _Bridge())
+
+
+def test_an_update_whose_new_code_needs_another_app_stops_before_the_pull(monkeypatch):
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    pulled = []
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    events = []
+    result = core_update.update("proj", ["jobboard"], on_event=events.append)
+    report = result.data
+    assert report.preflight_blocked and not report.ok and pulled == []
+    blocker = next(f for f in report.preflight if f.code == "app.required_app_missing")
+    assert "--with-deps" in blocker.remedy
+    assert any(isinstance(e, core_update.UpdatePreflight) and e.blocked for e in events)
+
+
+def test_with_deps_installs_the_required_app_then_updates(monkeypatch):
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    installs = []
+
+    def install(project, apps, **kw):
+        installs.append((apps, kw["sites"], kw["prefer_ref"], kw["with_deps"]))
+        bench.apps["toolkit"] = {}
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=True),
+        )
+
+    monkeypatch.setattr(core_update.core_apps, "install_apps", install)
+    monkeypatch.setattr(
+        core_update.core_apps,
+        "_read_installed_apps",
+        lambda _c, _p, sites, emit: {
+            s: (["frappe", "jobboard"] + (["toolkit"] if installs else []), None) for s in sites
+        },
+    )
+    ran = []
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: ran.append(k) or "updated")
+    assert core_update.update("proj", ["jobboard"], with_deps=True) == "updated"
+    assert installs == [(["toolkit"], ["jobs.localhost"], "master", True)]
+    assert ran
+
+
+def test_with_deps_installs_nothing_when_another_blocker_will_refuse_the_update(monkeypatch):
+    bench = _UpdateBench()
+    bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    codes = {f.code for f in report.preflight if f.severity == "blocker"}
+    assert codes == {"app.required_app_missing", "app.frappe_dependency_unsatisfied"}
+
+
+def test_with_deps_fetches_a_pinned_required_app_from_the_pinned_repository(monkeypatch):
+    bench = _UpdateBench(tip_required=("acme/toolkit",))
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    seen = []
+
+    def install(project, apps, **kw):
+        seen.append(kw["dep_sources"])
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=False),
+        )
+
+    monkeypatch.setattr(core_update.core_apps, "install_apps", install)
+    core_update.update("proj", ["jobboard"], with_deps=True)
+    assert seen == [{"toolkit": TOOLKIT}]
+
+
+def test_with_deps_stops_at_the_first_failed_install_and_reports_the_bench_as_it_is(
+    monkeypatch,
+):
+    bench = _UpdateBench(tip_required=("toolkit", "ledger", "extra"))
+    _wire_update(
+        monkeypatch,
+        bench,
+        {"jobs.localhost": ["frappe", "jobboard"]},
+        catalog=("toolkit", "ledger", "extra"),
+    )
+    _wire_update_verb(monkeypatch, bench)
+    tried, pulled = [], []
+
+    def install(project, apps, **kw):
+        tried.extend(apps)
+        landed = apps != ["ledger"]
+        if landed:
+            bench.apps[apps[0]] = {}
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=landed),
+        )
+
+    monkeypatch.setattr(core_update.core_apps, "install_apps", install)
+    monkeypatch.setattr(
+        core_update.core_apps,
+        "_read_installed_apps",
+        lambda _c, _p, sites, emit: {
+            s: (["frappe", "jobboard"] + [a for a in tried if a in bench.apps], None) for s in sites
+        },
+    )
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert tried == ["toolkit", "ledger"] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    missing = {f.message.split(" requires ")[1].split(" ")[0] for f in report.preflight}
+    assert missing == {"ledger", "extra"}
+
+
+def _range_breaking_update(monkeypatch):
+    bench = _UpdateBench(tip_required=())
+    bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    pulled: list = []
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    return pulled
+
+
+def test_axi_no_preflight_never_overrides_a_frappe_range_that_does_not_fit(monkeypatch):
+    from caffeinated_whale_cli.commands import axi
+
+    pulled = _range_breaking_update(monkeypatch)
+    result = CliRunner().invoke(axi.app, ["apps", "update", "proj", "jobboard", "--no-preflight"])
+    assert result.exit_code == 1, result.output
+    assert pulled == []
+    assert "preflight_blocked: true" in result.output
+    assert "app.frappe_dependency_unsatisfied" in result.output
+
+
+def test_the_human_override_turns_the_dependency_checks_off(monkeypatch):
+    pulled = _range_breaking_update(monkeypatch)
+    core_update.update("proj", ["jobboard"], preflight=False, dependency_checks=False)
+    assert pulled == [1]
+
+
+def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkeypatch):
+    """Catalog-only: a bare name would reach bench's own github.com/frappe guess."""
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]}, catalog=())
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    (blocker,) = [f for f in report.preflight if f.severity == "blocker"]
+    assert blocker.code == "app.required_app_source_unknown"
+    assert "app sources" in blocker.message and "--with-deps" not in blocker.remedy
+
+
+def _two_toolkits(monkeypatch):
+    other = "https://github.com/someone/toolkit"
+    monkeypatch.setattr(
+        app_deps,
+        "find_sources",
+        lambda module, pin=None: [
+            app_deps.Source(url=TOOLKIT, key=TOOLKIT.split("://", 1)[1]),
+            app_deps.Source(url=other, key=other.split("://", 1)[1]),
+        ],
+    )
+    return other
+
+
+def test_with_deps_asks_which_repository_when_the_catalog_holds_several(monkeypatch):
+    """The install path's select_app_source: an update never guesses either."""
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    other = _two_toolkits(monkeypatch)
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == [] and report.preflight_blocked
+    (blocker,) = [f for f in report.preflight if f.severity == "blocker"]
+    assert blocker.code == "app.required_app_source_ambiguous"
+    assert TOOLKIT in blocker.message and other in blocker.message
+    assert "--dep-source toolkit=<url>" in blocker.remedy
+
+
+def test_a_dep_source_pick_settles_the_repository_for_the_install(monkeypatch):
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    other = _two_toolkits(monkeypatch)
+    facts = core_update._dependency_facts(
+        bench,
+        bench_path=BENCH,
+        apps=["jobboard"],
+        sites_filter=None,
+        ranges=True,
+        dep_sources={"toolkit": other},
+    )
+    assert [f["code"] for f in facts] == ["app.required_app_missing"]
+
+
+# ---------------------------------------------------------------------- surfaces
+
+
+def _asked():
+    return Result(
+        status=Status.NEEDS_CHOICE,
+        choice=Choice(
+            kind="confirm_required_apps",
+            param="with_deps",
+            prompt="booking requires toolkit. Fetch and install toolkit "
+            "first? (order on a.localhost: toolkit, booking)",
+            options=[
+                {
+                    "order": 1,
+                    "app": "toolkit",
+                    "action": "fetch+install",
+                    "required_by": "booking",
+                    "source": "gitlab.example.com/tools/toolkit",
+                    "ref": "master",
+                    "value": "toolkit",
+                    "label": "toolkit",
+                },
+                {
+                    "order": 2,
+                    "app": "booking",
+                    "action": "fetch+install",
+                    "required_by": "",
+                    "source": "gitlab.example.com/team/booking",
+                    "ref": "master",
+                    "value": "booking",
+                    "label": "booking",
+                },
+            ],
+        ),
+    )
+
+
+@pytest.fixture()
+def recorded_install(monkeypatch):
+    calls = []
+
+    def install(project, apps, **kw):
+        calls.append(kw)
+        if not kw.get("with_deps"):
+            return _asked()
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(
+                project=project,
+                bench_path=BENCH,
+                results=[
+                    core_apps.AppResult(app="x", site="a.localhost", action="install-app", ok=True)
+                ],
+                ok=True,
+            ),
+        )
+
+    monkeypatch.setattr(core_apps, "install_apps", install)
+    return calls
+
+
+def test_axi_install_without_with_deps_is_exit_2_naming_the_flag(monkeypatch, recorded_install):
+    from caffeinated_whale_cli.commands import axi
+
+    result = CliRunner().invoke(
+        axi.app, ["apps", "install", "proj", BOOKING, "--site", "a.localhost"]
+    )
+    assert result.exit_code == 2
+    assert "app.required_apps_missing" in result.output and "--with-deps" in result.output
+    assert "toolkit" in result.output
+
+
+def test_axi_install_with_deps_consents(monkeypatch, recorded_install):
+    from caffeinated_whale_cli.commands import axi
+    from caffeinated_whale_cli.utils import cache
+
+    monkeypatch.setattr(cache, "recache_project", lambda *a, **k: True)
+    result = CliRunner().invoke(
+        axi.app, ["apps", "install", "proj", BOOKING, "--site", "a.localhost", "--with-deps"]
+    )
+    assert result.exit_code == 0, result.output
+    assert recorded_install[-1]["with_deps"] is True
+
+
+def test_axi_has_no_range_override():
+    """The agent surface gets the consent and the read, never the override (no named
+    beneficiary); the human verb is the escape hatch."""
+    import typer
+
+    from caffeinated_whale_cli.commands import axi
+
+    root = typer.main.get_command(axi.app)
+    apps_group = root.commands["apps"]
+    for path in (("apps", "install"), ("apps", "update"), ("apps", "plan"), ("new-site",)):
+        command = apps_group.commands[path[1]] if path[0] == "apps" else root.commands[path[0]]
+        flags = {opt for p in command.params for opt in getattr(p, "opts", [])}
+        assert "--ignore-frappe-range" not in flags, path
+    install = apps_group.commands["install"]
+    assert "--with-deps" in {opt for p in install.params for opt in getattr(p, "opts", [])}
+
+
+def _human_install(monkeypatch, *args):
+    from caffeinated_whale_cli.commands import apps as apps_cmd
+
+    monkeypatch.setattr(apps_cmd, "ensure_containers_running", lambda *a, **k: None)
+    monkeypatch.setattr(apps_cmd, "_resolve_bench", lambda *a: BENCH)
+    monkeypatch.setattr(apps_cmd, "_refresh_cache", lambda *a: None)
+    return CliRunner().invoke(apps_cmd.app, ["install", "proj", BOOKING, *args])
+
+
+def test_a_script_without_with_deps_refuses_exit_1_naming_the_flag(monkeypatch, recorded_install):
+    result = _human_install(monkeypatch, "--site", "a.localhost")
+    assert result.exit_code == 1
+    assert "--with-deps" in result.output
+    assert len(recorded_install) == 1  # asked once, never re-invoked with consent
+
+
+def test_a_terminal_shows_the_plan_and_asks_once(monkeypatch, recorded_install):
+    from caffeinated_whale_cli.commands import deps_ui
+
+    monkeypatch.setattr(deps_ui, "interactive", lambda json_output=False: True)
+    asked = []
+    monkeypatch.setattr(
+        deps_ui.questionary,
+        "confirm",
+        lambda prompt, default=False: asked.append(prompt)
+        or types.SimpleNamespace(ask=lambda: True),
+    )
+    result = _human_install(monkeypatch, "--site", "a.localhost")
+    assert result.exit_code == 0, result.output
+    assert len(asked) == 1 and "toolkit" in asked[0]
+    assert [c.get("with_deps") for c in recorded_install] == [False, True]
+    assert "toolkit" in result.output  # the plan was shown
+
+
+def test_a_declined_terminal_answer_installs_nothing(monkeypatch, recorded_install):
+    from caffeinated_whale_cli.commands import deps_ui
+
+    monkeypatch.setattr(deps_ui, "interactive", lambda json_output=False: True)
+    monkeypatch.setattr(
+        deps_ui.questionary,
+        "confirm",
+        lambda prompt, default=False: types.SimpleNamespace(ask=lambda: False),
+    )
+    result = _human_install(monkeypatch, "--site", "a.localhost")
+    assert result.exit_code == 1 and len(recorded_install) == 1
+
+
+def test_axi_apps_plan_is_a_read_with_an_honest_exit(monkeypatch):
+    from caffeinated_whale_cli.commands import axi
+
+    plan = _booking_world().plan(
+        app_deps.BenchState(
+            bench_path=BENCH,
+            apps={"frappe": Declarations(app="frappe", version="15.125.0")},
+            sites=["a.localhost"],
+            installed={"a.localhost": {"frappe"}},
+            frappe_version="15.125.0",
+        ),
+        [(BOOKING, "master")],
+    )
+    monkeypatch.setattr(app_deps, "plan", lambda *a, **k: Result(status=Status.OK, data=plan))
+    result = CliRunner().invoke(
+        axi.app, ["apps", "plan", "proj", BOOKING, "--site", "a.localhost", "--branch", "master"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "needs_consent: true" in result.output
+    assert "plan[2]{" in result.output
+    assert "--with-deps" in result.output  # the help line names how to apply it
+
+
+def test_axi_apps_plan_help_runs_the_plan_it_describes(monkeypatch):
+    from caffeinated_whale_cli.commands import axi
+
+    plan = _booking_world().plan(
+        app_deps.BenchState(
+            bench_path=BENCH,
+            apps={"frappe": Declarations(app="frappe", version="15.125.0")},
+            sites=["a.localhost", "b.localhost"],
+            installed={"a.localhost": {"frappe"}, "b.localhost": {"frappe"}},
+            frappe_version="15.125.0",
+        ),
+        [(BOOKING, "master")],
+    )
+    monkeypatch.setattr(app_deps, "plan", lambda *a, **k: Result(status=Status.OK, data=plan))
+    pick = f"toolkit={TOOLKIT}"
+    result = CliRunner().invoke(
+        axi.app, ["apps", "plan", "proj", BOOKING, "--branch", "master", "--dep-source", pick]
+    )
+    assert result.exit_code == 0, result.output
+    for site in ("a.localhost", "b.localhost"):
+        assert (
+            f"cwcli axi apps install proj {BOOKING} --site {site} --branch master "
+            f"--dep-source {pick} --with-deps"
+        ) in result.output

@@ -114,6 +114,10 @@ class _Tool:
         self.cwcli = root / "bin" / "cwcli"
 
     def install(self, find_links: Path) -> None:
+        # Pinned to the wheel's own version so a newer PyPI release cannot win
+        # the by-name resolution over the local wheel.
+        (wheel,) = find_links.glob("*.whl")
+        version = wheel.name.split("-")[1]
         done = subprocess.run(
             [
                 "uv",
@@ -123,7 +127,7 @@ class _Tool:
                 "--reinstall",
                 "--find-links",
                 str(find_links),
-                "caffeinated-whale-cli",
+                f"caffeinated-whale-cli=={version}",
             ],
             env=self.env,
             capture_output=True,

@@ -42,11 +42,13 @@ from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
+from . import deps_ui
 from .update import (
     FIX_BRANCHES_HELP,
     FORCE_HELP,
     NO_PREFLIGHT_HELP,
     SKIP_REQUIREMENTS_HELP,
+    UPDATE_WITH_DEPS_HELP,
     run_app_update,
 )
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
@@ -355,6 +357,11 @@ def install_apps(
             "reported and the command still exits 0."
         ),
     ),
+    with_deps: bool = typer.Option(False, "--with-deps", help=deps_ui.WITH_DEPS_HELP),
+    ignore_frappe_range: bool = typer.Option(
+        False, "--ignore-frappe-range", help=deps_ui.IGNORE_RANGE_HELP
+    ),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=deps_ui.DEP_SOURCE_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -400,8 +407,10 @@ def install_apps(
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
 
-    try:
-        result = core_apps.install_apps(
+    on_event = _make_renderer(json_output=json_output, verbose=verbose)
+
+    def _install(**answers):
+        return core_apps.install_apps(
             project_name,
             all_apps,
             bench_path=resolved,
@@ -409,10 +418,26 @@ def install_apps(
             branch=branch,
             fetch_only=fetch_only,
             if_not_present=if_not_present,
-            on_event=_make_renderer(json_output=json_output, verbose=verbose),
+            ignore_frappe_range=ignore_frappe_range is True,
+            on_event=on_event,
+            **answers,
+        )
+
+    # Before anything is fetched, the app's Frappe range and required apps are checked
+    # at the ref that will land: a mismatch refuses, missing required apps are asked
+    # about (a terminal) or refused naming --with-deps (a script).
+    try:
+        result = deps_ui.run_with_answers(
+            _install,
+            with_deps=with_deps is True,
+            dep_sources=deps_ui.parse_dep_sources(
+                dep_source if isinstance(dep_source, list) else None
+            ),
+            interactive=deps_ui.interactive(json_output),
         )
     except CwcliError as e:
-        _exit_on_exec_error(e)
+        deps_ui.render_error(e)
+        raise typer.Exit(code=1) from e
 
     report = result.data
     assert report is not None  # OK/WARNING always carries a report
@@ -647,6 +672,8 @@ def update_apps(
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
     no_preflight: bool = typer.Option(False, "--no-preflight", help=NO_PREFLIGHT_HELP),
     fix_branches: bool = typer.Option(False, "--fix-branches", help=FIX_BRANCHES_HELP),
+    with_deps: bool = typer.Option(False, "--with-deps", help=UPDATE_WITH_DEPS_HELP),
+    dep_source: list[str] = typer.Option(None, "--dep-source", help=deps_ui.DEP_SOURCE_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -676,6 +703,10 @@ def update_apps(
     (local changes) to its remote tracking branch, discarding those local changes,
     so the update completes; without --force such a conflict fails safely and
     discards nothing. --force never touches an app whose update is clean.
+
+    Every update first reads each named app's new code: a required app (required_apps)
+    the bench or a site lacks, or a Frappe range that no longer fits, refuses with
+    nothing pulled. --with-deps fetches and installs the required apps first.
     """
     run_app_update(
         project_name,
@@ -692,6 +723,8 @@ def update_apps(
         force=force,
         no_preflight=no_preflight,
         fix_branches=fix_branches,
+        with_deps=with_deps is True,
+        dep_sources=deps_ui.parse_dep_sources(dep_source if isinstance(dep_source, list) else None),
         yes=yes,
         sites=sites,
         json_output=json_output,

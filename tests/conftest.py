@@ -199,6 +199,26 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_remote_app_reads(request, monkeypatch):
+    """Keep the unit tier off the network: the install plan reads a remote app's
+    declarations with host git (``core.app_deps.read_remote``) and lists its
+    branches. Unstubbed, a test installing a URL would clone from the internet.
+    Here every remote read is "could not read" (a notice, never a pass or a block);
+    a test of the plan injects its own reader."""
+    if request.node.get_closest_marker("unit"):
+        from caffeinated_whale_cli.core import app_deps
+
+        monkeypatch.setattr(
+            app_deps,
+            "read_remote",
+            lambda url, ref: app_deps.Declarations(
+                app=app_deps.entry_module(url)[0], branch=ref, error="not read in the unit tier"
+            ),
+        )
+        monkeypatch.setattr(app_deps, "list_branches", lambda url: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_boot_unit_repair(request, monkeypatch):
     """Keep the unit tier off the operator's REAL boot units.
 

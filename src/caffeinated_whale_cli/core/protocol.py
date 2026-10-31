@@ -13,12 +13,14 @@ and a hub allows actions on a remote machine only when the two daemons agree.
 * 9: publishing sites (/api/v1/publications, /api/v1/publish/*, the publish job verbs).
 * 10: remote hosts: /api/v1/hosts, the per-host forward, the host_* SSE events, and
   the downgrade-only delegation headers a hub's bridge sends.
+* 11: the dependency plan (/api/v1/apps/plan) and the install, new-site, new-bench and
+  update job arguments `with_deps`, `dep_sources` and `ignore_frappe_range`.
 
 It lives in the UI-pure core (not ``commands/serve.py``) because ``core.hosts``
 needs it to apply the version rule without importing the daemon module.
 """
 
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 
 # The bridge's own protocol: what ``GET /api/v1/bridge`` answers. Bumped when the
 # bridge's request rewrite or its answer shape changes.

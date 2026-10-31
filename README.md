@@ -420,6 +420,9 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `--frappe-url TEXT` | A Frappe fork to build from (private forks use the credential bridge) |
 | `--erpnext` | Install ERPNext on the first site |
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
+| `--with-deps` | Fetch and install the apps each `--app` requires first; the apps are checked after the bench is built, so without it an app with a missing required app is reported as failed |
+| `--ignore-frappe-range` | Install an extra app although its declared Frappe range does not fit the new bench |
+| `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
 | `--admin-password TEXT` | Administrator password for the first site |
 | `--db-root-password TEXT` | The instance's existing MariaDB root password; it does not set a new one (default: the one remembered at init, else `123`; env `CWCLI_DB_ROOT_PASSWORD`) |
 | `-y`, `--yes` | Auto-start a stopped instance without prompting |
@@ -455,6 +458,9 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 |--------|-------------|
 | `--bench TEXT` | Which bench: its numeric index or label |
 | `-a`, `--app TEXT` | An app already on the bench to install on the site (repeatable) |
+| `--with-deps` | Fetch and install the apps the picked apps require first (see [compatibility and required apps](#apps---manage-frappe-apps)); a script without it refuses when one is missing |
+| `--ignore-frappe-range` | Install although an app's declared Frappe range does not fit the bench |
+| `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
 | `--default` | Make it the bench's default site |
 | `--dev-mode` | Turn developer mode on for the new site |
 | `--admin-password TEXT` | Administrator password |
@@ -465,6 +471,7 @@ cwcli new-site [OPTIONS] PROJECT_NAME SITE
 The Administrator password is resolved the same way as for `new-bench`: the flag, then `CWCLI_ADMIN_PASSWORD`, then a hidden prompt, and a non-interactive session with neither refuses with exit 2.
 A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
 cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
+Every picked app's Frappe range and required apps are checked before the site is created, exactly as for `apps install`, and the apps are installed in dependency order, so a refusal leaves no site behind.
 
 ```bash
 CWCLI_ADMIN_PASSWORD=... cwcli new-site my-project shop.localhost --app erpnext --default
@@ -1304,6 +1311,18 @@ It flags an app whose `apps/<app>` is a symlink (naming the real directory it po
 An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present **and registered** (in `sites/apps.txt`) is not fetched again, so pre-warmed benches install it without failing on the existing directory. A repository URL is matched to the app already on the bench by that checkout's git remote, so a repository named differently from its app (`field-service` holding `field_service`) is recognized too; `bench get-app` alone would clone it into `apps/field-service` and then fail renaming that clone onto the existing `apps/field_service`. A present directory that is *not* a valid install - the leftover of an earlier fetch that cloned but failed at its `pip install` step - is refused with an actionable message telling you to remove it and re-run, rather than reporting a false "get-app ok" and then dumping a raw install traceback on every retry. When a fresh fetch itself fails, the partial `apps/<app>` directory it created is removed so a retry genuinely re-fetches (a pre-existing app directory is never touched).
 Each app is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work). Apps may be given positionally (matching `apps update`/`apps checkout` and `axi apps install`) or with `-a`/`--app`; both forms combine, and repeat either to install more than one.
 `--fetch-only` ensures the app is present without installing it on any site.
+**Compatibility and required apps.** Before anything is fetched, install reads what each app declares at the exact ref that will land: its Frappe range in `pyproject.toml` (`[tool.bench.frappe-dependencies]`, for example `frappe = ">=15.0.0,<17.0.0"`) and its `required_apps` in `<app>/hooks.py`.
+An app already on the bench is read from that copy; any other app is read from its repository on the host, so nothing reaches the instance until the check passes.
+Each range is compared with the version on the bench in bench's own dialect (semantic_version's `SimpleSpec`, so `>=16.0.0` does not accept a `16.0.0-dev` Frappe), and a range bench cannot parse (a space-separated `">=15.0.0 <16.0.0"`) is refused, because bench stops on it too.
+A Frappe range that does not fit the bench refuses the install with nothing fetched and names the `version-N` branch to pick; `--ignore-frappe-range` installs anyway when you know the declared range is wrong.
+A range that names another app (`toolkit = ">=0.22.0"`) and does not fit is refused too, with no override: cwcli never switches another app's branch as part of an install, because that moves it for every site on the bench.
+A required app that the bench does not have, or that a target site does not have installed, is shown as an ordered plan, dependencies first, and fetched and installed only with your consent: a terminal shows the plan and asks once, `--with-deps` answers yes for a script, and a script without it refuses with exit 1 and names the flag.
+cwcli finds a missing required app in the apps catalog only (your GitHub, every glab host, and Frappe's marketplace index), never by guessing a repository name; an `org/repo` entry only narrows the catalog match to that repository.
+A required app the catalog does not hold refuses the install as not found in your app sources: add its source to the apps catalog, or fetch it yourself with `--fetch-only`.
+When the catalog holds several repositories with that name, a terminal asks which to fetch, preselecting the one whose own Frappe range fits; a script passes `--dep-source APP=URL`, which picks only among those repositories (a URL the catalog does not hold is refused before anything is fetched).
+A required app is fetched at the same branch name as the app that requires it, else `version-N` for the bench's Frappe, else its default branch, and only at a ref whose own Frappe range fits.
+After each fetch, install reads the fetched copy again and stops before any site install if its declarations changed since the check (the repository moved in between).
+An app that declares nothing is never given a constraint it did not state, and a declaration that could not be read is reported as a note, never treated as a pass or a refusal.
 `--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled, with its install hooks never rerun) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
 A bench that is already running may still serve code it loaded before the install and fail to see the new app: install therefore **resynchronises** that bench - it restarts every cwcli-supervised program that runs the bench's Python (`web`, `schedule`, and every worker) and requires every changed site to answer Frappe before it reports success.
 Each restart is announced as it happens and the step is reported as a `restart-processes` row, and the command exits non-zero rather than claiming success for a site it could not confirm.
@@ -1329,6 +1348,10 @@ A checked-out branch the remote's fetch refspec does not cover (a narrow clone s
 Uncommitted changes and unpushed commits that the reset would discard are reported as data loss, and refuse the update through the data-loss guard below.
 Any other check that cannot run or times out is reported as unverified and never blocks.
 No preflight can predict a failing patch, schema sync or asset build in the new code; those still surface only in the real run.
+**Required apps and ranges, for every update.** Every `apps update`, not only a core update, first fetches each named app's tracked branch (objects only, never the checked-out code) and reads what its new code declares.
+A `required_apps` entry the bench does not have, or that a site with the app installed lacks, refuses the update with nothing pulled, because neither bench nor the migrate would fetch or install it.
+`--with-deps` fetches and installs those apps on the affected sites first (with the same catalog lookup, branch rule and checks as `apps install`), then the pull and migrate run as usual; `--dep-source APP=URL` picks among the catalog's repositories when it holds several.
+A new Frappe range that no longer fits the bench is the same `frappe-dependencies` blocker as for a core update, and `--fix-branches` switches the app the same way.
 `--no-preflight` skips the checks, for a false positive such as a remote that only a proxy-configured fetch can reach; bench then fails wherever it fails.
 It does not skip the data-loss guard below.
 The findings ride the report as `preflight` (each with a stable `code`, `severity`, `app`/`site`, `message` and `remedy`) plus `preflight_blocked`, on `--json` and `cwcli axi apps update` alike.
@@ -1442,8 +1465,9 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `--skip-maintenance` | Skip enabling maintenance mode for affected sites during update |
 | `--skip-requirements` | Do not run `bench setup requirements --python` before migrating (it runs by default for every app on the bench); the output says it was skipped |
 | `--force` | Destructive. Updating `frappe`: run the core reset even though it discards uncommitted or unpushed work in that app (see [the data-loss guard](#apps---manage-frappe-apps)). Other apps: hard-reset an app whose `git pull` hits a conflict instead of failing. Either way, re-own app repositories git refuses for dubious ownership |
-| `--fix-branches` | Updating `frappe`: switch an app whose declared frappe-dependencies do not fit this bench to the matching `version-N` branch first, instead of refusing |
-| `--no-preflight` | Updating `frappe` only: skip the checks that run before the core reset (see [the `frappe` preflight](#apps---manage-frappe-apps)); the data-loss guard still runs |
+| `--fix-branches` | Switch an app whose declared frappe-dependencies do not fit this bench to the matching `version-N` branch first, instead of refusing |
+| `--with-deps` | When an app's new code requires an app the bench or a site lacks, fetch and install it on the sites that have the app first, instead of refusing |
+| `--no-preflight` | Skip the checks that run before the update: the [`frappe` preflight](#apps---manage-frappe-apps) for a core update, and the required-apps and Frappe-range check for every update; the data-loss guard still runs |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 
 **What It Does:**
@@ -2240,6 +2264,9 @@ Remove bench on a stopped instance starts only its containers, and stops them ag
 Restarting an instance from the page brings back exactly the benches that were serving (under cwcli's supervisor or `bench start`), unlike `cwcli restart <project>`, which brings back the first bench.
 The long-job forms cover `init`, `apps install`, `apps update`, `apps checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, and `self-update`.
 `apps update` runs the same preflight as the CLI and shows every finding in the job view before the reset begins.
+When an update's new code needs an app the bench or a site lacks, the job page offers "Fetch and install it, then retry", which runs the same update again with `--with-deps`.
+The Install sheet, New site and New bench show the [compatibility and required apps](#apps---manage-frappe-apps) plan live as you pick the app, branch and sites: each app at the ref that would land, its Frappe range against the bench, and each required app with where it comes from and the install order.
+Start stays disabled while something would refuse the install; the Install sheet's checkbox is the consent to fetch the required apps, New site and New bench add them to the picks with the reason shown, and a Frappe range you know is wrong can be overridden by typing the app's name.
 A failed job leads with its plain cause (for example MariaDB rejecting the database root password, or git failing to authenticate) when cwcli recognizes one in the failing step's output, and otherwise says it did not and points at that output.
 Interrupt requests use the command's cleanup path; Detach only leaves the page, and an active record whose process disappears becomes `unknown` instead of being reported as failed or successful.
 On Windows a job that has not begun its cleanup five minutes after Interrupt, or has not finished it two minutes after beginning, is terminated; one that never began is marked `unknown` because its cleanup may not have run.
@@ -3050,6 +3077,14 @@ cwcli axi apps install frappe-one https://github.com/me/myapp --site erp.localho
 # Idempotent: skip (do not reinstall) an app already on the site and exit 0, so a
 # CI step can trust the exit code. A real install failure still exits non-zero.
 cwcli axi apps install frappe-one hrms --site erp.localhost --if-not-present
+# An app that requires another app the site lacks is exit 2 naming --with-deps;
+# a Frappe range that does not fit is exit 1 with nothing fetched (there is no
+# override here: the human `cwcli apps install --ignore-frappe-range` is the hatch).
+cwcli axi apps install frappe-one booking --site erp.localhost --with-deps
+
+# Read-only: what installing an app would do, as TOON (the order, each range
+# against the bench, where each required app comes from). Exit 1 when it would refuse.
+cwcli axi apps plan frappe-one https://github.com/me/myapp --site erp.localhost --branch develop
 
 # Provision a new instance, bench, and site; the report prints as ONE TOON
 # document. BLOCKS for the full 10-20 minute run (like axi apps update) and
@@ -3094,6 +3129,7 @@ Use `cwcli open`'s banner for the host address and `cwcli status` for the HTTP o
 Updating `frappe` runs the same preflight as the human command before the core reset.
 Its findings are the `preflight` table (`severity,code,app,site,message,remedy`); branch on `code`, never on the message.
 A blocker sets `preflight_blocked: true` and exits 1 with nothing run, and `--no-preflight` is available here too, because it skips predictions rather than a safety gate.
+On this verb `--no-preflight` skips only those core-reset predictions: the required-apps and Frappe-range check still runs for every update and still blocks, because the agent surface has no Frappe-range override.
 The data-loss guard runs here too, under `--no-preflight` as well: uncommitted or unpushed work in any app (or work that could not be checked) sets `data_loss_refused: true`, names the apps in `data_loss_apps`, and exits 1 with nothing run.
 `--force` accepts the loss; the reset then runs and `data_loss_apps` names the apps it was allowed to discard work in.
 

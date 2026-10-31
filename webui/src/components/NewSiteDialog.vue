@@ -17,6 +17,8 @@ import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
 import CommandLine from './CommandLine.vue'
+import DependencyTree from './DependencyTree.vue'
+import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
 import { onHost } from '../data/hosts'
@@ -37,6 +39,8 @@ const rejection = computed(() => (rejected.value && rejected.value.project === p
 const askDbRootPassword = computed(() => !!project.value && (!!rejection.value || needsDbRootPassword(project.value, host.value)))
 const apps = ref([])
 const pickerOpen = ref(false)
+const override = ref(false)
+const depSources = ref({})
 onMounted(() => loadCatalog())
 const makeDefault = ref(false)
 const devMode = ref(false)
@@ -61,6 +65,8 @@ watch(() => newSiteDialog.open, (open) => {
   adminPassword.value = ''
   dbRootPassword.value = ''
   apps.value = []
+  override.value = false
+  depSources.value = {}
   makeDefault.value = false
   devMode.value = false
   publishing.value = false
@@ -185,6 +191,18 @@ const ROW_LABEL = { name: 'Name', port: 'Bench port', dns: 'DNS record', proxy: 
 const ROW_ICON = { ok: 'lucide-circle-check text-ink-green-5', warn: 'lucide-triangle-alert text-ink-amber-5', fail: 'lucide-circle-x text-ink-red-5' }
 const publishReady = computed(() => !publishing.value || (!!options.value && !!rows.value && rows.value.every((r) => r.state !== 'fail')))
 
+// The picks' Frappe ranges and required apps, planned for a site that holds frappe
+// alone; required apps join the picks with the reason shown, and go when their app does.
+const benchApp = computed(() => apps.value.filter((v) => !remoteApp(v)))
+const instUp = computed(() => !!findInstance(project.value, host.value)?.container_running)
+const { plan, loading: planLoading, error: planError } = usePlan(
+  () => (newSiteDialog.open && project.value && bench.value != null && instUp.value && apps.value.length
+    ? { project: project.value, bench: String(bench.value), target: [...fetchUrls.value, ...benchApp.value], new_site: fullName.value || 'new-site.localhost', dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
+    : null),
+  () => host.value,
+)
+const joined = computed(() => requiredNodes(plan.value))
+const planBlocked = computed(() => planBlockers(plan.value).length > 0 && !(onlyOverridable(plan.value) && override.value))
 const NAME_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/
 const nameState = computed(() => {
   const n = fullName.value
@@ -199,14 +217,18 @@ const nameState = computed(() => {
   if (!n.endsWith('.localhost')) return { ok: true, warn: `${n} looks like a real domain: it must resolve to this machine (hosts file or DNS) to open.${publishable.value ? ' Tick Publish below to have cwcli point it here.' : ''}` }
   return { ok: true, text: 'Resolves to this machine automatically.' }
 })
-const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value)
+const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value && !(apps.value.length && instUp.value && (planLoading.value || planBlocked.value)))
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
+  let deps = joined.value.length ? ' --with-deps' : ''
+  for (const [a, u] of Object.entries(depSources.value)) deps += ` --dep-source ${q(`${a}=${u}`)}`
+  if (override.value) deps += ' --ignore-frappe-range'
   for (const a of appNames.value) line += ` --app ${q(a)}`
-  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only && ` + line
   if (makeDefault.value) line += ' --default'
   if (devMode.value) line += ' --dev-mode'
+  line += deps
+  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${deps} && ` + line
   return line
 })
 function toggleApp(name, on) {
@@ -225,6 +247,9 @@ async function start() {
         fetch: fetchUrls.value,
         default: makeDefault.value,
         developer_mode: devMode.value,
+        ...(joined.value.length ? { with_deps: true } : {}),
+        ...(Object.keys(depSources.value).length ? { dep_sources: depSources.value } : {}),
+        ...(override.value ? { ignore_frappe_range: true } : {}),
         ...(publishing.value ? { publish: { address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value, access_list_id: Number(accessList.value) || 0 } } : {}),
       },
       secrets: { admin_password: adminPassword.value, ...(askDbRootPassword.value && dbRootPassword.value ? { db_root_password: dbRootPassword.value } : {}) },
@@ -280,11 +305,15 @@ async function start() {
               <AppIcon :app="chipApp(a)" size="xs" />{{ chipApp(a).title }}<span v-if="remoteApp(a)" class="text-xs text-ink-gray-4">fetch</span>
               <button type="button" class="rounded p-0.5 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-gray-7" :aria-label="`Remove ${a}`" @click="toggleApp(a, false)"><span class="lucide-x size-3.5" aria-hidden="true" /></button>
             </span>
+            <span v-for="n in joined" :key="`req-${n.app}`" class="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-4 border border-dashed border-outline-gray-2 bg-surface-gray-1 px-2 py-1 text-sm text-ink-gray-7" :title="n.on_bench ? 'on this bench' : `fetched from ${n.source || n.target}`">
+              <AppIcon class="shrink-0" :app="catalogApp(n.app)" size="xs" /><span class="shrink-0">{{ catalogApp(n.app).title || n.app }}</span><span class="min-w-0 text-xs leading-4 text-ink-gray-4">{{ n.on_bench ? '' : 'fetch · ' }}required by {{ n.parent }}</span>
+            </span>
             <Button size="sm" variant="subtle" icon-left="lucide-plus" :label="apps.length ? 'Change' : 'Choose apps'" :disabled="!pickerOptions.length || inventory === 'reading'" @click="pickerOpen = true" />
             <span v-if="inventory === 'reading'" class="text-xs text-ink-gray-5">reading the bench's apps…</span>
             <span v-else-if="inventory !== 'live'" class="text-xs text-ink-gray-5">the bench's apps could not be read live; an app it already holds is not fetched again</span>
             <span v-else-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
           </div>
+          <DependencyTree v-if="apps.length && instUp" class="mt-3" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" consent-note="Picking an app adds the apps it requires; they go away when it does." />
           <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" @update:model-value="(v) => (apps = v)" @update:open="pickerOpen = $event" />
         </div>
         <Checkbox v-model="makeDefault" label="Make it the bench's default site" />

@@ -34,6 +34,14 @@ from caffeinated_whale_cli.core.update import (
 from .batched_probes import emulate_batched
 from .test_apps import FakeFrappeContainer, _FakeAPI, _wire_stopped_bench
 
+
+@pytest.fixture(autouse=True)
+def _no_dependency_tier(monkeypatch):
+    """These tests drive the update's reset, pull and migrate phases against fakes that
+    answer no declarations reader; the dependency tier has its own tests
+    (``test_update_dependencies.py``), so here it finds nothing."""
+    monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
+
 BENCH = "/workspace/frappe-bench"
 
 
@@ -182,7 +190,9 @@ class TestBenchProbe:
         # no shell at all is strictly safer than a correctly quoted one.
         _update()
         assert f"test -d {BENCH}/apps" in wired.calls
-        assert not any(c.startswith("sh -c") for c in wired.calls)
+        # The probe itself: the dependency reader runs its script under `sh -c` too,
+        # but with the bench path as argv data, never interpolated into the command.
+        assert not any(c.startswith("sh -c") and "test -d" in c for c in wired.calls)
 
 
 # -------------------------------------------------- failed vs unknown (Decision 2)

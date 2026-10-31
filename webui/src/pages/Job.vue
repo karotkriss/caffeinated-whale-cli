@@ -13,6 +13,7 @@ import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
 import JobSteps from '../components/JobSteps.vue'
 import JobState from '../components/JobState.vue'
+import DependencyTree from '../components/DependencyTree.vue'
 import { backups, loadBackups } from '../data/backups'
 import { openRestoreWizard } from '../data/restore-wizard'
 import { openNewBench } from '../data/new-bench-dialog'
@@ -78,6 +79,21 @@ const schedulable = computed(() => !host && !!record.value && SCHEDULABLE.has(re
 const preflight = computed(() => record.value?.events?.find((event) => event.type === 'update_preflight')?.data)
 // A dependency mismatch the preflight can fix: the same job again with fix_branches set.
 const fixable = computed(() => (preflight.value?.findings || []).filter((f) => f.code === 'app.frappe_dependency_unsatisfied'))
+// A required app the new code needs and the bench or a site lacks: the same job again
+// with with_deps set, which fetches and installs it first.
+const requiredFindings = computed(() => (preflight.value?.findings || []).filter((f) => f.code === 'app.required_app_missing' || f.code === 'app.required_app_not_installed'))
+const requiredApps = computed(() => [...new Set(requiredFindings.value.map((f) => f.message.match(/requires (\S+?) \(required_apps\)|but not (\S+?), which/)?.slice(1).find(Boolean)).filter(Boolean))])
+const fetchingDeps = ref(false)
+async function fetchDepsAndRetry() {
+  fetchingDeps.value = true
+  try {
+    const r = record.value
+    const next = await createJob({ verb: r.verb, target: r.target, args: { ...(r.args || {}), with_deps: true }, consent: !!r.consent }, host)
+    router.push(jobPath(next))
+  } catch (e) { actionError.value = e } finally { fetchingDeps.value = false }
+}
+// A refused install or new site carries its dependency plan: show it as the tree.
+const refusedPlan = computed(() => (record.value?.state === 'failed' ? record.value?.error?.detail?.plan : null) || null)
 const switching = ref(false)
 async function switchAndRetry() {
   switching.value = true
@@ -219,6 +235,9 @@ async function retry() {
 
 const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
 const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
+// The dependency questions: consent to the required apps, or a pick between sources.
+const depRows = computed(() => (record.value?.choice?.kind === 'confirm_required_apps' ? record.value.choice.options || [] : []))
+const sourceOptions = computed(() => (record.value?.choice?.kind === 'select_app_source' ? record.value.choice.options || [] : []))
 // The name typed back is the most specific thing the job acts on: a dropped
 // site's name, else the instance's (scale, rm, rm-bench).
 const consentTarget = computed(() => record.value?.target?.site || record.value?.target?.project)
@@ -244,6 +263,11 @@ async function continueChoice(value) {
     spec.consent = true
   }
   else if (param === 'bench') spec.target = { ...job.target, bench: String(value) }
+  else if (param === 'with_deps') spec.args = { ...job.args, with_deps: true }
+  else if (param === 'dep_sources') {
+    const app = sourceOptions.value[0]?.app
+    spec.args = { ...job.args, dep_sources: { ...(job.args?.dep_sources || {}), [app]: String(value) } }
+  }
   else if (param === 'auto_start') {
     spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
     start = (s) => createJob(s, host)
@@ -314,8 +338,29 @@ async function continueChoice(value) {
       <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="[record.error?.message, record.error?.hint].filter(Boolean).join(' ')" />
       <Alert v-else-if="record.state === 'answered'" theme="gray" title="Decision taken" :description="`This job stopped for a decision; you answered it and the work continued as another job.`" :primary-action="record.answered_by ? { label: 'Open the follow-up job', onClick: () => $router.push(jobPath({ id: record.answered_by, host })) } : undefined" />
       <template v-else-if="record.state === 'needs_choice'">
-        <Alert v-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
-        <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
+        <template v-if="depRows.length">
+          <Alert theme="amber" title="This app requires apps the bench or site does not have" :description="record.choice.prompt.split(' Fetch and install')[0] + ' Nothing was fetched or installed yet.'" />
+          <div class="overflow-hidden rounded-6 border border-outline-gray-1">
+            <div v-for="row in depRows" :key="row.app" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-outline-gray-1 px-3 py-2 last:border-b-0" :class="row.required_by && 'pl-7'">
+              <span class="tabular-nums text-xs text-ink-gray-4">{{ row.order }}.</span>
+              <span class="font-mono text-sm text-ink-gray-9">{{ row.app }}</span>
+              <Badge size="sm" :theme="row.action === 'none' ? 'gray' : 'blue'" :label="row.action.replace('+', ' + ')" />
+              <span class="min-w-0 break-all text-xs text-ink-gray-5">{{ [row.required_by ? `required by ${row.required_by}` : '', row.source, row.ref].filter(Boolean).join(' · ') }}</span>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <Button variant="solid" icon-left="lucide-package-plus" label="Fetch and install the required apps, then continue" @click="continueChoice()" />
+            <p class="text-p-sm text-ink-gray-5">Starts this job again with consent: the required apps first, in the order above.</p>
+          </div>
+        </template>
+        <template v-else-if="sourceOptions.length">
+          <Alert theme="amber" title="Pick where to fetch the required app from" :description="record.choice.prompt" />
+          <div class="flex flex-wrap gap-2">
+            <Button v-for="o in sourceOptions" :key="o.value" :variant="o.value === record.choice.default ? 'solid' : 'subtle'" icon-left="lucide-git-branch" :label="o.label + (o.ok ? '' : ' (range does not fit)')" @click="continueChoice(o.value)" />
+          </div>
+        </template>
+        <Alert v-else-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
+        <Alert v-if="!depRows.length && !sourceOptions.length && !benchOptions.length && !consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
         <div v-if="benchOptions.length" class="flex flex-wrap gap-2">
           <Button v-for="option in benchOptions" :key="option.value" icon-left="lucide-layers" :label="option.label" @click="continueChoice(option.value)" />
         </div>
@@ -325,6 +370,7 @@ async function continueChoice(value) {
         </div>
       </template>
       <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" :primary-action="passwordRejected ? { label: 'Enter the root password', onClick: enterRootPassword } : undefined" />
+      <DependencyTree v-if="refusedPlan" :plan="refusedPlan" />
       <div v-if="benchState" class="rounded-6 border border-outline-red-2 bg-surface-red-1 px-4 py-3 text-sm">
         <div class="font-medium text-ink-red-6">Bench state after this run</div>
         <dl class="mt-1 grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-ink-gray-8">
@@ -350,10 +396,15 @@ async function continueChoice(value) {
           <Button variant="solid" icon-left="lucide-git-branch" :label="`Switch ${[...new Set(fixable.map((f) => f.remedy?.match(/checkout \S+ (\S+) (version-\d+)/)?.[1] || f.app))].join(', ')} to the matching branch and retry`" :loading="switching" @click="switchAndRetry" />
           <p class="text-p-sm text-ink-gray-5">Checks out the matching version-N branch in each app named below (a dirty tree still refuses), then runs this update again.</p>
         </div>
+        <div v-if="preflight.blocked && requiredFindings.length && !active" class="mt-3 flex flex-wrap items-center gap-3">
+          <Button variant="solid" icon-left="lucide-package-plus" :label="`Fetch and install ${requiredApps.join(', ') || 'the required apps'}, then retry`" :loading="fetchingDeps" @click="fetchDepsAndRetry" />
+          <p class="text-p-sm text-ink-gray-5">Fetches each from the apps catalog, installs it on the sites that have the updated app, then runs this update again.</p>
+        </div>
         <div v-if="preflight.findings.length" class="mt-4 divide-y divide-outline-gray-1">
           <div v-for="finding in preflight.findings" :key="`${finding.code}-${finding.path}`" class="py-3">
             <div class="flex items-center gap-2"><Badge :theme="finding.severity === 'blocker' ? 'red' : finding.severity === 'data_loss' ? 'amber' : 'gray'" :label="finding.severity.replace('_', ' ')" /><span class="font-mono text-sm text-ink-gray-8">{{ finding.path || finding.app }}</span></div>
             <p class="mt-1 text-p-sm text-ink-gray-6">{{ finding.message }}</p>
+            <p v-if="finding.remedy" class="mt-1 text-p-sm text-ink-gray-5">{{ finding.remedy }}</p>
           </div>
         </div>
       </section>

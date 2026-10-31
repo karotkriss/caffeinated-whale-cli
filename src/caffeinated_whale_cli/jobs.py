@@ -623,12 +623,15 @@ def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
     args = record.get("args") or {}
     # Both flags are set by the page only behind a typed confirmation of a name; a
     # retry must not carry that consent over to a run nobody confirmed.
-    if (record.get("verb") == "apps-checkout" and args.get("reset") is True) or (
-        record.get("verb") == "apps-update" and args.get("force") is True
+    if (
+        (record.get("verb") == "apps-checkout" and args.get("reset") is True)
+        or (record.get("verb") == "apps-update" and args.get("force") is True)
+        or args.get("ignore_frappe_range") is True
     ):
         return (
             "job.retry_guarded",
-            "This job discards local work, so start it again from its page to confirm it again.",
+            "This job discards local work or overrides a declared Frappe range, so start it "
+            "again from its page to confirm it again.",
         )
     result = record.get("result") or {}
     if (record.get("error") or {}).get("code") in _EXEC_OUTCOME_UNKNOWN or (
@@ -1454,6 +1457,14 @@ def _run_self_update(args: dict[str, Any], emit: _Recorder) -> Result:
     )
 
 
+def _dep_sources(args: dict[str, Any]) -> dict[str, str] | None:
+    """``args.dep_sources``: the repository picked for each ambiguous required app."""
+    raw = args.get("dep_sources")
+    if not isinstance(raw, dict):
+        return None
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+
+
 def _dispatch(
     verb: str,
     target: dict[str, Any],
@@ -1518,6 +1529,9 @@ def _dispatch(
             install_erpnext=bool(args.get("install_erpnext")),
             apps=[str(a) for a in (args.get("apps") or []) if a],
             db_root_password=_db_root_password(secret_values),
+            with_deps=args.get("with_deps") is True,
+            dep_sources=_dep_sources(args),
+            ignore_frappe_range=args.get("ignore_frappe_range") is True,
             after_init=lambda path: cache.recache_project(project, bench_path=path, warnings=[]),
             on_event=emit,
         )
@@ -1573,8 +1587,7 @@ def _dispatch(
                     "The site was not created, because it could not be published: "
                     + " ".join(refused),
                 )
-        fetch = [str(u) for u in (args.get("fetch") or []) if u]
-        if fetch:
+        if args.get("fetch"):
             # The root password is checked before the fetch, not minutes later at new-site.
             prologue = core_resolvers.resolve_container_and_bench(project, bench, None)
             if isinstance(prologue, tuple):
@@ -1586,17 +1599,9 @@ def _dispatch(
                 )
                 if unverified is not None:
                     emit.lifecycle("db_password_unverified", unverified.text)
-            # Captain note 49: a remote pick is fetched onto the bench FIRST (no site
-            # install yet); a failed fetch stops the job before any site exists.
-            fetched = core_apps.install_apps(
-                project, fetch, bench=bench, fetch_only=True, on_event=emit
-            )
-            if fetched.data is None or not getattr(fetched.data, "ok", True):
-                raise CwcliError(
-                    ErrorKind.PRECONDITION,
-                    "new_site.fetch_failed",
-                    "Fetching the remote apps failed; the site was not created.",
-                )
+        # A remote pick is fetched onto the bench FIRST (no site install
+        # yet), after the dependency plan of every pick; a refusal or a failed fetch stops
+        # the job before any site exists.
         result = core_new_site.new_site(
             project,
             site=site,
@@ -1606,6 +1611,10 @@ def _dispatch(
             default=bool(args.get("default")),
             developer_mode=bool(args.get("developer_mode")),
             db_root_password=_db_root_password(secret_values),
+            fetch=[str(u) for u in (args.get("fetch") or []) if u],
+            with_deps=args.get("with_deps") is True,
+            dep_sources=_dep_sources(args),
+            ignore_frappe_range=args.get("ignore_frappe_range") is True,
             on_event=emit,
         )
         if result.data is not None:
@@ -1712,6 +1721,9 @@ def _dispatch(
             branch=args.get("branch") or None,
             fetch_only=bool(args.get("fetch_only")),
             if_not_present=True,
+            with_deps=args.get("with_deps") is True,
+            dep_sources=_dep_sources(args),
+            ignore_frappe_range=args.get("ignore_frappe_range") is True,
             on_event=emit,
         )
         return _refresh_after_apps(project, install_result, emit)
@@ -1735,7 +1747,10 @@ def _dispatch(
             no_recache=False,
             force=args.get("force") is True,
             preflight=not bool(args.get("no_preflight")),
+            dependency_checks=not bool(args.get("no_preflight")),
             fix_branches=bool(args.get("fix_branches")),
+            with_deps=args.get("with_deps") is True,
+            dep_sources=_dep_sources(args),
             on_event=emit,
         )
     if verb == "backup":

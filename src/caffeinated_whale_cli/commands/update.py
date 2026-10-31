@@ -323,7 +323,7 @@ class _Renderer:
 _PREFLIGHT_GROUPS = (
     (
         update_preflight.BLOCKER,
-        "Blocking - the core update would fail:",
+        "Blocking - the update would fail:",
         "[bold red]✗[/bold red]",
     ),
     (
@@ -396,12 +396,24 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         # "did not run" rather than "nothing changed": --force may have re-owned a repo.
         if report.preflight_blocked:
             blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
+            what = "The core update did not run." if report.frappe_reset else "Nothing was pulled."
             console.print(
                 f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
-                "The core update did not run.[/bold red]"
+                f"{what}[/bold red]"
             )
+            if any(
+                f.code in ("app.required_app_missing", "app.required_app_not_installed")
+                for f in blockers
+            ):
+                console.print(
+                    "Re-run with --with-deps to fetch and install the required apps first."
+                )
             console.print(
-                "Re-run with --no-preflight to run bench anyway"
+                (
+                    "Re-run with --no-preflight to run bench anyway"
+                    if report.frappe_reset
+                    else "Re-run with --no-preflight to skip the checks"
+                )
                 + (
                     "; the local work below still needs --force."
                     if report.data_loss_refused
@@ -727,6 +739,8 @@ def run_app_update(
     force: bool = False,
     no_preflight: bool = False,
     fix_branches: bool = False,
+    with_deps: bool = False,
+    dep_sources: dict[str, str] | None = None,
     yes: bool = False,
     sites: list[str] | None = None,
     json_output: bool = False,
@@ -786,7 +800,10 @@ def run_app_update(
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,
+            dependency_checks=not no_preflight,
             fix_branches=fix_branches,
+            with_deps=with_deps,
+            dep_sources=dep_sources or None,
             auto_start=yes,
             on_event=renderer,
         )
@@ -841,14 +858,20 @@ SKIP_REQUIREMENTS_HELP = (
     "Python requirements are reinstalled for every app first, so a package the new code "
     "needs (from any app, frappe included) is installed before the sites migrate."
 )
+UPDATE_WITH_DEPS_HELP = (
+    "When an app's new code requires an app (required_apps) the bench or a site lacks, "
+    "fetch and install it on the sites that have the app first, then update. Without it "
+    "the update refuses with nothing pulled."
+)
 FIX_BRANCHES_HELP = (
-    "Updating frappe: when an app's declared frappe-dependencies do not fit this bench "
+    "When an app's declared frappe-dependencies do not fit this bench "
     "(the preflight refuses otherwise), switch that app to the matching version-N branch "
     "first (cwcli apps checkout; a dirty tree still refuses), then re-check and update."
 )
 NO_PREFLIGHT_HELP = (
-    "Core updates only: skip the checks that run before the frappe/erpnext reset "
-    "(app remotes and branches, sites, services, migrate locks). Use when a check is "
+    "Skip the checks that run before the update: an app's required apps and Frappe "
+    "range at its new tip, and for a core update the checks before the frappe/erpnext "
+    "reset (app remotes and branches, sites, services, migrate locks). Use when a check is "
     "a false positive; bench then fails wherever it fails. The check for local work "
     "the reset would discard still runs; only --force passes it."
 )
@@ -869,6 +892,10 @@ _UNREAD_WARNING_CODES = frozenset(
         "inspect.site_unread",
         "discover.bench_unreadable",
         "discover.site_unreadable",
+        # --with-deps: why a required app was not fetched or installed.
+        "app.required_app_install_failed",
+        "app.dependencies_changed",
+        "app.required_app_fetch_failed",
     }
 )
 
@@ -993,6 +1020,7 @@ def update(
         help=NO_PREFLIGHT_HELP,
     ),
     fix_branches: bool = typer.Option(False, "--fix-branches", help=FIX_BRANCHES_HELP),
+    with_deps: bool = typer.Option(False, "--with-deps", help=UPDATE_WITH_DEPS_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -1036,6 +1064,7 @@ def update(
         force=force,
         no_preflight=no_preflight,
         fix_branches=fix_branches,
+        with_deps=with_deps is True,
         yes=yes,
         sites=sites,
     )

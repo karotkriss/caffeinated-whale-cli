@@ -60,6 +60,12 @@ from dataclasses import dataclass
 import toml
 
 from . import bench_ops, bench_read
+from .app_deps import app_version
+from .app_deps import parsed as _parsed
+from .app_deps import semver as _semver
+from .app_deps import simple_spec as _simple_spec
+from .app_deps import spec_floor_major as _spec_floor_major
+from .app_deps import table as _table
 from .errors import CwcliError
 
 BLOCKER = "blocker"
@@ -808,6 +814,46 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "cwcli apps checkout {q_project} {q_fix_app} {q_fix_branch}{selector_flag}, or re-run "
         "with --fix-branches to have cwcli switch it (a confirmed step)",
     ),
+    "app.required_app_missing": (
+        BLOCKER,
+        "the new code at {ref} requires {dep} (required_apps), which is not on this bench; "
+        "neither bench nor the migrate would fetch it",
+        "re-run with --with-deps to fetch {dep} from the apps catalog and install it on the "
+        "sites that have {app} first, or fetch it yourself: cwcli apps install {q_project} "
+        "<{dep} repository URL>{selector_flag} --fetch-only",
+    ),
+    "app.required_app_source_unknown": (
+        BLOCKER,
+        "the new code at {ref} requires {dep} (required_apps), which is not on this bench "
+        "and was not found in your app sources",
+        "add {dep}'s source to the apps catalog and run the update again, or fetch it "
+        "yourself: cwcli apps install {q_project} <{dep} repository URL>{selector_flag} "
+        "--fetch-only",
+    ),
+    "app.required_app_source_ambiguous": (
+        BLOCKER,
+        "the new code at {ref} requires {dep} (required_apps), and the apps catalog holds "
+        "several repositories named {dep}: {candidates}",
+        "pick the one to fetch: re-run with --with-deps --dep-source {dep}=<url>",
+    ),
+    "app.required_app_not_installed": (
+        BLOCKER,
+        "site '{site}' has {app} installed but not {dep}, which the new code at {ref} "
+        "requires; the migrate would run {app}'s new code without it",
+        "re-run with --with-deps, or install it first: cwcli apps install {q_project} "
+        "{q_dep} --site {q_site}{selector_flag}",
+    ),
+    "app.range_unparseable": (
+        BLOCKER,
+        'declares {dep} = "{spec}" in [tool.bench.frappe-dependencies], which bench cannot '
+        'parse (it stops on it); ranges are comma-separated, like ">=15.0.0,<16.0.0"',
+        None,
+    ),
+    "app.dependencies_unverified": (
+        UNVERIFIED,
+        "its required apps and Frappe range at the new tip could not be checked ({error})",
+        None,
+    ),
     "content.unverified": (
         UNVERIFIED,
         "the Python, Node and frappe versions its code needs could not be checked ({error})",
@@ -840,6 +886,7 @@ def classify(
             q_project=shlex.quote(project),
             q_app=shlex.quote(str(fact.get("app") or "")),
             q_site=shlex.quote(str(fact.get("site") or "")),
+            q_dep=shlex.quote(str(fact.get("dep") or "")),
             q_remote=shlex.quote(str(fact.get("remote") or "")),
             q_branch=shlex.quote(str(fact.get("branch") or "")),
             fetch_depth="--depth=1 " if fact.get("shallow_repo") else "",
@@ -872,8 +919,12 @@ def classify(
                 remedy=fix,
             )
         )
-    # Stable: within a severity the script's own order (bench-level, then per app in
-    # bench order) is kept.
+    return sort_findings(findings)
+
+
+def sort_findings(findings: list[PreflightFinding]) -> list[PreflightFinding]:
+    """Blockers first. Stable: within a severity the script's own order (bench-level,
+    then per app in bench order) is kept."""
     return sorted(findings, key=lambda f: _ORDER.get(f.severity, 9))
 
 
@@ -919,12 +970,6 @@ _NPM_OP = re.compile(r"<=|>=|<|>|=|\^|~>?")
 _NPM_PART = re.compile(
     r"^[v=]*(\d+|[xX*])(?:\.(\d+|[xX*])(?:\.(\d+|[xX*]))?)?(?:\+[0-9A-Za-z.-]+)?$"
 )
-# semantic_version 2.10's SimpleSpec.Parser.NAIVE_SPEC and Version, as bench 5.31.0 uses them.
-_SIMPLE = re.compile(
-    r"^(<|<=||=|==|>=|>|!=|\^|~|~=)(\*|0|[1-9][0-9]*)(?:\.(\*|0|[1-9][0-9]*)"
-    r"(?:\.(\*|0|[1-9][0-9]*))?)?(?:-([a-z0-9A-Z.-]*))?(?:\+([a-z0-9A-Z.-]*))?$"
-)
-_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-zA-Z.-]+))?(?:\+[0-9a-zA-Z.-]+)?$")
 
 
 def _pep440_contains(spec: str, version: str) -> bool | None:
@@ -998,117 +1043,6 @@ def _npm_satisfies(spec: str, version: str) -> bool | None:
     return False
 
 
-def _semver(text: object) -> tuple | None:
-    """A semantic_version Version as a precedence key: (X, Y, Z, released, prerelease)."""
-    match = _SEMVER.match(str(text or ""))
-    if not match:
-        return None
-    pre = tuple(
-        (0, int(p), "") if p.isdigit() else (1, 0, p)
-        for p in (match.group(4) or "").split(".")
-        if p
-    )
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), not pre, pre)
-
-
-def _next(target: tuple, level: int) -> tuple:
-    """semantic_version's next_major/next_minor/next_patch (level 0/1/2)."""
-    major, minor, patch, _, pre = target
-    if level == 0:
-        return (
-            (major, 0, 0, True, ())
-            if pre and not minor and not patch
-            else (major + 1, 0, 0, True, ())
-        )
-    if level == 1:
-        return (major, minor, 0, True, ()) if pre and not patch else (major, minor + 1, 0, True, ())
-    return (major, minor, patch, True, ()) if pre else (major, minor, patch + 1, True, ())
-
-
-def _below(have: tuple, bound: tuple, natural: bool = True) -> bool:
-    # semantic_version Range OP_LT: a prerelease of the bound's own X.Y.Z is not "below" it.
-    if natural and have[4] and have[:3] == bound[:3] and not bound[4]:
-        return False
-    return have < bound
-
-
-def _simple_spec(spec: str, version: str) -> bool | None:
-    """``SimpleSpec(spec).match(Version(version))``, bench's frappe-dependency check
-    (bench/app.py:497-518), mirroring semantic_version 2.10's ``parse_block``. Every
-    block parses before any is matched, as there: one bad block is bench's error."""
-    have = _semver(version)
-    if have is None:
-        return None
-    oks = []
-    for block in spec.split(","):
-        match = _SIMPLE.match(block)
-        if not match:
-            return None
-        op, *numbers, pre, build = match.groups()
-        op = "==" if op in ("", "=") else op
-        major, minor, patch = (None if n in (None, "*") else int(n) for n in numbers)
-        partial = None in (major, minor, patch)
-        if (major is None and op not in ("==", ">=")) or (partial and (pre or build)):
-            return None
-        if build is not None and op not in ("==", "!="):
-            return None
-        # A wildcard ends the version: "15.*.1" is "15".
-        if major is None:
-            text = "0.0.0"
-        elif minor is None:
-            text = f"{major}.0.0"
-        elif patch is None:
-            text = f"{major}.{minor}.0"
-        else:
-            text = f"{major}.{minor}.{patch}" + (f"-{pre}" if pre else "")
-        target = _semver(text)
-        if target is None:
-            return None
-        up = 0 if minor is None else 1  # the next_major/next_minor a partial stops at
-        if major is None or op == ">=":
-            ok = have >= target
-        elif op == "^":
-            ok = have >= target and _below(have, _next(target, 0 if major else 1 if minor else 2))
-        elif op in ("~", "~="):
-            level = 0 if (minor is None if op == "~" else partial) else 1
-            ok = have >= target and _below(have, _next(target, level))
-        elif op == "==":
-            ok = have >= target and _below(have, _next(target, up)) if partial else have == target
-        elif op == "!=":
-            if partial:
-                ok = _below(have, target) or have >= _next(target, up)
-            elif pre == "" or build == "":
-                ok = have != target
-            else:  # Range OP_NEQ: a prerelease of the target's own X.Y.Z is excluded too
-                ok = have != target and not (have[4] and have[:3] == target[:3] and not target[4])
-        elif op == ">":
-            ok = have >= _next(target, up) if partial else have > target
-        elif op == "<":
-            ok = _below(have, target, natural=pre != "")
-        else:  # "<="
-            ok = _below(have, _next(target, up)) if partial else have <= target
-        oks.append(ok)
-    return all(oks)
-
-
-def _parsed(text: object, loads) -> dict | None:
-    """A manifest's top level: {} when absent, None when it does not parse."""
-    if not isinstance(text, str) or not text.strip():
-        return {}
-    try:
-        data = loads(text)
-    except Exception:  # toml raises a spread of types on malformed input
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _table(data: dict, *keys: str) -> dict:
-    for key in keys:
-        value = data.get(key)
-        data = value if isinstance(value, dict) else {}
-    return data
-
-
 def _content_facts(record: dict) -> list[dict]:
     """What each app needs from the bench once ``bench update --reset`` has moved it.
 
@@ -1138,10 +1072,9 @@ def _content_facts(record: dict) -> list[dict]:
 
     def version(manifest: dict) -> object:
         # bench/utils/app.py:306-333 (get_current_version), bench/app.py:520-540
-        # (get_dep_version): pyproject's project.version, else <app>/__init__.py's.
-        return _table(_parsed(manifest.get("pyproject"), toml.loads) or {}, "project").get(
-            "version"
-        ) or manifest.get("version")
+        # (get_dep_version): pyproject's project.version, else <app>/__init__.py's,
+        # through the one reader app_deps shares with the install check.
+        return app_version(manifest.get("pyproject"), None) or manifest.get("version")
 
     # bench/utils/app.py:24-38 (is_version_upgrade): the installed frappe's major against
     # upstream/<branch>:frappe/__init__.py's, which bench reads straight from that file.
@@ -1215,40 +1148,43 @@ def _content_facts(record: dict) -> list[dict]:
                     f"frappe-dependency {dep} {spec!r} could not be compared with {dep_version!r}",
                 )
             elif not ok:
-                # The fix moves whichever side is off the bench's frappe line onto it:
-                # the APP when it wants another frappe, or a sibling already on that
-                # line; the SIBLING when it is the one off the line. The spec's lower
-                # bound only answers when frappe's own major cannot be read.
-                frappe_major = _semver(
-                    version(installed("frappe")) if "frappe" in manifests else None
-                )
-                dep_major = _semver(dep_version)
-                wanted = _spec_floor_major(spec)
-                on_line = bool(frappe_major and dep_major and dep_major[0] == frappe_major[0])
-                fix_app = app if dep == "frappe" or on_line else dep
-                fix_major = frappe_major[0] if frappe_major else wanted
                 facts.append(
-                    {
-                        "code": "app.frappe_dependency_unsatisfied",
-                        "app": app,
-                        "dep": dep,
-                        "spec": spec,
-                        "version": str(dep_version),
-                        "fix_app": fix_app,
-                        "fix_branch": f"version-{fix_major}" if fix_major is not None else None,
-                    }
+                    dependency_unsatisfied(
+                        app,
+                        dep,
+                        spec,
+                        str(dep_version),
+                        version(installed("frappe")) if "frappe" in manifests else None,
+                    )
                 )
     return facts
 
 
-def _spec_floor_major(spec: str) -> int | None:
-    """The major a SimpleSpec's lower bound names (``>=16,<17`` -> 16, ``~=15.2`` -> 15,
-    ``==14.*`` -> 14); None when it has no lower bound."""
-    for part in spec.split(","):
-        m = re.match(r"^\s*(?:>=|~=|==|\^|>)\s*v?(\d+)", part.strip())
-        if m:
-            return int(m.group(1))
-    return None
+def dependency_unsatisfied(
+    app: str, dep: str, spec: str, dep_version: str, frappe_version: object
+) -> dict:
+    """The ``app.frappe_dependency_unsatisfied`` fact, with the branch switch that fixes it.
+
+    The fix moves whichever side is off the bench's frappe line onto it: the APP when
+    it wants another frappe, or a sibling already on that line; the SIBLING when it is
+    the one off the line. The spec's lower bound only answers when frappe's own major
+    cannot be read.
+    """
+    frappe_major = _semver(frappe_version)
+    dep_major = _semver(dep_version)
+    wanted = _spec_floor_major(spec)
+    on_line = bool(frappe_major and dep_major and dep_major[0] == frappe_major[0])
+    fix_app = app if dep == "frappe" or on_line else dep
+    fix_major = frappe_major[0] if frappe_major else wanted
+    return {
+        "code": "app.frappe_dependency_unsatisfied",
+        "app": app,
+        "dep": dep,
+        "spec": spec,
+        "version": dep_version,
+        "fix_app": fix_app,
+        "fix_branch": f"version-{fix_major}" if fix_major is not None else None,
+    }
 
 
 def fixable_branches(facts: list[dict]) -> list[tuple[str, str]]:

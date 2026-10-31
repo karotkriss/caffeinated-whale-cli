@@ -31,6 +31,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import update as update_mod
+from caffeinated_whale_cli.core import update as core_update
 
 from .test_apps import (
     FakeFrappeContainer,
@@ -40,6 +41,14 @@ from .test_apps import (
     _record_recache,
     _wire_update,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_dependency_tier(monkeypatch):
+    """These tests drive the update's reset, pull and migrate phases against fakes that
+    answer no declarations reader; the dependency tier has its own tests
+    (``test_update_dependencies.py``), so here it finds nothing."""
+    monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
 
 
 def _wire(monkeypatch, container, *, sites=("a.localhost",)):

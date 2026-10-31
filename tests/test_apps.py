@@ -34,6 +34,14 @@ from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import update as core_update
 from tests.batched_probes import emulate_batched
 
+
+@pytest.fixture(autouse=True)
+def _no_dependency_tier(monkeypatch):
+    """These tests drive the update's reset, pull and migrate phases against fakes that
+    answer no declarations reader; the dependency tier has its own tests
+    (``test_update_dependencies.py``), so here it finds nothing."""
+    monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
+
 # ------------------------------------------------------------------- fake container
 
 
@@ -1049,7 +1057,7 @@ def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, 
     assert exc.value.exit_code == 1
     out = " ".join(capsys.readouterr().out.split())
     assert "Preflight: 3 app(s), 6 site(s) on /workspace/frappe-bench (0.4s)" in out
-    assert "Blocking - the core update would fail:" in out
+    assert "Blocking - the update would fail:" in out
     assert "localbranch git.branch_not_on_remote message" in out
     assert "fix: cwcli apps checkout proj localbranch <published-branch>" in out
     assert "Notices:" in out
@@ -1083,7 +1091,7 @@ def test_update_frappe_preflight_long_rows_wrap_under_their_own_column(monkeypat
         core_update.UpdatePreflight(findings=[finding], summary="1 app(s)", blocked=True)
     )
 
-    rows = out.getvalue().split("Blocking - the core update would fail:")[1]
+    rows = out.getvalue().split("Blocking - the update would fail:")[1]
     lines = [line for line in rows.splitlines() if line.strip()]
     assert len(lines) > 2  # the message and the remedy both wrapped
     text_column = lines[0].index("remote 'upstream'")
