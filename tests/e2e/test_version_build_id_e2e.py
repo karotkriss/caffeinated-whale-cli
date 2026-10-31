@@ -122,14 +122,20 @@ def test_release_and_source_builds_are_distinguishable(tmp_path):
         timeout=600,
     )
     assert built.returncode == 0, f"uv build failed:\n{built.stdout}{built.stderr}"
-    assert list(dist.glob("*.whl")), "uv build produced no wheel"
+    (wheel,) = dist.glob("*.whl")
+    tree_version = wheel.name.split("-")[1]
 
     # --- shape 1: the published-artifact shape -----------------------------
     # By NAME + --find-links: an index-style resolution, so no direct_url.json,
-    # exactly as a `uv tool install caffeinated-whale-cli` from PyPI. The local
-    # wheel wins over PyPI's same-version release, so this carries our code.
+    # exactly as a `uv tool install caffeinated-whale-cli` from PyPI. Pinned to
+    # the tree's version so a newer PyPI release cannot win the resolution; the
+    # local wheel wins over PyPI's same-version release, so this carries our code.
     release_cli, release_dir = _uv_tool_install(
-        "--find-links", str(dist), "caffeinated-whale-cli", root=tmp_path, name="release"
+        "--find-links",
+        str(dist),
+        f"caffeinated-whale-cli=={tree_version}",
+        root=tmp_path,
+        name="release",
     )
     assert not list(release_dir.rglob("direct_url.json")), (
         "the 'release' shape recorded a PEP 610 direct_url.json, so it is NOT an "
