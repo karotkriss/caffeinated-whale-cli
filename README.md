@@ -1465,9 +1465,9 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `--skip-maintenance` | Skip enabling maintenance mode for affected sites during update |
 | `--skip-requirements` | Do not run `bench setup requirements --python` before migrating (it runs by default for every app on the bench); the output says it was skipped |
 | `--force` | Destructive. Updating `frappe`: run the core reset even though it discards uncommitted or unpushed work in that app (see [the data-loss guard](#apps---manage-frappe-apps)). Other apps: hard-reset an app whose `git pull` hits a conflict instead of failing. Either way, re-own app repositories git refuses for dubious ownership |
-| `--fix-branches` | Updating `frappe`: switch an app whose declared frappe-dependencies do not fit this bench to the matching `version-N` branch first, instead of refusing |
+| `--fix-branches` | Switch an app whose declared frappe-dependencies do not fit this bench to the matching `version-N` branch first, instead of refusing |
 | `--with-deps` | When an app's new code requires an app the bench or a site lacks, fetch and install it on the sites that have the app first, instead of refusing |
-| `--no-preflight` | Updating `frappe` only: skip the checks that run before the core reset (see [the `frappe` preflight](#apps---manage-frappe-apps)); the data-loss guard still runs |
+| `--no-preflight` | Skip the checks that run before the update: the [`frappe` preflight](#apps---manage-frappe-apps) for a core update, and the required-apps and Frappe-range check for every update; the data-loss guard still runs |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 
 **What It Does:**
