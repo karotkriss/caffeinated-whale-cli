@@ -55,6 +55,7 @@ const defaults = {
     clear_cache: false,
     clear_website_cache: false,
     skip_maintenance: false,
+    skip_requirements: false,
     force: false,
     fix_branches: false,
   },
@@ -120,7 +121,7 @@ function spec() {
   }
   if (verb === 'run-tests') target.app = value.app.trim()
   if (verb === 'apps-install') return { verb, target, args: { apps: split(value.apps), sites: split(value.sites), branch: value.branch.trim() || null, fetch_only: value.fetch_only } }
-  if (verb === 'apps-update') return { verb, target, args: { apps: split(value.apps), sites: split(value.sites), build: value.build, clear_cache: value.clear_cache, clear_website_cache: value.clear_website_cache, skip_maintenance: value.skip_maintenance, force: value.force } }
+  if (verb === 'apps-update') return { verb, target, args: { apps: split(value.apps), sites: split(value.sites), build: value.build, clear_cache: value.clear_cache, clear_website_cache: value.clear_website_cache, skip_maintenance: value.skip_maintenance, skip_requirements: value.skip_requirements, force: value.force } }
   if (verb === 'run-tests') return { verb, target, args: { module: value.module.trim() || null } }
   if (verb === 'build') return { verb, target: { ...target, ...(value.app.trim() ? { app: value.app.trim() } : {}) }, args: {} }
   return { verb, target, args: { ...value } }

@@ -79,6 +79,7 @@ _PHASES = {
     },
     "fix_branch": {"ok": "[bold green]✓[/bold green] --fix-branches: {message}"},
     "fix_refspec": {"ok": "[bold green]✓[/bold green] '{item}': {message}"},
+    "requirements_skipped": {"ok": "[bold yellow]![/bold yellow] {message}"},
     "requirements": {
         "header": "[bold green]→[/bold green] Reinstalling the bench's requirements",
         "spinner": "Reinstalling requirements (bench setup requirements)...",
@@ -251,7 +252,7 @@ class _Renderer:
     def _on_output(self, event) -> None:
         # Capture the tail of each app's pull output regardless of verbosity, so the
         # summary can surface git's real error on a failed pull.
-        if event.phase in ("pull", "reset", "requirements", "migrate") and event.item:
+        if event.phase in ("pull", "reset", "migrate") and event.item:
             self._pull_tails[event.item] = (self._pull_tails.get(event.item, "") + event.text)[
                 -_PULL_TAIL_CHARS:
             ]
@@ -308,6 +309,7 @@ class _Renderer:
             # a fix step always says what it changed in another app's git state.
             if self.verbose or event.phase in (
                 "unlock_all",
+                "requirements_skipped",
                 "fix_branch",
                 "fix_refspec",
                 "clear_cache",
@@ -437,7 +439,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             report.failed_migrations
             or report.unknown_migrations
             or report.unreadable_sites
-            or report.requirements not in (None, "ok")
+            or report.requirements in ("failed", "unknown")
             or report.failed_maintenance_enable
             or report.failed_maintenance_disable
         )
@@ -550,6 +552,18 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         console.print(
             "[bold red]✗[/bold red] bench setup requirements failed, so no site was "
             "migrated onto the new code"
+        )
+        for text_line in report.requirements_cause:
+            console.print("      " + text_line, markup=False, highlight=False, style="dim")
+    elif report.requirements == "unknown":
+        console.print(
+            "[bold red]✗[/bold red] bench setup requirements did not report an outcome, "
+            "so no site was migrated onto the new code"
+        )
+    if report.requirements in ("failed", "unknown"):
+        console.print(
+            "  Fix the failing dependency and re-run, or re-run with --skip-requirements "
+            "to migrate without the reinstall."
         )
 
     if report.failed_maintenance_enable:
@@ -708,6 +722,7 @@ def run_app_update(
     clear_website_cache: bool = False,
     build: bool = False,
     skip_maintenance: bool = False,
+    skip_requirements: bool = False,
     no_recache: bool = False,
     force: bool = False,
     no_preflight: bool = False,
@@ -767,6 +782,7 @@ def run_app_update(
             clear_website_cache=clear_website_cache,
             build=build,
             skip_maintenance=skip_maintenance,
+            skip_requirements=skip_requirements,
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,
@@ -820,6 +836,11 @@ _BENCH_LEFT_DOWN_CODES = frozenset(
 )
 
 # Shared by all three surfaces (apps update, the deprecated update, axi apps update).
+SKIP_REQUIREMENTS_HELP = (
+    "Do not run 'bench setup requirements' before migrating. By default the bench's "
+    "Python requirements are reinstalled for every app first, so a package the new code "
+    "needs (from any app, frappe included) is installed before the sites migrate."
+)
 FIX_BRANCHES_HELP = (
     "Updating frappe: when an app's declared frappe-dependencies do not fit this bench "
     "(the preflight refuses otherwise), switch that app to the matching version-N branch "
@@ -957,6 +978,9 @@ def update(
         "--skip-maintenance",
         help="Skip enabling maintenance mode for affected sites during update.",
     ),
+    skip_requirements: bool = typer.Option(
+        False, "--skip-requirements", help=SKIP_REQUIREMENTS_HELP
+    ),
     no_recache: bool = typer.Option(
         False,
         "--no-recache",
@@ -978,6 +1002,7 @@ def update(
 
     Kept as a working alias for 'cwcli apps update'. This command will:
     1. Navigate to each app directory and run 'git pull' (frappe/erpnext: fetch + reset to the remote branch)
+       then reinstall the bench's Python requirements (unless --skip-requirements is used)
     2. Find all sites where the app is installed
     3. Enable maintenance mode for affected sites (unless --skip-maintenance is used)
     4. Run 'bench --site <site> migrate' for each site that entered maintenance mode
@@ -1006,6 +1031,7 @@ def update(
         clear_website_cache=clear_website_cache,
         build=build,
         skip_maintenance=skip_maintenance,
+        skip_requirements=skip_requirements,
         no_recache=no_recache,
         force=force,
         no_preflight=no_preflight,

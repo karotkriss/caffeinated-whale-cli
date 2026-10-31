@@ -861,6 +861,7 @@ def test_apps_update_delegates_to_run_app_update(wired, monkeypatch):
         clear_website_cache=False,
         build=False,
         skip_maintenance=False,
+        skip_requirements=False,
         no_recache=False,
         yes=False,
         verbose=False,
@@ -1263,6 +1264,7 @@ def test_no_preflight_reaches_the_core_from_both_human_spellings(monkeypatch, su
         clear_website_cache=False,
         build=False,
         skip_maintenance=False,
+        skip_requirements=False,
         no_recache=True,
         no_preflight=True,
         yes=False,
@@ -1316,6 +1318,7 @@ def test_bench_selector_reaches_the_preflight_remedies_from_both_human_spellings
         clear_website_cache=False,
         build=False,
         skip_maintenance=False,
+        skip_requirements=False,
         no_recache=True,
         no_preflight=False,
         yes=False,
@@ -1822,6 +1825,7 @@ def test_deprecated_update_warns_and_delegates(monkeypatch, capsys):
         clear_website_cache=False,
         build=False,
         skip_maintenance=False,
+        skip_requirements=False,
         no_recache=False,
         yes=False,
     )
@@ -2111,3 +2115,55 @@ def test_update_summary_names_a_symlink_target_on_a_clean_run(capsys):
     out = capsys.readouterr().out
     assert "/workspace/.hdsrc/payments" in out
     assert "symlink" in out
+
+
+# What a failed `bench setup requirements` prints when a dependency cannot resolve:
+# uv names the cause, then bench buries it under its own CommandFailedError traceback.
+UV_REQUIREMENTS_FAILURE = """\
+Installing python dependencies for frappe
+error: No solution found when resolving dependencies
+  cause: Because cwreq-missing was not found in the package registry and frappe==15.1.0 depends on cwreq-missing==9.9.9, we can conclude that frappe==15.1.0 cannot be used.
+         And because you require frappe, we can conclude that your requirements are unsatisfiable.
+subprocess.CalledProcessError: Command 'uv pip install -e ./apps/frappe' returned non-zero exit status 1.
+
+Traceback (most recent call last):
+  File "/home/frappe/.bench/bench/utils/__init__.py", line 193, in exec_cmd
+    raise CommandFailedError(cmd) from subprocess.CalledProcessError(return_code, cmd)
+bench.exceptions.CommandFailedError: uv pip install -e ./apps/frappe
+"""
+
+
+def fail_requirements_like_uv(container):
+    real_run = container._run
+
+    def _run(cmd, workdir=None):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if cmd_str.startswith("bench setup requirements"):
+            container.calls.append(cmd_str)
+            container.workdirs.append(workdir)
+            return 1, UV_REQUIREMENTS_FAILURE
+        return real_run(cmd, workdir)
+
+    container._run = _run
+
+
+def test_update_failed_requirements_shows_the_cause_without_verbose(monkeypatch, capsys):
+    # The spinner swallows the step's output on the default path, so the summary must
+    # name the failing dependency - not the tail, which is always bench's traceback.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    fail_requirements_like_uv(container)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod.run_app_update("proj", ["payments"], verbose=False)
+    assert exc.value.exit_code == 1
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "bench setup requirements failed, so no site was migrated" in out
+    assert "error: No solution found when resolving dependencies" in out
+    assert "cwreq-missing was not found in the package registry" in out
+    assert "your requirements are unsatisfiable" in out
+    assert "CommandFailedError" not in out
+    assert "re-run with --skip-requirements" in out
+    assert not any("migrate" in c for c in container.calls)
