@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-10-31
+
+### Added
+
+- **Publish a site at a public address from the web UI** - two new official integrations, each with its own setup screen and connection test:
+  - Cloudflare DNS: an API token, this machine's public IPv4 address (filled by Detect and confirmed by saving), an optional IPv6 address, and Check edit access, which creates and deletes a test TXT record in each zone.
+  - Nginx Proxy Manager: the account cwcli signs in as, the forward address, the HTTP or DNS certificate challenge, and proxy host defaults; a local Nginx Proxy Manager container is detected.
+  - New site gains "Publish it at a public address": a read-only preflight refuses before the site exists, then a `publish-site` job writes the DNS record, creates the proxy host, requests the Let's Encrypt certificate and checks that the site answers. Each step reads before it writes, so Retry repeats only what is missing.
+  - The Sites list shows each part's state with Publish, Retry, Check for drift and Unpublish; Unpublish removes only what cwcli created and only while it is unchanged, and Drop site and Move offer Also unpublish.
+- **Remote hosts over SSH in the web UI** - one web UI lists the instances of other machines next to this one's, labelled by host, and sends each action to the machine that owns the instance.
+  - `cwcli remote allow|revoke|hubs|key|add|ls|remove` enrols and removes machines. Enrolment pins both sides (a pairing string carries the remote's host key, and the remote restricts the hub's key to the cwcli API, never a shell), and `revoke` closes the hub's open connections.
+  - Settings > Remote hosts and an Add host dialog manage the links, each host reports its link state (connected, unreachable, refused, host key changed, daemon down, version mismatch), and a quiet host's instances read as unknown instead of stale.
+  - A remote caps the hub's role (Operator by default) and refuses a hub's request to install code on it.
+- **`--skip-requirements` for app updates** - on `apps update`, the deprecated `update`, `axi apps update` and the web UI update dialog, skips the new requirements step (see Changed).
+
+### Changed
+
+- **The web UI blends light and dark schemes** with a soft diagonal wipe instead of switching in one frame; reduced motion, visual effects turned off, and an operating-system scheme change play a short cross-fade instead.
+- **Every app update installs the bench's Python requirements before it migrates** - `bench setup requirements --python` runs after the pull and before any site migrates, so a package the new code needs no longer fails the migrate with `ModuleNotFoundError`. A failed requirements step migrates no site and names the cause.
+- **`cwcli self-update` upgrades the install cwcli runs from and restarts its running services**
+  - It points uv at the tool folder the running cwcli lives in (a shared install too, under `sudo`), reads the installed version back, and puts the old install and its `cwcli` executables back when the upgrade fails part way.
+  - After a successful upgrade it restarts every cwcli service that was running - the shared scheduler and credential-bridge system services, auto-inspect, the per-user credential bridge and every web UI daemon, each as the user who started it - and reports which came back on the new version. The web UI's self-update job does the same.
+  - On a shared install the upgraded files stay readable to every member.
+- **`init`, `new-bench` and `new-site` check the MariaDB root password first** - a new bench or site shares the instance's existing MariaDB, so a rejected password now fails in seconds with nothing changed instead of minutes into the build. The web UI shows whether cwcli has the instance's root password saved (never the value), and New bench, New site and the remove dialogs ask for it only when it is not.
+
+### Fixed
+
+- **New site no longer re-fetches an app the bench already holds** when the app's repository name differs from its app name, which failed with "Directory not empty"; `apps install` and the new-site and new-bench jobs match the app by its git remote instead.
+- **A failed New bench cleans up after itself** - it drops the half-made site's database and removes the bench directory and its search path, so the same name can be retried.
+- **The web UI recovers when Docker restarts** - a Docker Desktop restart no longer freezes the daemon's view of the instances until the daemon is restarted. While Docker is away the pages say so and every row reads as unknown, and they refresh by themselves when it returns.
+- **`cwcli rm` in shared mode removes the service-owned project folder** - a member's `rm` used to stop with `Permission denied` after removing the containers, volume and network, leaving the removal half done. If the folder still cannot be removed, the error names it and the command that finishes the job.
+- **Shared-mode fetches use the shared credential first** - `init` with a private `--frappe-url`, `apps install`, `apps update` and `apps checkout` ask the machine-wide credential bridge before the member's own `gh`/`glab` sign-in, so a member who never signed in personally can fetch a private repository.
+- **The web UI's Apps tables keep long app titles on one line**, with the full title on hover, instead of running into the next row; the bench Apps tab shows the update badge only when an update is available.
+- **`apps uninstall` refuses an app that another installed app requires** before the confirmation, naming the dependent apps, and reports an uninstall that left the app installed as a failure - Frappe declined it with a warning and exit 0, so it used to read as success.
+- **The shared scheduler service no longer restarts in a loop** - its systemd unit is now `Type=simple`, and `self-update` rewrites an older unit before restarting it.
+- **The web UI job card follows a follow-up job, and a job that failed by its report no longer shows its last step green.**
+
+## [3.5.1] - 2026-10-30
+
+### Changed
+
+- **Neutral example names** - example names, comments and test fixtures use neutral values, and CI checks for environment-specific names.
+
 ## [3.5.0] - 2026-10-29
 
 ### Added
