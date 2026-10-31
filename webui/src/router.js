@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-
-const page = (name) => () => import(`./pages/${name}.vue`)
+import { page } from './pages'
 
 // A remote host's instance, bench, site and job pages live under /hosts/:host/...:
 // the same page components, reading the host from the route and sending every

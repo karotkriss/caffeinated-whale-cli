@@ -3,10 +3,18 @@
 // warms every page's chunk while the browser is idle after the first page is up, through
 // the router's own lazy loaders, so the navigation finds the module already cached.
 // A prefetch that fails (a tab older than a rebuild, whose chunks the build replaced) is
-// swallowed and stops the sweep; it must never reload the page by itself, so main.js
-// checks `prefetch.active` before treating a preload error as a stale build. The next
-// real navigation to such a page keeps the once-only reload rule in chunk-recovery.js.
+// swallowed and stops the sweep; it must never reload the page by itself. While the sweep
+// runs, a failed preload is therefore handed back to the request that made it instead of
+// reloading: the sweep swallows its own, and a real navigation's reaches router.onError,
+// which keeps the once-only reload rule in chunk-recovery.js.
 export const prefetch = { active: false }
+
+// Called with Vite's `vite:preloadError` event; true when the listener should reload now.
+export function preloadErrorReloads(event) {
+  if (prefetch.active) return false
+  event.preventDefault()
+  return true
+}
 
 function idle(fn) {
   if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 4000 })

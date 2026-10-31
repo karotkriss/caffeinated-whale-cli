@@ -8,17 +8,16 @@ import { installPageTransition } from './premium/page-transition'
 import App from './App.vue'
 import { startFleet } from './data/fleet'
 import { isChunkLoadError, shouldReload } from './data/chunk-recovery'
-import { prefetch, prefetchPages } from './data/prefetch'
+import { prefetchPages, preloadErrorReloads } from './data/prefetch'
 
 // A tab opened before a rebuild lazy-loads route chunks that build replaced; one
 // reload of the requested page recovers it (chunk-recovery.js owns the rule). The idle
-// prefetch of route chunks is exempt: its failure is swallowed, never a reload.
+// prefetch of route chunks never reloads for its own failure (data/prefetch.js).
 function recover(path) {
   if (shouldReload(window.sessionStorage, path)) window.location.assign(path)
 }
 window.addEventListener('vite:preloadError', (event) => {
-  event.preventDefault()
-  if (!prefetch.active) recover(window.location.pathname + window.location.search)
+  if (preloadErrorReloads(event)) recover(window.location.pathname + window.location.search)
 })
 router.onError((error, to) => {
   if (isChunkLoadError(error)) recover(to?.fullPath || window.location.pathname)
