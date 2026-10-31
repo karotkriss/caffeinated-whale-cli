@@ -1003,7 +1003,7 @@ def checkout_app(
         # `git clean`, no `checkout -f`), and one in the target's way still refuses.
         steps.append(("reset", "git reset --hard"))
     steps.append(("checkout", f"git checkout -B {q_ref} FETCH_HEAD"))
-    # staging16 (2026-10-28): a narrow clone's fetch refspec covers only the branch it
+    # Seen on a staging server (2026-10-28): a narrow clone's fetch refspec covers only the branch it
     # was cloned with, so after this checkout `<remote>/<ref>` never exists and the
     # next reset ("unknown revision") fails. When <ref> is a branch on the remote, add
     # it to the refspec, fetch it so the remote-tracking ref exists, and track it.

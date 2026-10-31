@@ -51,9 +51,9 @@ instance     docker    health     web                       processes
 cwp2serve    running   running    200 :8000 p2.localhost    schedule socketio watch w...
 frappe15     exited    offline    -                         -
 frappe16     exited    offline    -                         -
-gcaa         exited    offline    -                         -
-ners         exited    offline    -                         -
-visa15       exited    offline    -                         -
+client-a     exited    offline    -                         -
+client-b     exited    offline    -                         -
+client-c     exited    offline    -                         -
 
 9:35:13 PM SNAPSHOT 6 instances
 ```
@@ -231,7 +231,7 @@ Two things stay here rather than in CI:
 
 An audit-then-fix pass over the unreleased Console, driven hand-on against ONE throwaway Frappe v16 instance (`cwp4con`, ports 14000/15000, isolated `CWCLI_HOME`) built and destroyed inside the task.
 Browser evidence is Linux Chrome via chrome-devtools-axi; Windows interop was unavailable on the box during this pass, so no Windows-browser claims are made here (section 2 above remains the Windows evidence).
-One difference from the phase-2 run: the captain's `gcaa` instance was already running throughout, so the daemon passively health-probed it exactly as `cwcli serve` probes any running instance; no action, focus, or detail read ever targeted it.
+One difference from the phase-2 run: the captain's `client-a` instance was already running throughout, so the daemon passively health-probed it exactly as `cwcli serve` probes any running instance; no action, focus, or detail read ever targeted it.
 
 **Daemon properties re-verified live, unchanged:**
 

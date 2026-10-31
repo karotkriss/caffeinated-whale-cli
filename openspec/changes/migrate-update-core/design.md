@@ -25,7 +25,7 @@ Where the audit and any prior document disagree, the audit wins and the disagree
 | no E2E for `apps`/`update` | `ls tests/e2e/` + grep | **none** |
 | baseline | `uv run pytest -q` | **870 passed**, 58 deselected |
 
-(Baseline note: 169 unrelated errors appear unless `TMPDIR` is redirected. `/tmp/pytest-of-cmckay` is owned by `root` on this host from an earlier run, so every `tmp_path` test errors in setup. Environmental, outside the worktree, unrelated to this change; recorded so the next agent does not mistake it for a real failure.)
+(Baseline note: 169 unrelated errors appear unless `TMPDIR` is redirected. `/tmp/pytest-of-<user>` is owned by `root` on this host from an earlier run, so every `tmp_path` test errors in setup. Environmental, outside the worktree, unrelated to this change; recorded so the next agent does not mistake it for a real failure.)
 
 ### Audit: the state machine, mapped at `46c9c83`
 

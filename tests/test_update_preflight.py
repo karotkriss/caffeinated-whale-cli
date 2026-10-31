@@ -870,7 +870,7 @@ def test_an_unsatisfied_frappe_dependency_is_a_notice_against_the_updated_versio
     )
 
     finding = by_code(bench.findings(), "app.frappe_dependency_unsatisfied")
-    # 040 (staging16): a refusal, naming the switch, not a notice bench would only warn on.
+    # 040 (staging server): a refusal, naming the switch, not a notice bench would only warn on.
     assert (finding.severity, finding.app) == (up.BLOCKER, "goodapp")
     assert "switch goodapp to version-" in finding.message
     assert "--fix-branches" in finding.remedy

@@ -4,7 +4,7 @@ Real-instance, full-lifecycle validation of the dangerous-delete change on an
 **isolated** throwaway environment: a dedicated `CWCLI_HOME` on the roomy host
 disk (so the captain's real `~/.cwcli` was never touched), a unique
 `cwe2e-rmstop-*` docker-compose project, and dedicated volumes/network. The
-captain's real instances (`ners`, `visa`, ...) and the other lane's
+captain's real instances (`client-b`, `client-c`, ...) and the other lane's
 `cwe2e-bf6650-main` were confirmed untouched, and every throwaway was torn down
 afterwards. The bench was a genuine Frappe `version-16` instance
 (`cwcli init ... --version 16`) with the default `development.localhost` site.

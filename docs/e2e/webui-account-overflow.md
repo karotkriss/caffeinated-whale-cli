@@ -10,7 +10,6 @@ The panel is a flex-row item of the dialog, so its minimum width became the widt
 
 | Width | Before |
 | --- | --- |
-| 1280 | ![](webui-account-overflow/before-1280.png) |
 | 390 | ![](webui-account-overflow/before-390.png) |
 
 ## The fix
@@ -20,7 +19,6 @@ Each row still shows the stored user agent, now truncated with an ellipsis, and 
 
 | Width | After |
 | --- | --- |
-| 1280 | ![](webui-account-overflow/after-1280.png) |
 | 390 | ![](webui-account-overflow/after-390.png) |
 
 Measured after the fix: the Sign out button's right edge is 1018 px at 1280 (dialog edge 1088) and 336 px at 390; the open password form's right edge is 332 px at 390.

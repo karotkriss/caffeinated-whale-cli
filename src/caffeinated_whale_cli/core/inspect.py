@@ -66,7 +66,7 @@ class SiteInfo:
     ``installed_apps_verified`` is the per-site VERIFIED-or-REMEMBERED token, the
     same fail-honest signal ``core.where`` carries on every ``WhereMatch``. Each
     ``installed_apps`` entry encodes the app's live version and git ref (e.g.
-    ``visa 2.0.0 testing``), but only a T3 full inspect actually re-runs
+    ``my_app 2.0.0 develop``), but only a T3 full inspect actually re-runs
     ``bench list-apps`` to observe it. The cheap T1/T2 tiers carry the CACHED
     list forward, and a ``git checkout`` inside an app touches neither the
     ``apps/`` directory listing nor the site set that T2's drift check watches -

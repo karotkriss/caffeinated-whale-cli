@@ -4,7 +4,7 @@
 
 **On a multi-bench instance, `cwcli status` reports a bench it cannot name, using a measurement taken from a different bench.**
 
-This was proven at runtime on a real two-bench instance, not read off the source: `/home/cmckay/projects/firstmate/data/cwcli-status-multibench-audit/report.md`.
+This was proven at runtime on a real two-bench instance, not read off the source, in an internal audit.
 That audit is the evidence base for this proposal and its findings are not re-argued here.
 
 The headline result is that a **fully healthy bench reports `degraded`, at exit 0, on both surfaces**, in a document that contradicts itself on its own face:

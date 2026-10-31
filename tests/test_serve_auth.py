@@ -934,8 +934,8 @@ class TestAccountSignIn:
     @pytest.mark.parametrize(
         ("host", "resolves_to", "link_host"),
         [
-            ("0.0.0.0", None, "10.9.9.9"),
-            ("", None, "10.9.9.9"),
+            ("0.0.0.0", None, "192.0.2.99"),
+            ("", None, "192.0.2.99"),
             ("192.168.1.10", None, "192.168.1.10"),
             ("localhost", "127.0.0.1", "127.0.0.1"),
             ("mybox.local", "192.168.1.20", "192.168.1.20"),
@@ -949,7 +949,7 @@ class TestAccountSignIn:
         admits even when the bind was given as a hostname."""
         monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
         monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
-        monkeypatch.setattr(serve_cmd, "_outbound_address", lambda: "10.9.9.9")
+        monkeypatch.setattr(serve_cmd, "_outbound_address", lambda: "192.0.2.99")
         bound = _stub_server(monkeypatch, resolves_to)
         serve_cmd.serve(port=0, host=host, interval=2.5)
         out = capsys.readouterr().out

@@ -4,7 +4,7 @@ Frappe creates each site's MariaDB user host-scoped to the CLIENT it saw at
 ``bench new-site`` (``DbManager.get_current_host`` reads ``USER()``), which in Docker
 is the frappe container's IP. A restart that gives the container a new IP then
 refuses every site: ``OperationalError 1045 Access denied for user '_<hash>'@'<new ip>'``
-and a bare 500 in the browser (staging16, 2026-10-28). The Frappe docker convention
+and a bare 500 in the browser (seen on a staging server, 2026-10-28). The Frappe docker convention
 is ``'<user>'@'%'``, and that is what cwcli now ensures: after every site it creates,
 and as a health check after start/restart and the core update that offers the one
 repair (``RENAME USER ... TO '<user>'@'%'``).

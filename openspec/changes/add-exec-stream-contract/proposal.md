@@ -75,7 +75,7 @@ What survives PR #79 and still needs this contract:
 
 ## Corrections to the record
 
-Batch 1 overrode the foundation recon on `unlock`; batch 2 overrode batch 1's Non-Goals prose; the batch-3 recon overrode firstmate's framing on the progress-bar comment. Continuing in that spirit, from a first-hand audit of `d6d2349`:
+Batch 1 overrode the foundation recon on `unlock`; batch 2 overrode batch 1's Non-Goals prose; the batch-3 recon overrode the planner's framing on the progress-bar comment. Continuing in that spirit, from a first-hand audit of `d6d2349`:
 
 1. **`update` is NOT a fail-open site. It is the CORRECT one.** The brief states "`run.py:78` and `update.py:48` carry the same family (`get("ExitCode", 1)` / `get("ExitCode")`, no polling)." `update.py:47-56` **does** poll (`while exit_code is None: time.sleep(0.1); ...`), and it is the only consumer that gets the exit code right. The two fail-open sites are **`run.py:78` and `apps.py:78`**, exactly as the recon's own table says. The brief contradicts both the recon it cites and its own next paragraph, which says "getting it right means polling as `update.py:47-56` does". The batch is unaffected - `update` is still re-pointed, so its correct-but-duplicated polling collapses into the primitive - but the Why must name the right two commands, and it does.
 2. **`init` does not raise `UnboundLocalError`.** See Non-Goals. The conditional short-circuits. The dead ENOSPC hint is the real, milder bug.

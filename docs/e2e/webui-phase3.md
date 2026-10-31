@@ -28,17 +28,6 @@ Every outcome below was read back from the container, the host filesystem or the
 
 ## Screenshots
 
-1280 px wide:
-
-![Drop site dialog, name typed](webui-phase3/rm-site-dialog-typed-1280.png)
-![Drop site job, succeeded](webui-phase3/rm-site-job-succeeded-1280.png)
-![Drop site job, backup failed, nothing dropped](webui-phase3/rm-site-job-failed-1280.png)
-![Remove instance dialog](webui-phase3/rm-dialog-1280.png)
-![Remove instance job, succeeded](webui-phase3/rm-job-1280.png)
-![Remove bench dialog](webui-phase3/rm-bench-dialog-1280.png)
-![Check out ref discarding local changes](webui-phase3/checkout-reset-dialog-1280.png)
-![Settings](webui-phase3/settings-1280.png)
-
 390 px wide:
 
 ![Drop site dialog at 390](webui-phase3/rm-site-dialog-390.png)

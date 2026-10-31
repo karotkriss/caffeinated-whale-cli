@@ -32,7 +32,7 @@ const ticket = computed(() => (record.value?.events || []).find((e) => e.type ==
 const receivedKeys = computed(() => (record.value?.events || []).find((e) => e.type === 'received')?.data?.sets || [])
 const receivedSets = computed(() => receivedKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
 watch(receivedKeys, (keys) => { if (keys.length) loadBackups() }, { immediate: true })
-// A failed update names the stage, the site and the bench state (the staging16 lesson).
+// A failed update names the stage, the site and the bench state (a staging-server lesson).
 const benchState = computed(() => {
   const r = record.value?.result
   if (!r || !Array.isArray(r.affected_sites)) return null

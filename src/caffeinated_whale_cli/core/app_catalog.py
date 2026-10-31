@@ -1552,7 +1552,7 @@ def _source_from_key(key: str) -> dict[str, Any] | None:
     kind = (
         "github"
         if host.endswith("github.com")
-        else "gitlab" if "gitlab" in host or host == "gitlab.example.com" else "git"
+        else "gitlab" if "gitlab" in host or host in gitlab_hosts() else "git"
     )
     return {
         "kind": kind,

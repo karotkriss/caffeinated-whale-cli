@@ -311,7 +311,7 @@ class TestAdminOnlySchedules:
 
         accounts.ensure_default()
         fleet = Fleet()
-        for i, owner in enumerate(("admin", "cmckay")):
+        for i, owner in enumerate(("admin", "alice")):
             self._prune(owner, "local", target={"project": f"p{i}"})
         data = sch._load()
         for rec in data["schedules"].values():

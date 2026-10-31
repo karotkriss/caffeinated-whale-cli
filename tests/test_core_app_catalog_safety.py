@@ -117,3 +117,12 @@ def test_pins_unreadable_on_both_files_are_unknown_not_empty():
             return 404, None, False
 
     assert adv._pins(_F(), {}, "https://github.com/acme/private", "version-15") is None  # type: ignore[arg-type]
+
+
+def test_an_unscanned_key_on_any_signed_in_gitlab_host_is_gitlab(monkeypatch):
+    """Self-hosted GitLab is recognised by glab's configured hosts, never by a name."""
+    monkeypatch.setattr(cat, "gitlab_hosts", lambda: ["git.example.org"])
+    assert cat._source_from_key("git.example.org/group/app")["kind"] == "gitlab"
+    assert cat._source_from_key("gitlab.example.com/group/app")["kind"] == "gitlab"
+    assert cat._source_from_key("github.com/owner/app")["kind"] == "github"
+    assert cat._source_from_key("code.example.net/group/app")["kind"] == "git"

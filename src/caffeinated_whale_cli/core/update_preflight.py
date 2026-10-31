@@ -803,8 +803,8 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     "app.frappe_dependency_unsatisfied": (
         BLOCKER,
         "requires {dep} {spec} ([tool.bench.frappe-dependencies]) but {dep} will be at "
-        "{version}; bench only warns, and the site migrate fails later (staging16, "
-        "2026-10-28). Fix: switch {fix_app} to {fix_branch}",
+        "{version}; bench only warns, and the site migrate fails later. "
+        "Fix: switch {fix_app} to {fix_branch}",
         "cwcli apps checkout {q_project} {q_fix_app} {q_fix_branch}{selector_flag}, or re-run "
         "with --fix-branches to have cwcli switch it (a confirmed step)",
     ),
