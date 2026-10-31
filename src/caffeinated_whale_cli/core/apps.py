@@ -826,9 +826,20 @@ def install_apps(
     fetched: list[tuple[str, str]] = []
     # (target, ref, the plan node for a required app): required apps first, each at
     # the ref the plan chose for it, then the requested apps at --branch.
+    # A requested app the plan resolved (a plain name found in the apps catalog) is
+    # fetched from exactly where, and at exactly the ref, the plan read it: bench's own
+    # name lookup could land a different repository or its default branch.
+    by_request = {n.requested_as: n for n in (plan.nodes if plan else []) if n.requested_as}
+
+    def _requested(target: str) -> tuple[str, str | None]:
+        node = by_request.get(target)
+        if node is None or node.on_bench or node.target == target:
+            return target, branch
+        return node.target, branch or node.ref
+
     steps: list[tuple[str, str | None, app_deps.PlanNode | None]] = [
         (n.target, n.ref, n) for n in deps if not n.on_bench
-    ] + [(target, branch, None) for target in apps]
+    ] + [(*_requested(target), None) for target in apps]
     dep_fetch_failed = False
 
     # Bridge the container's git back to the host's gh/glab for private-repo
