@@ -57,6 +57,7 @@ from .core import rm as core_rm
 from .core import rm_bench as core_rm_bench
 from .core import rm_site as core_rm_site
 from .core import scale as core_scale
+from .core import self_update as core_self_update
 from .core import start as core_start
 from .core import stop as core_stop
 from .core import supervision as core_supervision
@@ -1411,44 +1412,45 @@ def _run_self_update(args: dict[str, Any], emit: _Recorder) -> Result:
         )
     if not info.is_outdated:
         return Result(status=info_result.status, data=info, warnings=info_result.warnings)
-    if info.upgrade_command is None:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "self_update.unavailable",
-            "cwcli could not determine a usable upgrade command.",
-        )
     emit.lifecycle(
         "step_start", f"Upgrading cwcli {info.current} to {info.latest}", phase="upgrade"
     )
+    # This job's own web UI daemon is replaced afterwards by _schedule_ui_restart
+    # (it keeps its token); every other running service is restarted here.
+    own_ui = os.environ.get(_UI_ENV["pid"], "")
+    services = core_self_update.running_services(
+        exclude_pids=frozenset({int(own_ui)}) if own_ui.isdigit() else frozenset()
+    )
     try:
-        process = subprocess.Popen(
-            info.upgrade_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
+        installed = core_self_update.upgrade(
+            info,
+            on_output=lambda line: emit.lifecycle("output", line, phase="upgrade", stream="stdout"),
         )
-    except OSError as exc:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "self_update.command_failed",
-            f"Could not start '{info.upgrade_command[0]}': {exc}",
-        ) from exc
-    assert process.stdout is not None
-    for line in process.stdout:
-        emit.lifecycle("output", line, phase="upgrade", stream="stdout")
-    code = process.wait()
-    emit.lifecycle("step_end", "Upgrade finished", phase="upgrade", ok=code == 0)
-    if code != 0:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "self_update.failed",
-            f"The upgrade command exited with code {code}.",
-        )
+    except CwcliError:
+        emit.lifecycle("step_end", "Upgrade failed", phase="upgrade", ok=False)
+        raise
+    emit.lifecycle("step_end", "Upgrade finished", phase="upgrade", ok=True)
+    restarted = core_self_update.restart(services, installed)
+    for r in restarted:
+        emit.lifecycle("output", f"{r.name}: {r.detail}\n", phase="restart", stream="stdout")
+    failed = [r.name for r in restarted if not r.ok]
     return Result(
-        status=Status.OK,
-        data={"current": info.current, "latest": info.latest, "updated": True, "ok": True},
-        warnings=info_result.warnings,
+        status=Status.WARNING if failed else Status.OK,
+        data={
+            "current": info.current,
+            "latest": installed,
+            "updated": True,
+            "ok": not failed,
+            "services": [{"name": r.name, "ok": r.ok, "detail": r.detail} for r in restarted],
+        },
+        warnings=[
+            *info_result.warnings,
+            *(
+                [Message("self_update.restart_failed", f"Did not come back: {', '.join(failed)}")]
+                if failed
+                else []
+            ),
+        ],
     )
 
 
@@ -2094,7 +2096,9 @@ def run_job(job_id: str) -> int:
             result=_scrub(_plain(result.data), scrub_values),
             warnings=_scrub(_plain(result.warnings), scrub_values),
         )
-        if ok and spec["verb"] == "self-update" and isinstance(result.data, dict):
+        # The install changed even when another service failed to come back, so the
+        # daemon serving this job is replaced either way.
+        if spec["verb"] == "self-update" and isinstance(result.data, dict):
             if result.data.get("updated"):
                 _schedule_ui_restart()
         return 0 if ok else 1

@@ -159,6 +159,8 @@ The per-user SQLite cache is regenerable (`cwcli inspect`) and deliberately not 
 
 Run `cwcli doctor` to verify the shared install (group present, tree modes, service account).
 
+**Upgrading a shared install:** `sudo cwcli self-update` upgrades the shared cwcli where it is installed and restarts the machine-wide services and every member's web UI on the new version; see [`self-update`](#self-update---upgrade-cwcli-itself).
+
 ## Quick Start
 
 ```bash
@@ -2775,10 +2777,13 @@ Re-running `cwcli config auto-inspect enable --startup` rewrites the unit agains
 
 ### `self-update` - Upgrade cwcli Itself
 
-Upgrades cwcli to the latest version published on PyPI. It detects how cwcli was installed and runs the matching upgrade for you, so you don't have to remember whether you used `uv` or `pip`.
+Upgrades cwcli to the latest version published on PyPI.
+It detects how cwcli was installed and runs the matching upgrade for you, so you don't have to remember whether you used `uv` or `pip`.
+It upgrades the install the running `cwcli` comes from, wherever that is, and then restarts every cwcli service that was running so they all run the new version.
 
 ```bash
 cwcli self-update [OPTIONS]
+sudo cwcli self-update     # on a shared (multi-user) install
 ```
 
 **Options:**
@@ -2790,23 +2795,38 @@ cwcli self-update [OPTIONS]
 
 **How it behaves:**
 
-- **uv tool install** → runs `uv tool upgrade caffeinated-whale-cli`.
+- **uv tool install** → runs `uv tool upgrade caffeinated-whale-cli` against the uv tool folder this cwcli is installed in (for example `/opt/...` on a shared install), even under `sudo`, where a bare `uv` would look in root's own tool folder.
 - **pip install** → runs `python -m pip install --upgrade caffeinated-whale-cli` (using the current interpreter).
 - **dev/editable checkout** → a no-op; it tells you to `git pull` instead of self-modifying your source tree.
 - **`uvx --from ... cwcli`** (ephemeral) → a no-op; there is nothing persistent to upgrade.
+- **Shared install** → run it with `sudo`. When you cannot write the install, it stops before changing anything and tells you to use `sudo`. Under `sudo` an install owned by another account is upgraded as that account, so its files keep their owner.
+
+**After a successful upgrade** cwcli reads the new version back from the install, then restarts each service that was running before it started, and prints one line per service saying whether it came back on the new version:
+
+- the machine-wide `cwcli-scheduler.service` and `cwcli-cred-bridge.service` of a shared install (through systemd; a scheduler unit from an older cwcli is rewritten as `Type=simple` first, because the old unit restarted in a loop);
+- auto-inspect and the per-user credential bridge;
+- every web UI daemon (`cwcli ui`), each on its own port, as the user who started it. On a shared install that is every member's web UI.
+
+An open web UI page notices that its daemon now runs a new version, reconnects and reloads by itself; you stay signed in.
+
+**When the upgrade fails** nothing changes: cwcli copies a uv tool install and its `cwcli` executables aside before upgrading and puts them back if the upgrade fails part way, restarts nothing, so every service keeps running the old version, and the error names the cause (the last line of the upgrader's output).
+An upgrade that exits successfully but leaves the install on the old version (for example because uv upgraded a different install) is reported as a failure too, never as "Upgraded".
 
 **Exit codes:**
 
 | Code | When |
 |------|------|
 | `0` | Already up to date (including a dev checkout that is ahead of PyPI), upgraded successfully, or a dev/uvx no-op. Also a `--check` that found no update, or a `--check` whose network lookup failed open |
-| `1` | The upgrade subprocess failed, a network failure blocked an actual upgrade, or `--check` found that an update is available |
+| `1` | The upgrade failed or left the install unchanged (nothing is restarted then), a running service did not come back on the new version, a network failure blocked an actual upgrade, or `--check` found that an update is available |
 
 **Examples:**
 
 ```bash
-# Upgrade cwcli if a newer version exists
+# Upgrade cwcli if a newer version exists, then restart its running services
 cwcli self-update
+
+# Upgrade a shared install and every member's services
+sudo cwcli self-update
 
 # Report only; exit 1 if an update is available (handy in CI)
 cwcli self-update --check
