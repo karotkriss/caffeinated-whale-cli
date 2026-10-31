@@ -294,18 +294,24 @@ class TestRunningServices:
     def test_without_proc_the_owner_comes_from_the_daemons_pid_file(self, daemons, monkeypatch):
         # macOS under sudo: no /proc, and our own uid is root's.
         run, spawn = daemons
-        spawn(run / "auto-inspect.pid")
+        pid_file = run / "auto-inspect.pid"
+        spawn(pid_file)
         real_stat = os.stat
 
         def stat(path, *a, **kw):
             if str(path).startswith("/proc/"):
                 raise FileNotFoundError(path)
-            return real_stat(path, *a, **kw)
+            st = real_stat(path, *a, **kw)
+            if str(path) == str(pid_file):  # written by the daemon's own (non-root) user
+                fields = list(st[:10])
+                fields[4] = 4321
+                return os.stat_result(fields)
+            return st
 
         monkeypatch.setattr(su.os, "stat", stat)
         monkeypatch.setattr(su.os, "getuid", lambda: 0)
         (svc,) = su.running_services()
-        assert svc.owner == real_stat(run / "auto-inspect.pid").st_uid != 0
+        assert svc.owner == 4321
 
 
 class TestRestart:
