@@ -7,27 +7,29 @@ import urllib.parse
 from caffeinated_whale_cli.commands import serve as serve_cmd
 from caffeinated_whale_cli.core import app_deps
 from caffeinated_whale_cli.core.envelope import Result, Status
-from tests.test_core_app_deps import APPOINTMENTS, _appointments_world
+from tests.test_core_app_deps import BOOKING, _booking_world
 from tests.test_serve_hosts import _req, daemon  # noqa: F401 - the fixture
 
 
 def _wire(monkeypatch):
-    world = _appointments_world()
+    world = _booking_world()
     monkeypatch.setattr(app_deps, "read_remote", world.read)
     monkeypatch.setattr(app_deps, "list_branches", world.branches)
     monkeypatch.setattr(app_deps, "find_sources", world.sources)
     return world
 
 
-def test_a_new_bench_preview_plans_against_the_bench_it_will_build(daemon, monkeypatch):  # noqa: F811
+def test_a_new_bench_preview_plans_against_the_bench_it_will_build(
+    daemon, monkeypatch  # noqa: F811
+):
     _wire(monkeypatch)
     q = urllib.parse.urlencode(
-        {"new_bench": "1", "version": "15", "site": "x.localhost", "target": APPOINTMENTS}
+        {"new_bench": "1", "version": "15", "site": "x.localhost", "target": BOOKING}
     )
     status, body, _ = _req(daemon, f"/api/v1/apps/plan?{q}", bearer=True)
     assert status == 200, body
     plan = body["data"]
-    assert plan["order"] == ["customization", "appointments"]
+    assert plan["order"] == ["toolkit", "booking"]
     assert plan["needs_consent"] is True and plan["ok"] is True
     assert plan["frappe_version"] == "15.x"
 
@@ -52,17 +54,17 @@ def test_an_instance_plan_rides_the_core_and_its_warnings(daemon, monkeypatch): 
         [
             ("project", "acme"),
             ("bench", "0"),
-            ("target", APPOINTMENTS),
+            ("target", BOOKING),
             ("ref", "master"),
             ("site", "a.localhost"),
-            ("dep_source", "customization=https://example.com/c"),
+            ("dep_source", "toolkit=https://example.com/c"),
         ]
     )
     status, body, _ = _req(daemon, f"/api/v1/apps/plan?{q}", bearer=True)
     assert status == 200, body
-    assert seen["targets"] == [(APPOINTMENTS, "master")] and seen["sites"] == ["a.localhost"]
-    assert seen["dep_sources"] == {"customization": "https://example.com/c"}
-    assert body["data"]["order"] == ["customization", "appointments"]
+    assert seen["targets"] == [(BOOKING, "master")] and seen["sites"] == ["a.localhost"]
+    assert seen["dep_sources"] == {"toolkit": "https://example.com/c"}
+    assert body["data"]["order"] == ["toolkit", "booking"]
     assert body["data"]["warnings"] == []
 
 

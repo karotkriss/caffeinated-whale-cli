@@ -20,7 +20,7 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 class TestRequiredApps:
     def test_a_commented_line_is_not_a_declaration(self):
-        assert app_deps.required_apps('# required_apps = ["customization"]\n') == []
+        assert app_deps.required_apps('# required_apps = ["toolkit"]\n') == []
 
     def test_a_multi_line_list_parses(self):
         text = 'app_name = "x"\nrequired_apps = [\n    "frappe/erpnext",\n    "hrms",\n]\n'
@@ -50,7 +50,7 @@ class TestRequiredApps:
 
 class TestEntryForms:
     def test_a_bare_name(self):
-        assert app_deps.entry_module("customization") == ("customization", None)
+        assert app_deps.entry_module("toolkit") == ("toolkit", None)
 
     def test_org_repo_pins_github(self):
         assert app_deps.entry_module("frappe/payments") == (
@@ -62,19 +62,19 @@ class TestEntryForms:
         assert app_deps.entry_module("hrms@version-15") == ("hrms", None)
 
     def test_a_url_pins_itself(self):
-        url = "https://gitlab.example.com/tools/single-window.git"
-        assert app_deps.entry_module(url) == ("single_window", url)
+        url = "https://gitlab.example.com/tools/shop-floor.git"
+        assert app_deps.entry_module(url) == ("shop_floor", url)
 
 
 class TestDeclarations:
     def test_the_range_table_and_the_static_version(self):
         pyproject = (
-            '[project]\nname = "appointments"\nversion = "1.2.0"\n'
+            '[project]\nname = "booking"\nversion = "1.2.0"\n'
             '[tool.bench.frappe-dependencies]\nfrappe = ">=15.0.0,<16.0.0"\n'
-            'customization = ">=0.22.0"\n'
+            'toolkit = ">=0.22.0"\n'
         )
-        decl = app_deps.declarations_from("appointments", pyproject=pyproject, hooks="", init="")
-        assert decl.ranges == {"frappe": ">=15.0.0,<16.0.0", "customization": ">=0.22.0"}
+        decl = app_deps.declarations_from("booking", pyproject=pyproject, hooks="", init="")
+        assert decl.ranges == {"frappe": ">=15.0.0,<16.0.0", "toolkit": ">=0.22.0"}
         assert decl.version == "1.2.0" and decl.readable
 
     def test_a_dynamic_version_reads_dunder_version(self):
@@ -176,25 +176,25 @@ class _World:
         )
 
 
-APPOINTMENTS = "https://gitlab.example.com/gov/appointments"
-CUSTOMIZATION = "https://gitlab.example.com/tools/customization"
+BOOKING = "https://gitlab.example.com/team/booking"
+TOOLKIT = "https://gitlab.example.com/tools/toolkit"
 
 
-def _appointments_world() -> _World:
+def _booking_world() -> _World:
     world = _World()
     world.repo(
-        APPOINTMENTS,
-        "appointments",
+        BOOKING,
+        "booking",
         branches=["master", "develop"],
         default="master",
         master={
             "ranges": {"frappe": ">=15.0.0,<16.0.0"},
-            "required": ["customization"],
+            "required": ["toolkit"],
         },
     )
     world.repo(
-        CUSTOMIZATION,
-        "customization",
+        TOOLKIT,
+        "toolkit",
         branches=["master", "develop", "version-16"],
         default="develop",
         master={"version": "0.23.3", "ranges": {"frappe": ">=15.0.0,<17.0.0"}},
@@ -206,18 +206,18 @@ def _appointments_world() -> _World:
 
 class TestPlan:
     def test_a_missing_required_app_is_planned_first_and_needs_consent(self):
-        world = _appointments_world()
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
-        assert plan.order == ["customization", "appointments"]
+        world = _booking_world()
+        plan = world.plan(_bench(), [(BOOKING, "master")])
+        assert plan.order == ["toolkit", "booking"]
         dep, app = plan.nodes
-        assert dep.action == "fetch+install" and dep.parent == "appointments" and not dep.requested
+        assert dep.action == "fetch+install" and dep.parent == "booking" and not dep.requested
         assert dep.ref == "master"  # the same branch name as the app being installed
         assert app.action == "fetch+install" and app.requested
         assert plan.needs_consent and plan.ok and not plan.blocked
         assert [p.code for p in plan.problems] == ["app.required_app_missing"]
 
     def test_the_ref_falls_back_to_version_n_then_the_default_branch(self):
-        world = _appointments_world()
+        world = _booking_world()
         state = _bench()
         state = app_deps.BenchState(
             bench_path=state.bench_path,
@@ -226,125 +226,123 @@ class TestPlan:
             installed=state.installed,
             frappe_version="16.54.0",
         )
-        world.repos[APPOINTMENTS]["feature-x"] = Declarations(
-            app="appointments", required=["customization"], branch="feature-x"
+        world.repos[BOOKING]["feature-x"] = Declarations(
+            app="booking", required=["toolkit"], branch="feature-x"
         )
-        plan = world.plan(state, [(APPOINTMENTS, "feature-x")])
+        plan = world.plan(state, [(BOOKING, "feature-x")])
         assert plan.nodes[0].ref == "version-16"  # no feature-x there; version-16 is
-        world.repos[CUSTOMIZATION].pop("version-16")
-        plan = world.plan(state, [(APPOINTMENTS, "feature-x")])
+        world.repos[TOOLKIT].pop("version-16")
+        plan = world.plan(state, [(BOOKING, "feature-x")])
         assert plan.nodes[0].ref == "develop"  # its default branch
 
     def test_a_candidate_ref_whose_own_range_fails_is_passed_over(self):
-        world = _appointments_world()
-        world.repos[CUSTOMIZATION]["master"] = Declarations(
-            app="customization", version="9.0.0", ranges={"frappe": ">=16.0.0"}, branch="master"
+        world = _booking_world()
+        world.repos[TOOLKIT]["master"] = Declarations(
+            app="toolkit", version="9.0.0", ranges={"frappe": ">=16.0.0"}, branch="master"
         )
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         assert plan.nodes[0].ref == "develop"
 
     def test_the_ref_also_fits_the_range_the_requiring_app_declares(self):
-        world = _appointments_world()
-        world.repos[APPOINTMENTS]["master"] = Declarations(
-            app="appointments",
-            ranges={"customization": "<0.20.0"},
-            required=["customization"],
+        world = _booking_world()
+        world.repos[BOOKING]["master"] = Declarations(
+            app="booking",
+            ranges={"toolkit": "<0.20.0"},
+            required=["toolkit"],
             branch="master",
         )
-        world.repos[CUSTOMIZATION]["version-15"] = Declarations(
-            app="customization", version="0.8.1", branch="version-15"
+        world.repos[TOOLKIT]["version-15"] = Declarations(
+            app="toolkit", version="0.8.1", branch="version-15"
         )
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         assert plan.nodes[0].ref == "version-15" and plan.ok  # 0.23.3 on master would not fit
 
     def test_a_planned_dependency_that_fits_no_branch_says_so_not_on_this_bench(self):
-        world = _appointments_world()
-        world.repos[APPOINTMENTS]["master"] = Declarations(
-            app="appointments",
-            ranges={"customization": ">=5.0.0"},
-            required=["customization"],
+        world = _booking_world()
+        world.repos[BOOKING]["master"] = Declarations(
+            app="booking",
+            ranges={"toolkit": ">=5.0.0"},
+            required=["toolkit"],
             branch="master",
         )
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
-        assert "no branch of customization" in blocker.message
+        assert "no branch of toolkit" in blocker.message
         assert "on this bench" not in blocker.message
 
     def test_a_frappe_range_that_does_not_fit_blocks_and_is_overridable(self):
-        world = _appointments_world()
-        plan = world.plan(_bench(), [(APPOINTMENTS, "develop")])  # develop declares nothing
+        world = _booking_world()
+        plan = world.plan(_bench(), [(BOOKING, "develop")])  # develop declares nothing
         assert plan.ok
-        world.repos[APPOINTMENTS]["develop"] = Declarations(
-            app="appointments", ranges={"frappe": ">=16.0.0,<17.0.0"}, branch="develop"
+        world.repos[BOOKING]["develop"] = Declarations(
+            app="booking", ranges={"frappe": ">=16.0.0,<17.0.0"}, branch="develop"
         )
-        plan = world.plan(_bench(), [(APPOINTMENTS, "develop")])
+        plan = world.plan(_bench(), [(BOOKING, "develop")])
         (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
         assert blocker.code == "app.frappe_range_mismatch" and blocker.overridable
         assert plan.blocked and not plan.ok
-        overridden = world.plan(_bench(), [(APPOINTMENTS, "develop")], ignore_frappe_range=True)
+        overridden = world.plan(_bench(), [(BOOKING, "develop")], ignore_frappe_range=True)
         assert overridden.ok
         assert [p.severity for p in overridden.problems] == ["notice"]
 
     def test_a_sibling_app_range_blocks_and_is_never_overridable(self):
         world = _World()
         world.repo(
-            "https://gitlab.example.com/x/oversight",
-            "oversight",
+            "https://gitlab.example.com/x/audit",
+            "audit",
             branches=["develop"],
             default="develop",
-            develop={"ranges": {"customization": ">=0.22.0,<1.0.0"}},
+            develop={"ranges": {"toolkit": ">=0.22.0,<1.0.0"}},
         )
-        bench = _bench(customization=Declarations(app="customization", version="0.8.1"))
+        bench = _bench(toolkit=Declarations(app="toolkit", version="0.8.1"))
         plan = world.plan(
-            bench, [("https://gitlab.example.com/x/oversight", "develop")], ignore_frappe_range=True
+            bench, [("https://gitlab.example.com/x/audit", "develop")], ignore_frappe_range=True
         )
         (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
         assert blocker.code == "app.dependency_range_mismatch" and not blocker.overridable
 
     def test_a_required_app_the_catalog_does_not_know_blocks(self):
-        world = _appointments_world()
+        world = _booking_world()
         world.catalog.clear()
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         assert [p.code for p in plan.problems if p.severity == "blocker"] == [
             "app.required_app_source_unknown"
         ]
 
     def test_several_sources_are_a_choice_with_the_fitting_one_preselected(self):
-        world = _appointments_world()
-        fork = "https://github.com/someone/customization"
+        world = _booking_world()
+        fork = "https://github.com/someone/toolkit"
         world.repo(
             fork,
-            "customization",
+            "toolkit",
             branches=["main"],
             default="main",
             main={"ranges": {"frappe": ">=16.0.0"}},
         )
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         (choice,) = [p for p in plan.problems if p.severity == "choice"]
-        assert choice.default == CUSTOMIZATION
-        assert {o["value"]: o["ok"] for o in choice.options} == {CUSTOMIZATION: True, fork: False}
+        assert choice.default == TOOLKIT
+        assert {o["value"]: o["ok"] for o in choice.options} == {TOOLKIT: True, fork: False}
         assert plan.needs_choice
-        picked = world.plan(
-            _bench(), [(APPOINTMENTS, "master")], dep_sources={"customization": fork}
-        )
+        picked = world.plan(_bench(), [(BOOKING, "master")], dep_sources={"toolkit": fork})
         assert not picked.needs_choice and picked.nodes[0].target == fork
         # The pick stays visible (with its alternatives) so it can be changed.
         assert any(p.code == "app.required_app_source_chosen" for p in picked.problems)
 
     def test_a_required_app_on_the_bench_but_not_on_the_site_is_installed_first(self):
-        world = _appointments_world()
-        bench = _bench(customization=Declarations(app="customization", version="0.23.3"))
-        plan = world.plan(bench, [(APPOINTMENTS, "master")])
+        world = _booking_world()
+        bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
+        plan = world.plan(bench, [(BOOKING, "master")])
         dep = plan.nodes[0]
         assert dep.action == "install" and dep.on_bench and dep.missing_sites == ["a.localhost"]
         assert [p.code for p in plan.problems] == ["app.required_app_not_installed"]
-        assert world.reads.count((CUSTOMIZATION, "master")) == 0  # the bench copy is read
+        assert world.reads.count((TOOLKIT, "master")) == 0  # the bench copy is read
 
     def test_an_installed_required_app_is_never_touched(self):
-        world = _appointments_world()
-        bench = _bench(customization=Declarations(app="customization", version="0.23.3"))
-        bench.installed["a.localhost"].add("customization")
-        plan = world.plan(bench, [(APPOINTMENTS, "master")])
+        world = _booking_world()
+        bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
+        bench.installed["a.localhost"].add("toolkit")
+        plan = world.plan(bench, [(BOOKING, "master")])
         assert plan.nodes[0].action == "none" and not plan.needs_consent
 
     def test_a_cycle_refuses(self):
@@ -395,26 +393,26 @@ class TestPlan:
         assert plan.ok and plan.problems == [] and plan.nodes[0].ranges == []
 
     def test_a_requested_app_already_on_the_bench_is_read_from_the_bench_copy(self):
-        world = _appointments_world()
+        world = _booking_world()
         bench = _bench(
-            appointments=Declarations(
-                app="appointments",
+            booking=Declarations(
+                app="booking",
                 version="1.0.0",
-                remotes=["gitlab.example.com/gov/appointments"],
+                remotes=["gitlab.example.com/team/booking"],
             )
         )
-        plan = world.plan(bench, [(APPOINTMENTS, "master")])
-        assert world.reads == [] and plan.order == ["appointments"]
+        plan = world.plan(bench, [(BOOKING, "master")])
+        assert world.reads == [] and plan.order == ["booking"]
         assert plan.nodes[0].action == "install"
 
     def test_a_new_bench_preview_plans_against_frappe_n_x(self):
-        world = _appointments_world()
+        world = _booking_world()
         state = app_deps.planned_bench_state(15, with_erpnext=False, site="x.localhost")
-        plan = world.plan(state, [(APPOINTMENTS, "master")])
-        assert plan.ok and plan.order == ["customization", "appointments"]
+        plan = world.plan(state, [(BOOKING, "master")])
+        assert plan.ok and plan.order == ["toolkit", "booking"]
         state16 = app_deps.planned_bench_state(16, with_erpnext=False, site="x.localhost")
-        plan = world.plan(state16, [(APPOINTMENTS, "master")])
-        assert plan.blocked  # appointments master needs Frappe 15
+        plan = world.plan(state16, [(BOOKING, "master")])
+        assert plan.blocked  # booking master needs Frappe 15
 
 
 # ----------------------------------------------------------------------- enforcing
@@ -422,58 +420,58 @@ class TestPlan:
 
 class TestEnforce:
     def test_a_blocker_raises_with_the_plan_and_nothing_else_happens(self):
-        world = _appointments_world()
+        world = _booking_world()
         world.catalog.clear()
-        plan = world.plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = world.plan(_bench(), [(BOOKING, "master")])
         with pytest.raises(CwcliError) as raised:
             app_deps.enforce(plan, with_deps=True)
         assert raised.value.kind is ErrorKind.PRECONDITION
         assert raised.value.code == "app.required_app_source_unknown"
-        assert raised.value.detail["plan"]["order"] == ["appointments"]
+        assert raised.value.detail["plan"]["order"] == ["booking"]
         assert "\n" not in raised.value.message  # axi renders it on one TOON line
 
     def test_a_range_mismatch_is_a_conflict(self):
-        world = _appointments_world()
-        world.repos[APPOINTMENTS]["master"] = Declarations(
-            app="appointments", ranges={"frappe": ">=16.0.0"}, branch="master"
+        world = _booking_world()
+        world.repos[BOOKING]["master"] = Declarations(
+            app="booking", ranges={"frappe": ">=16.0.0"}, branch="master"
         )
         with pytest.raises(CwcliError) as raised:
-            app_deps.enforce(world.plan(_bench(), [(APPOINTMENTS, "master")]), with_deps=True)
+            app_deps.enforce(world.plan(_bench(), [(BOOKING, "master")]), with_deps=True)
         assert raised.value.kind is ErrorKind.CONFLICT
         assert "--ignore-frappe-range" in raised.value.hint
 
     def test_missing_required_apps_ask_unless_with_deps(self):
-        plan = _appointments_world().plan(_bench(), [(APPOINTMENTS, "master")])
+        plan = _booking_world().plan(_bench(), [(BOOKING, "master")])
         asked = app_deps.enforce(plan, with_deps=False)
         assert asked is not None and asked.status is Status.NEEDS_CHOICE
         assert asked.choice.kind == "confirm_required_apps" and asked.choice.param == "with_deps"
-        assert [o["app"] for o in asked.choice.options] == ["customization", "appointments"]
+        assert [o["app"] for o in asked.choice.options] == ["toolkit", "booking"]
         assert app_deps.enforce(plan, with_deps=True) is None
 
     def test_an_open_source_pick_is_a_select_choice_even_with_consent(self):
-        world = _appointments_world()
-        world.repo("https://github.com/someone/customization", "customization", branches=["main"], default="main")
-        asked = app_deps.enforce(
-            world.plan(_bench(), [(APPOINTMENTS, "master")]), with_deps=True
+        world = _booking_world()
+        world.repo(
+            "https://github.com/someone/toolkit", "toolkit", branches=["main"], default="main"
         )
+        asked = app_deps.enforce(world.plan(_bench(), [(BOOKING, "master")]), with_deps=True)
         assert asked.choice.kind == "select_app_source" and asked.choice.param == "dep_sources"
-        assert asked.choice.default == CUSTOMIZATION
+        assert asked.choice.default == TOOLKIT
 
 
 class TestChangedSincePlan:
     def test_a_new_required_app_after_the_check_is_named(self):
-        node = _appointments_world().plan(_bench(), [(APPOINTMENTS, "master")]).nodes[1]
+        node = _booking_world().plan(_bench(), [(BOOKING, "master")]).nodes[1]
         now = Declarations(
-            app="appointments",
+            app="booking",
             ranges={"frappe": ">=15.0.0,<16.0.0"},
-            required=["customization", "payments"],
+            required=["toolkit", "payments"],
         )
         assert "payments" in app_deps.changed_since_plan(node, now)
 
     def test_the_same_declarations_match(self):
-        node = _appointments_world().plan(_bench(), [(APPOINTMENTS, "master")]).nodes[1]
+        node = _booking_world().plan(_bench(), [(BOOKING, "master")]).nodes[1]
         now = Declarations(
-            app="appointments", ranges={"frappe": ">=15.0.0,<16.0.0"}, required=["customization"]
+            app="booking", ranges={"frappe": ">=15.0.0,<16.0.0"}, required=["toolkit"]
         )
         assert app_deps.changed_since_plan(node, now) is None
 
