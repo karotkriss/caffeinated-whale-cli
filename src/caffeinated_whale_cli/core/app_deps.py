@@ -503,9 +503,18 @@ def _read_remote(url: str, ref: str | None) -> Declarations:
         commit = _git(["rev-parse", "FETCH_HEAD"], tmp)[1].strip() or None
         dirs = set(_git(["ls-tree", "-d", "--name-only", "FETCH_HEAD"], tmp)[1].split())
 
+        unreadable: list[str] = []
+
         def show(path: str) -> str | None:
-            code, out, _ = _git(["show", f"FETCH_HEAD:{path}"], tmp)
-            return out if code == 0 else None
+            # None is "absent" only when the tree does not list it: a listed blob the
+            # lazy fetch could not download is unreadable, never "declares nothing".
+            code, out, err = _git(["show", f"FETCH_HEAD:{path}"], tmp)
+            if code == 0:
+                return out
+            listed = _git(["ls-tree", "--name-only", "FETCH_HEAD", "--", path], tmp)
+            if listed[0] != 0 or listed[1].strip():
+                unreadable.append(f"{path} ({_git_error(err)})")
+            return None
 
         pyproject = show("pyproject.toml")
         module = app_catalog._module_for(repo, pyproject, dirs)
@@ -514,9 +523,13 @@ def _read_remote(url: str, ref: str | None) -> Declarations:
                 app=repo.replace("-", "_"),
                 branch=ref,
                 commit=commit,
-                error=f"{name} at {ref or 'its default branch'} is not a Frappe app layout",
+                error=(
+                    f"could not read {', '.join(unreadable)}"
+                    if unreadable
+                    else f"{name} at {ref or 'its default branch'} is not a Frappe app layout"
+                ),
             )
-        return declarations_from(
+        decl = declarations_from(
             module,
             pyproject=pyproject,
             hooks=show(f"{module}/hooks.py"),
@@ -525,6 +538,10 @@ def _read_remote(url: str, ref: str | None) -> Declarations:
             commit=commit,
             remotes=[k for k in [app_catalog.remote_key(url)] if k],
         )
+        if unreadable:
+            problems = [decl.error, f"could not read {', '.join(unreadable)}"]
+            decl = replace(decl, error="; ".join(p for p in problems if p))
+        return decl
 
 
 def list_branches(url: str) -> list[str] | None:

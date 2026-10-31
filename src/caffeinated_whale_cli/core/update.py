@@ -939,6 +939,7 @@ def _dependency_facts(
     apps: list[str],
     sites_filter: list[str] | None,
     ranges: bool,
+    dep_sources: dict[str, str] | None = None,
 ) -> list[dict]:
     """The dependency tier, for EVERY named app: what its new code declares.
 
@@ -1040,6 +1041,18 @@ def _dependency_facts(
                         "dep": dep,
                         "ref": ref,
                         "branch": branch,
+                    }
+                )
+                continue
+            if dep not in bench and not pin and len(found) > 1 and dep not in (dep_sources or {}):
+                # The install path's select_app_source: never guess between repositories.
+                facts.append(
+                    {
+                        "code": "app.required_app_source_ambiguous",
+                        "app": app,
+                        "dep": dep,
+                        "ref": ref,
+                        "candidates": [s.url for s in found],
                     }
                 )
                 continue
@@ -1190,6 +1203,7 @@ def _app_checks(
             apps=apps,
             sites_filter=sites_filter,
             ranges=True,
+            dep_sources=dep_sources,
         )
 
     def classify(facts: list[dict]) -> list[PreflightFinding]:
@@ -1302,6 +1316,7 @@ def _frappe_checks(
             apps=apps,
             sites_filter=sites_filter,
             ranges=not preflight,
+            dep_sources=dep_sources,
         )
         added = update_preflight.classify(extra, project=project_name, bench=bench, path=path)
         dependency[:] = added

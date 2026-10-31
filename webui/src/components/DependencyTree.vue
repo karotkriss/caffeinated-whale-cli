@@ -92,7 +92,7 @@ const readAt = computed(() => requested.value.map((n) => n.ref).filter(Boolean)[
           </div>
         </div>
         <p v-for="n in notices" :key="`${n.code}-${n.app}-${n.message}`" class="text-xs text-ink-gray-5">{{ n.message }}</p>
-        <template v-if="required.length && !blockers.length">
+        <template v-if="required.length && (!blockers.length || (overridable && override))">
           <Checkbox v-if="askConsent" v-model="consent" :label="`Also ${required.some((n) => n.action.includes('install')) ? 'fetch and install' : 'fetch'} ${required.map((n) => n.app).join(', ')} first`" />
           <p class="text-p-sm text-ink-gray-6" :class="askConsent && 'pl-6'">{{ consentNote || `Required apps are installed first.` }}<template v-if="order.length"> Order{{ sitesText ? ` on ${sitesText}` : '' }}: {{ order.join(', ') }}.</template></p>
         </template>

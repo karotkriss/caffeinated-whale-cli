@@ -620,6 +620,51 @@ def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkey
     assert "app sources" in blocker.message and "--with-deps" not in blocker.remedy
 
 
+def _two_toolkits(monkeypatch):
+    other = "https://github.com/someone/toolkit"
+    monkeypatch.setattr(
+        app_deps,
+        "find_sources",
+        lambda module, pin=None: [
+            app_deps.Source(url=TOOLKIT, key=TOOLKIT.split("://", 1)[1]),
+            app_deps.Source(url=other, key=other.split("://", 1)[1]),
+        ],
+    )
+    return other
+
+
+def test_with_deps_asks_which_repository_when_the_catalog_holds_several(monkeypatch):
+    """The install path's select_app_source: an update never guesses either."""
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    other = _two_toolkits(monkeypatch)
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == [] and report.preflight_blocked
+    (blocker,) = [f for f in report.preflight if f.severity == "blocker"]
+    assert blocker.code == "app.required_app_source_ambiguous"
+    assert TOOLKIT in blocker.message and other in blocker.message
+    assert "--dep-source toolkit=<url>" in blocker.remedy
+
+
+def test_a_dep_source_pick_settles_the_repository_for_the_install(monkeypatch):
+    bench = _UpdateBench()
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    other = _two_toolkits(monkeypatch)
+    facts = core_update._dependency_facts(
+        bench,
+        bench_path=BENCH,
+        apps=["jobboard"],
+        sites_filter=None,
+        ranges=True,
+        dep_sources={"toolkit": other},
+    )
+    assert [f["code"] for f in facts] == ["app.required_app_missing"]
+
+
 # ---------------------------------------------------------------------- surfaces
 
 

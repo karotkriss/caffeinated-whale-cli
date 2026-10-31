@@ -830,6 +830,12 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "yourself: cwcli apps install {q_project} <{dep} repository URL>{selector_flag} "
         "--fetch-only",
     ),
+    "app.required_app_source_ambiguous": (
+        BLOCKER,
+        "the new code at {ref} requires {dep} (required_apps), and the apps catalog holds "
+        "several repositories named {dep}: {candidates}",
+        "pick the one to fetch: re-run with --with-deps --dep-source {dep}=<url>",
+    ),
     "app.required_app_not_installed": (
         BLOCKER,
         "site '{site}' has {app} installed but not {dep}, which the new code at {ref} "

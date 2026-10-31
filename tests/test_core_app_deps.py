@@ -542,6 +542,72 @@ def test_a_remote_read_refuses_a_non_url_or_an_option_ref_without_running_git(
     assert not decl.readable and ran == []
 
 
+def _remote_app(tmp_path, *, with_hooks=True):
+    """A real one-commit repository holding a Frappe app that declares a range."""
+    import subprocess
+
+    repo = tmp_path / "rangeapp"
+    (repo / "rangeapp").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "rangeapp"\n\n'
+        '[tool.bench.frappe-dependencies]\nfrappe = ">=14.0.0,<15.0.0"\n'
+    )
+    (repo / "rangeapp" / "__init__.py").write_text('__version__ = "1.0.0"\n')
+    if with_hooks:
+        (repo / "rangeapp" / "hooks.py").write_text('required_apps = ["payments"]\n')
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    return repo
+
+
+def _serve_from(monkeypatch, repo, *, fail_show: str | None = None):
+    """Point the remote read at ``repo``; ``fail_show`` fails that one blob read, as a
+    dropped lazy blob fetch does."""
+    import os
+
+    # The host's gh/glab credential dispatch is irrelevant to a local repository.
+    monkeypatch.setattr(
+        app_deps.git_refs, "_git_env", lambda: dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    )
+    real = app_deps._git
+
+    def fake(args, cwd, timeout=app_deps._REMOTE_TIMEOUT):
+        if args[:2] == ["remote", "add"]:
+            args = ["remote", "add", "origin", str(repo)]
+        if fail_show and args == ["show", f"FETCH_HEAD:{fail_show}"]:
+            return 128, "", "fatal: could not fetch blob from promisor remote"
+        return real(args, cwd, timeout)
+
+    monkeypatch.setattr(app_deps, "_git", fake)
+
+
+class TestRemoteReadFailsClosed:
+    URL = "https://example.com/acme/rangeapp"
+
+    def test_a_readable_remote_reports_its_range_and_required_apps(self, tmp_path, monkeypatch):
+        _serve_from(monkeypatch, _remote_app(tmp_path))
+        decl = app_deps._read_remote(self.URL, "main")
+        assert decl.readable
+        assert decl.ranges == {"frappe": ">=14.0.0,<15.0.0"} and decl.required == ["payments"]
+
+    @pytest.mark.parametrize(
+        "path", ["pyproject.toml", "rangeapp/hooks.py", "rangeapp/__init__.py"]
+    )
+    def test_a_listed_file_that_cannot_be_read_is_unverified_not_empty(
+        self, tmp_path, monkeypatch, path
+    ):
+        _serve_from(monkeypatch, _remote_app(tmp_path), fail_show=path)
+        decl = app_deps._read_remote(self.URL, "main")
+        assert not decl.readable and path in decl.error
+
+    def test_a_file_the_app_does_not_have_stays_readable(self, tmp_path, monkeypatch):
+        _serve_from(monkeypatch, _remote_app(tmp_path, with_hooks=False))
+        decl = app_deps._read_remote(self.URL, "main")
+        assert decl.readable and decl.required == []
+
+
 def test_a_pinned_required_app_comes_from_the_catalog_only(monkeypatch):
     catalog = {
         "remote": {
