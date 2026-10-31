@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -2293,13 +2294,18 @@ def axi_apps_plan(
     }
     typer.echo(toon.encode(doc, warnings=result.warnings))
     if plan.ok and not plan.needs_choice:
-        sites_flag = "".join(f" --site {s}" for s in plan.sites[:1]) or " --site <site>"
-        apply = (
-            f"cwcli axi apps install {project} {app_name}{sites_flag}"
-            + (f" --branch {branch}" if branch else "")
+        q = shlex.quote
+        flags = (
+            (f" --bench {q(bench)}" if bench else "")
+            + (f" --branch {q(branch)}" if branch else "")
+            + "".join(f" --dep-source {q(d)}" for d in dep_source or [])
             + (" --with-deps" if plan.needs_consent else "")
         )
-        typer.echo(toon.block("help", [f"Run `{apply}` to apply this plan"]))
+        applies = [
+            f"cwcli axi apps install {q(project)} {q(app_name)} --site {q(s)}{flags}"
+            for s in plan.sites
+        ] or [f"cwcli axi apps install {q(project)} {q(app_name)} --site <site>{flags}"]
+        typer.echo(toon.block("help", [f"Run `{a}` to apply this plan" for a in applies]))
     raise typer.Exit(0 if plan.ok else 1)
 
 

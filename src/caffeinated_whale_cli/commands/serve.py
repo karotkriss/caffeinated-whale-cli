@@ -2373,11 +2373,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if one("new_bench"):
                 version = one("version") or "16"
-                major = int(version.split(".")[0]) if version.split(".")[0].isdigit() else 16
                 plan = core_app_deps.plan_new_bench(
                     "",
                     pairs,
-                    frappe_major=major,
+                    frappe=version if re.fullmatch(r"\d+(\.\d+\.\d+\S*)?", version) else "16",
                     with_erpnext=one("erpnext") in ("1", "true"),
                     site=one("site") or "new-site",
                     dep_sources=dep_sources,

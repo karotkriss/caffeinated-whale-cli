@@ -34,6 +34,18 @@ def test_a_new_bench_preview_plans_against_the_bench_it_will_build(
     assert plan["frappe_version"] == "15.x"
 
 
+def test_a_new_bench_preview_at_an_exact_tag_plans_against_that_version(
+    daemon, monkeypatch  # noqa: F811
+):
+    _wire(monkeypatch)
+    q = urllib.parse.urlencode(
+        {"new_bench": "1", "version": "15.3.0", "site": "x.localhost", "target": BOOKING}
+    )
+    status, body, _ = _req(daemon, f"/api/v1/apps/plan?{q}", bearer=True)
+    assert status == 200, body
+    assert body["data"]["frappe_version"] == "15.3.0"
+
+
 def test_an_instance_plan_rides_the_core_and_its_warnings(daemon, monkeypatch):  # noqa: F811
     world = _wire(monkeypatch)
     state = app_deps.BenchState(

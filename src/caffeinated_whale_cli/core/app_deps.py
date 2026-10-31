@@ -678,11 +678,13 @@ def read_bench_state(
     )
 
 
-def planned_bench_state(frappe_major: int, *, with_erpnext: bool, site: str) -> BenchState:
-    """A bench that ``new-bench`` will build: frappe (and erpnext) at the newest
-    ``N.x``, one site holding them. A preview only; the job re-plans on the real
-    bench before any app is fetched."""
-    version = f"{frappe_major}.9999.0"
+def planned_bench_state(frappe: str, *, with_erpnext: bool, site: str) -> BenchState:
+    """A bench that ``new-bench`` will build: frappe (and erpnext) at ``frappe``, an
+    exact ``X.Y.Z`` or a bare major ``N`` read as the newest ``N.x``, one site holding
+    them. A preview only; the job re-plans on the real bench before any app is fetched."""
+    frappe_major = int(frappe.split(".")[0])
+    exact = "." in frappe
+    version = frappe if exact else f"{frappe_major}.9999.0"
     apps = {"frappe": Declarations(app="frappe", version=version)}
     if with_erpnext:
         apps["erpnext"] = Declarations(
@@ -693,7 +695,7 @@ def planned_bench_state(frappe_major: int, *, with_erpnext: bool, site: str) -> 
         apps=apps,
         sites=[site],
         installed={site: set(apps)},
-        frappe_version=f"{frappe_major}.x",
+        frappe_version=frappe if exact else f"{frappe_major}.x",
         planned_bench=True,
     )
 
@@ -1463,13 +1465,13 @@ def plan_new_bench(
     project: str,
     targets: list[tuple[str, str | None]],
     *,
-    frappe_major: int,
+    frappe: str,
     with_erpnext: bool,
     site: str,
     dep_sources: dict[str, str] | None = None,
 ) -> DependencyPlan:
     """The preview for ``new-bench``'s extra apps, against the bench it will build."""
-    state = planned_bench_state(frappe_major, with_erpnext=with_erpnext, site=site)
+    state = planned_bench_state(frappe, with_erpnext=with_erpnext, site=site)
     return build_plan(project, state, targets, dep_sources=dep_sources)
 
 

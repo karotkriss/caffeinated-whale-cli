@@ -452,10 +452,10 @@ class TestPlan:
 
     def test_a_new_bench_preview_plans_against_frappe_n_x(self):
         world = _booking_world()
-        state = app_deps.planned_bench_state(15, with_erpnext=False, site="x.localhost")
+        state = app_deps.planned_bench_state("15", with_erpnext=False, site="x.localhost")
         plan = world.plan(state, [(BOOKING, "master")])
         assert plan.ok and plan.order == ["toolkit", "booking"]
-        state16 = app_deps.planned_bench_state(16, with_erpnext=False, site="x.localhost")
+        state16 = app_deps.planned_bench_state("16", with_erpnext=False, site="x.localhost")
         plan = world.plan(state16, [(BOOKING, "master")])
         assert plan.blocked  # booking master needs Frappe 15
 

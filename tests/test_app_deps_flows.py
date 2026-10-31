@@ -504,6 +504,39 @@ def test_with_deps_installs_the_required_app_then_updates(monkeypatch):
     assert ran
 
 
+def test_with_deps_installs_nothing_when_another_blocker_will_refuse_the_update(monkeypatch):
+    bench = _UpdateBench()
+    bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    installs, pulled = [], []
+    monkeypatch.setattr(core_update.core_apps, "install_apps", lambda *a, **k: installs.append(a))
+    monkeypatch.setattr(core_update, "_update_apps", lambda *a, **k: pulled.append(1))
+    report = core_update.update("proj", ["jobboard"], with_deps=True).data
+    assert installs == [] and pulled == []
+    assert report.preflight_blocked and not report.ok
+    codes = {f.code for f in report.preflight if f.severity == "blocker"}
+    assert codes == {"app.required_app_missing", "app.frappe_dependency_unsatisfied"}
+
+
+def test_with_deps_fetches_a_pinned_required_app_from_the_pinned_repository(monkeypatch):
+    bench = _UpdateBench(tip_required=("acme/toolkit",))
+    _wire_update(monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"]})
+    _wire_update_verb(monkeypatch, bench)
+    seen = []
+
+    def install(project, apps, **kw):
+        seen.append(kw["dep_sources"])
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=False),
+        )
+
+    monkeypatch.setattr(core_update.core_apps, "install_apps", install)
+    core_update.update("proj", ["jobboard"], with_deps=True)
+    assert seen == [{"toolkit": TOOLKIT}]
+
+
 def test_with_deps_never_fetches_a_required_app_the_catalog_does_not_hold(monkeypatch):
     """Catalog-only: a bare name would reach bench's own github.com/frappe guess."""
     bench = _UpdateBench()
@@ -689,3 +722,29 @@ def test_axi_apps_plan_is_a_read_with_an_honest_exit(monkeypatch):
     assert "needs_consent: true" in result.output
     assert "plan[2]{" in result.output
     assert "--with-deps" in result.output  # the help line names how to apply it
+
+
+def test_axi_apps_plan_help_runs_the_plan_it_describes(monkeypatch):
+    from caffeinated_whale_cli.commands import axi
+
+    plan = _booking_world().plan(
+        app_deps.BenchState(
+            bench_path=BENCH,
+            apps={"frappe": Declarations(app="frappe", version="15.125.0")},
+            sites=["a.localhost", "b.localhost"],
+            installed={"a.localhost": {"frappe"}, "b.localhost": {"frappe"}},
+            frappe_version="15.125.0",
+        ),
+        [(BOOKING, "master")],
+    )
+    monkeypatch.setattr(app_deps, "plan", lambda *a, **k: Result(status=Status.OK, data=plan))
+    pick = f"toolkit={TOOLKIT}"
+    result = CliRunner().invoke(
+        axi.app, ["apps", "plan", "proj", BOOKING, "--branch", "master", "--dep-source", pick]
+    )
+    assert result.exit_code == 0, result.output
+    for site in ("a.localhost", "b.localhost"):
+        assert (
+            f"cwcli axi apps install proj {BOOKING} --site {site} --branch master "
+            f"--dep-source {pick} --with-deps"
+        ) in result.output

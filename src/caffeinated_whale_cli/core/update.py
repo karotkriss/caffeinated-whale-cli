@@ -925,6 +925,13 @@ def _reown_dubious_apps(
 _REQUIRED_CODES = frozenset({"app.required_app_missing", "app.required_app_not_installed"})
 
 
+def _installable(findings: list[PreflightFinding]) -> bool:
+    """True when ``--with-deps`` may install now: a required app is missing and it is
+    the ONLY thing blocking, so a refusal never follows an install that changed sites."""
+    blockers = {f.code for f in findings if f.severity == update_preflight.BLOCKER}
+    return bool(blockers & _REQUIRED_CODES) and blockers <= _REQUIRED_CODES
+
+
 def _dependency_facts(
     container,
     *,
@@ -1022,7 +1029,8 @@ def _dependency_facts(
             dep, pin = app_deps.entry_module(entry)
             if dep in ("frappe", app):
                 continue
-            if dep not in bench and not app_deps.find_sources(dep, pin):
+            found = [] if dep in bench else app_deps.find_sources(dep, pin)
+            if dep not in bench and not found:
                 # Catalog-only: --with-deps would hand a bare name to bench's own
                 # github.com/frappe|erpnext guess, so this one is never offered it.
                 facts.append(
@@ -1044,6 +1052,7 @@ def _dependency_facts(
                         "ref": ref,
                         "branch": branch,
                         "sites": app_sites,
+                        "source": found[0].url if pin else None,
                     }
                 )
                 continue
@@ -1094,9 +1103,12 @@ def _install_required(
     required apps first), so the update never grows a second way to fetch an app.
     """
     wanted: dict[str, tuple[set[str], str | None, str]] = {}
+    sources = dict(dep_sources or {})
     for fact in facts:
         if fact.get("code") not in _REQUIRED_CODES:
             continue
+        if fact.get("source"):
+            sources.setdefault(fact["dep"], fact["source"])
         sites, branch, parent = wanted.get(
             fact["dep"], (set(), fact.get("branch"), str(fact.get("app")))
         )
@@ -1130,7 +1142,7 @@ def _install_required(
                 fetch_only=not sites,
                 if_not_present=True,
                 with_deps=True,
-                dep_sources=dep_sources,
+                dep_sources=sources,
                 prefer_ref=branch,
                 on_event=relay,
             )
@@ -1181,25 +1193,27 @@ def _app_checks(
             ranges=True,
         )
 
+    def classify(facts: list[dict]) -> list[PreflightFinding]:
+        return update_preflight.classify(facts, project=project_name, bench=bench, path=path)
+
     facts = check()
-    changed = False
     if fix_branches and update_preflight.fixable_branches(facts):
-        changed = _switch_mismatched_apps(project_name, bench_path, facts, emit, warnings)
-    if with_deps and any(f.get("code") in _REQUIRED_CODES for f in facts):
-        changed = (
-            _install_required(
-                project_name,
-                bench_path=bench_path,
-                facts=facts,
-                dep_sources=dep_sources,
-                emit=emit,
-                warnings=warnings,
-            )
-            or changed
+        if _switch_mismatched_apps(project_name, bench_path, facts, emit, warnings):
+            facts = check()
+    findings = classify(facts)
+    if (
+        with_deps
+        and _installable(findings)
+        and _install_required(
+            project_name,
+            bench_path=bench_path,
+            facts=facts,
+            dep_sources=dep_sources,
+            emit=emit,
+            warnings=warnings,
         )
-    if changed:
-        facts = check()
-    findings = update_preflight.classify(facts, project=project_name, bench=bench, path=path)
+    ):
+        findings = classify(check())
     blocked = any(f.severity == update_preflight.BLOCKER for f in findings)
     emit(
         UpdatePreflight(
@@ -1299,16 +1313,6 @@ def _frappe_checks(
         )
 
     outcome = check()
-    if with_deps and any(f.get("code") in _REQUIRED_CODES for f in outcome.facts):
-        if _install_required(
-            project_name,
-            bench_path=bench_path,
-            facts=outcome.facts,
-            dep_sources=dep_sources,
-            emit=emit,
-            warnings=warnings,
-        ):
-            outcome = check()
     if force and _reown_dubious_apps(frappe_container, bench_path, outcome.findings, warnings):
         outcome = check()
     # On a staging server (2026-10-28), two more failures the preflight now prevents:
@@ -1330,25 +1334,49 @@ def _frappe_checks(
         if _widen_untracked_refspecs(frappe_container, bench_path, outcome.facts, emit, warnings):
             outcome = check()
     wanted = {a.lower() for a in apps}
-    # Only the core apps are reset now, so only THEIR local work is at risk (an
-    # unchecked bench - no app named - still refuses: it could be any of them).
-    # Another app's local work is a fact worth showing, never a loss: it is
-    # re-labelled a notice so the data-loss group lists only what the reset touches.
-    relabelled = []
-    for f in outcome.findings:
-        if f in update_preflight.local_work([f]) and f.app and f.app not in wanted:
-            kept = re.split(
-                r" would be DISCARDED| that exist on no remote|;", f.message, maxsplit=1
-            )[0]
-            f = dataclasses.replace(
-                f,
-                severity=update_preflight.NOTICE,
-                message=f"{kept} - not touched by a core update "
-                f"(only {', '.join(sorted(wanted))} {'is' if len(wanted) == 1 else 'are'} reset)",
-                remedy=None,
-            )
-        relabelled.append(f)
-    at_risk = [f for f in update_preflight.local_work(relabelled) if not f.app or f.app in wanted]
+
+    def assess(
+        outcome: update_preflight.PreflightOutcome,
+    ) -> tuple[list[PreflightFinding], list[PreflightFinding]]:
+        # Only the core apps are reset now, so only THEIR local work is at risk (an
+        # unchecked bench - no app named - still refuses: it could be any of them).
+        # Another app's local work is a fact worth showing, never a loss: it is
+        # re-labelled a notice so the data-loss group lists only what the reset touches.
+        relabelled = []
+        for f in outcome.findings:
+            if f in update_preflight.local_work([f]) and f.app and f.app not in wanted:
+                kept = re.split(
+                    r" would be DISCARDED| that exist on no remote|;", f.message, maxsplit=1
+                )[0]
+                f = dataclasses.replace(
+                    f,
+                    severity=update_preflight.NOTICE,
+                    message=f"{kept} - not touched by a core update (only "
+                    f"{', '.join(sorted(wanted))} {'is' if len(wanted) == 1 else 'are'} reset)",
+                    remedy=None,
+                )
+            relabelled.append(f)
+        at_risk = [
+            f for f in update_preflight.local_work(relabelled) if not f.app or f.app in wanted
+        ]
+        return relabelled, at_risk
+
+    relabelled, at_risk = assess(outcome)
+    if (
+        with_deps
+        and (force or not at_risk)
+        and _installable(outcome.findings)
+        and _install_required(
+            project_name,
+            bench_path=bench_path,
+            facts=outcome.facts,
+            dep_sources=dep_sources,
+            emit=emit,
+            warnings=warnings,
+        )
+    ):
+        outcome = check()
+        relabelled, at_risk = assess(outcome)
     findings = relabelled if preflight else at_risk
     blocked = preflight and outcome.blocked
     refused = bool(at_risk) and not force
