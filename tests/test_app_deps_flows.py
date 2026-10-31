@@ -166,6 +166,23 @@ def test_a_remote_that_moved_since_the_check_stops_before_any_site_install(
     assert any(w.code == "app.dependencies_changed" for w in result.warnings)
 
 
+def test_a_dep_source_outside_the_catalog_is_refused_with_nothing_fetched(
+    world, container  # noqa: F811
+):
+    with pytest.raises(CwcliError) as raised:
+        core_apps.install_apps(
+            "proj",
+            [BOOKING],
+            branch="master",
+            sites=["a.localhost"],
+            with_deps=True,
+            dep_sources={"toolkit": "https://github.com/elsewhere/toolkit"},
+        )
+    assert raised.value.code == "app.dep_source_not_in_catalog"
+    assert "app sources" in raised.value.hint
+    assert _gets(container) == [] and _installs(container) == []
+
+
 def test_a_failed_required_app_fetch_installs_nothing(world, container):  # noqa: F811
     container.fail_on = [f"get-app --branch master {TOOLKIT}"]
     result = core_apps.install_apps(

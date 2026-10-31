@@ -862,6 +862,24 @@ class _Planner:
         return frappe.version if frappe else None
 
     # -- resolution
+    def catalog_pick(self, module: str, found: list[Source]) -> Source | None:
+        """The catalog source a ``dep_sources`` pick names, or None (a blocker): a pick
+        only chooses among the catalog's repositories for ``module``."""
+        url = self.dep_sources[module]
+        key = app_catalog.remote_key(url)
+        picked = next((f for f in found if f.key == key), None) if key else None
+        if picked is None:
+            self.problem(
+                "app.dep_source_not_in_catalog",
+                "blocker",
+                module,
+                f"The source picked for {module} ({key or 'not a repository URL'}) is not in "
+                f"your app sources; only a repository the apps catalog holds for {module} can "
+                f"be picked.",
+                remedy="Add that repository to your app sources first, then run the check again.",
+            )
+        return picked
+
     def resolve_source(
         self,
         module: str,
@@ -876,11 +894,11 @@ class _Planner:
         forces the ref every candidate is read at."""
         found = self.sources(module, pin)
         if module in self.dep_sources:
-            url = self.dep_sources[module]
-            known = next((f for f in found if f.url == url), None)
-            at, decl = self.choose_ref(
-                url, parent_ref, known.default_branch if known else None, need, ref=ref
-            )
+            chosen = self.catalog_pick(module, found)
+            if chosen is None:
+                return None
+            url = chosen.url
+            at, decl = self.choose_ref(url, parent_ref, chosen.default_branch, need, ref=ref)
             if len(found) > 1:
                 # Still name the alternatives, so a dialog can show (and change) the pick.
                 self.problem(
@@ -892,7 +910,7 @@ class _Planner:
                     options=self.source_options(found, parent_ref, need, ref=ref),
                     default=url,
                 )
-            return url, app_catalog.remote_key(url), at, decl
+            return url, chosen.key, at, decl
         if not found:
             self.problem(
                 "app.required_app_source_unknown",
@@ -1114,8 +1132,10 @@ class _Planner:
                         f"{planned.ref if planned and planned.ref else 'its default branch'}, "
                         f"is {have}).",
                         remedy=(
-                            f"Pick the branch of {name} built for this bench, or fetch a "
-                            f"{dep} that fits yourself with --dep-source {dep}=<url>."
+                            f"Pick the branch of {name} built for this bench, add a repository "
+                            f"of {dep} that fits to your app sources first, or fetch one "
+                            f"yourself: cwcli apps install {self.project} <{dep} repository "
+                            f"URL> --fetch-only."
                         ),
                     )
             self.nodes[name] = replace(node, ranges=checks)
@@ -1195,21 +1215,22 @@ def build_plan(
             continue
         found = planner.sources(target, None)
         if len(found) == 1 or (target in planner.dep_sources):
-            url = planner.dep_sources.get(target) or found[0].url
+            picked = (
+                planner.catalog_pick(target, found) if target in planner.dep_sources else found[0]
+            )
+            if picked is None:
+                continue
             chosen_ref, decl = planner.choose_ref(
-                url,
-                prefer_ref,
-                next((f.default_branch for f in found if f.url == url), None),
-                ref=ref,
+                picked.url, prefer_ref, picked.default_branch, ref=ref
             )
             planner.visit(
                 target,
-                target=url,
+                target=picked.url,
                 parent=None,
                 requested=True,
                 ref=chosen_ref,
                 decl=decl,
-                source=app_catalog.remote_key(url),
+                source=picked.key,
                 stack=[],
             )
         elif len(found) > 1:
@@ -1312,7 +1333,7 @@ def enforce(plan: DependencyPlan, *, with_deps: bool) -> Result | None:
         first = blockers[0]
         kind = (
             ErrorKind.PRECONDITION
-            if first.code == "app.required_app_source_unknown"
+            if first.code in ("app.required_app_source_unknown", "app.dep_source_not_in_catalog")
             else ErrorKind.CONFLICT
         )
         remedies = [p.remedy for p in blockers if p.remedy]

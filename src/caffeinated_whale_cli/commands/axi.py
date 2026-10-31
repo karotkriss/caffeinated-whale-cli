@@ -617,7 +617,8 @@ _AXI_WITH_DEPS_HELP = (
     "Frappe-range override here; the human verb has it."
 )
 _AXI_DEP_SOURCE_HELP = (
-    "APP=URL: the repository for a required app the apps catalog holds several of. " "Repeatable."
+    "APP=URL: which of the apps catalog's repositories named APP to fetch a required app "
+    "from, when it holds several; a repository not in the catalog is refused. Repeatable."
 )
 
 

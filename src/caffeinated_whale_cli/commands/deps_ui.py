@@ -24,8 +24,8 @@ WITH_DEPS_HELP = (
     "dependencies first, on the same sites. Without it a terminal asks; a script refuses."
 )
 DEP_SOURCE_HELP = (
-    "APP=URL: the repository to fetch a required app from when the apps catalog holds "
-    "several with that name. Repeatable."
+    "APP=URL: which of the apps catalog's repositories named APP to fetch a required app "
+    "from, when it holds several; a repository not in the catalog is refused. Repeatable."
 )
 IGNORE_RANGE_HELP = (
     "Install although the app's declared Frappe range ([tool.bench.frappe-dependencies]) "

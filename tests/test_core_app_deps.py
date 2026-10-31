@@ -359,6 +359,21 @@ class TestPlan:
         assert all(" at v2.0.0" in o["label"] for o in choice.options)
         assert choice.default == TOOLKIT and plan.nodes[0].target == TOOLKIT
 
+    def test_a_dep_source_only_picks_among_the_catalog_matches(self):
+        world = _booking_world()
+        elsewhere = "https://github.com/elsewhere/toolkit"
+        world.repo(elsewhere, "toolkit", branches=["main"], default="main")
+        world.catalog["toolkit"] = [s for s in world.catalog["toolkit"] if s.url != elsewhere]
+        for targets in ([(BOOKING, "master")], [("toolkit", None)]):
+            plan = world.plan(_bench(), targets, dep_sources={"toolkit": elsewhere})
+            (blocker,) = [p for p in plan.problems if p.severity == "blocker"]
+            assert blocker.code == "app.dep_source_not_in_catalog" and plan.blocked
+            assert all(n.target != elsewhere for n in plan.nodes)
+        picked = world.plan(
+            _bench(), [("toolkit", None)], dep_sources={"toolkit": f"{TOOLKIT}.git"}
+        )
+        assert picked.ok and picked.nodes[0].target == TOOLKIT
+
     def test_a_required_app_on_the_bench_but_not_on_the_site_is_installed_first(self):
         world = _booking_world()
         bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
