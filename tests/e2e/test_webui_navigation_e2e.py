@@ -219,31 +219,30 @@ def chrome(tmp_path_factory):
         browser.close()
 
 
-def _browser_session(base: str, *, password: str | None = None) -> tuple[str, str]:
+def _browser_session(base: str) -> tuple[str, str]:
     """Sign in the way the page does and return the session cookie (name, value).
 
-    A fresh daemon's admin still has the default password and must choose one first;
-    ``password`` signs in to a daemon whose admin already did.
+    The account is reset to the default password first, because the session's
+    ``CWCLI_HOME`` is shared and an earlier sign-in may have changed it.
     """
+    reset = harness.run_cwcli("admin", "reset-password")
+    assert reset.returncode == 0, reset.stderr
     req = urllib.request.Request(
         base + "/api/v1/session",
-        data=json.dumps(
-            {"username": "admin", "password": password or "admin", "remember": False}
-        ).encode(),
+        data=json.dumps({"username": "admin", "password": "admin", "remember": False}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback
         name, value = resp.headers["Set-Cookie"].split(";", 1)[0].split("=", 1)
-    if password is None:
-        req = urllib.request.Request(
-            base + "/api/v1/session/password",
-            data=json.dumps({"new": _PASSWORD, "current": "admin"}).encode(),
-            headers={"Content-Type": "application/json", "Cookie": f"{name}={value}"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback
-            assert resp.status == 200
+    req = urllib.request.Request(
+        base + "/api/v1/session/password",
+        data=json.dumps({"new": _PASSWORD, "current": "admin"}).encode(),
+        headers={"Content-Type": "application/json", "Cookie": f"{name}={value}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback
+        assert resp.status == 200
     return name, value
 
 
@@ -255,11 +254,10 @@ def run_proof(
     width: int,
     height: int,
     reduced_motion: bool,
-    password: str | None = None,
 ) -> None:
     """Drive every main page in turn and fail on any frame without a visible page."""
     chrome.send("Network.enable", page=True)
-    name, value = _browser_session(base, password=password)
+    name, value = _browser_session(base)
     chrome.send("Network.setCookie", {"name": name, "value": value, "url": base}, page=True)
     chrome.send(
         "Emulation.setDeviceMetricsOverride",
