@@ -404,6 +404,7 @@ async function continueChoice(value) {
           <div v-for="finding in preflight.findings" :key="`${finding.code}-${finding.path}`" class="py-3">
             <div class="flex items-center gap-2"><Badge :theme="finding.severity === 'blocker' ? 'red' : finding.severity === 'data_loss' ? 'amber' : 'gray'" :label="finding.severity.replace('_', ' ')" /><span class="font-mono text-sm text-ink-gray-8">{{ finding.path || finding.app }}</span></div>
             <p class="mt-1 text-p-sm text-ink-gray-6">{{ finding.message }}</p>
+            <p v-if="finding.remedy" class="mt-1 text-p-sm text-ink-gray-5">{{ finding.remedy }}</p>
           </div>
         </div>
       </section>

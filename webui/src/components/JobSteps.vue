@@ -54,7 +54,9 @@ const steps = computed(() => {
       const verdict = event.ok ?? event.data?.ok
       current.ok = verdict !== false && !(event.status && event.status !== 'ok' && event.status !== 'warning')
       current.status = event.status || (verdict === false ? 'failed' : 'ok')
-      if (event.message) current.title = event.message
+      // job_finished closes whichever step is open; only the bare Started step takes its
+      // message as a title, a named phase (Preflight, Pull, ...) keeps its own.
+      if (event.message && (type !== 'job_finished' || current.key === 'start')) current.title = event.message
       current = null
     }
   }
@@ -83,11 +85,13 @@ function durationOf(a, b) {
   const s = Math.max(0, Math.round((end - start) / 1000))
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 }
+// A message-less *_step_start only opens its step; the row title already says it.
+const shown = (s) => s.events.filter((e) => !/_(trace|notice|warning)$/.test(e.type) && !(/_step_start$/.test(e.type) && !e.message))
 const isOpen = (s) => (s.key in opened ? opened[s.key] : s.running || s.failed)
 const toggle = (s) => (opened[s.key] = !isOpen(s))
 async function copy(s) {
   try {
-    await navigator.clipboard.writeText([...s.events.map((e) => e.message || e.type), ...s.lines].join('\n'))
+    await navigator.clipboard.writeText([...shown(s).map((e) => e.message || e.data?.summary || e.type), ...s.lines].join('\n'))
     toast.success('Step output copied', { id: 'copy' })
   } catch {
     toast.error('Copy failed', { id: 'copy' })
@@ -108,7 +112,7 @@ const ICON = (s) => (s.running ? 'lucide-loader-circle animate-spin text-ink-blu
       </button>
       <div v-if="isOpen(s)" class="border-t border-outline-gray-1 bg-surface-gray-1 px-3 py-2">
         <div class="flex items-center justify-end"><Button size="xs" variant="ghost" icon-left="lucide-copy" label="Copy" @click="copy(s)" /></div>
-        <div v-for="(e, i) in s.events.filter((e) => !/_(trace|notice|warning)$/.test(e.type))" :key="i" class="font-mono text-xs leading-5 text-ink-gray-6">{{ e.message || e.data?.summary || e.type }}<span v-if="e.item || e.data?.item" class="text-ink-gray-5"> · {{ e.item || e.data?.item }}</span></div>
+        <div v-for="(e, i) in shown(s)" :key="i" class="font-mono text-xs leading-5 text-ink-gray-6">{{ e.message || e.data?.summary || e.type }}<span v-if="e.item || e.data?.item" class="text-ink-gray-5"> · {{ e.item || e.data?.item }}</span></div>
         <pre v-if="s.lines.length" class="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ s.lines.join('\n') }}</pre>
       </div>
     </div>
