@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..utils import auto_inspect, cred_daemon, daemon_identity, shared_home, startup
-from ..utils.config_utils import cwcli_home
+from ..utils.config_utils import APP_NAME, cwcli_home
 from .errors import CwcliError, ErrorKind
 from .version import DIST, VersionInfo, install_root, tool_env
 
@@ -55,6 +55,7 @@ class Service:
     owner: int | None = None  # uid the daemon runs as (pid-file daemons)
     unit: str | None = None  # the system unit that owns it, when systemd does
     port: int | None = None  # the web UI's port
+    pid_file: Path | None = None  # where a pid-file daemon records itself
     env: dict[str, str] = field(default_factory=dict, repr=False)
 
 
@@ -265,13 +266,18 @@ def _install_dir() -> Path:
 def _require_writable(target: Path) -> None:
     if os.access(target, os.W_OK):
         return
-    shared = " shared" if shared_home.shared_mode() else ""
+    shared = shared_home.shared_mode()
     raise CwcliError(
         ErrorKind.PRECONDITION,
         "self_update.not_writable",
-        f"The{shared} cwcli install in {target} is not writable by this user, so nothing "
-        "was changed.",
-        hint="run `sudo cwcli self-update`",
+        f"The{' shared' if shared else ''} cwcli install in {target} is not writable by "
+        "this user, so nothing was changed.",
+        hint=(
+            "run `sudo cwcli self-update`"
+            if shared
+            else f"reinstall cwcli as this user (`uv tool install {DIST}`), or run "
+            "`sudo cwcli self-update`, which restarts the services of the user who ran sudo"
+        ),
     )
 
 
@@ -348,10 +354,10 @@ def running_services(*, exclude_pids: frozenset[int] = frozenset()) -> list[Serv
                 )
             )
             system.add(kind)
-    daemons = [("auto-inspect", auto_inspect.PID_FILE)]
+    run = _state_home() / "run"
+    daemons = [("auto-inspect", run / auto_inspect.PID_FILE.name)]
     if "cred-bridge" not in system:
-        daemons.append(("cred-bridge", cred_daemon.PID_FILE))
-    run = cwcli_home() / "run"
+        daemons.append(("cred-bridge", run / cred_daemon.PID_FILE.name))
     daemons += [("ui", path) for path in sorted(run.glob("ui*.pid"))]
     for kind, pid_file in daemons:
         if not daemon_identity.is_running(pid_file):
@@ -371,10 +377,29 @@ def running_services(*, exclude_pids: frozenset[int] = frozenset()) -> list[Serv
                 started=daemon_identity.process_start_time(pid),
                 owner=owner,
                 port=port,
+                pid_file=pid_file,
                 env=_environ(pid),
             )
         )
     return services
+
+
+def _state_home() -> Path:
+    """Where this update's daemons record themselves: under sudo outside shared mode
+    that is the home of the user who ran sudo, not root's own ``~/.cwcli``."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if (
+        sudo_user
+        and sudo_user != "root"
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+        and not os.environ.get("CWCLI_HOME")
+        and not shared_home.shared_mode()
+    ):
+        home = _home_of(sudo_user)
+        if home:
+            return Path(home) / APP_NAME
+    return cwcli_home()
 
 
 def restart(services: list[Service], version: str) -> list[ServiceRestart]:
@@ -465,8 +490,12 @@ def _restart_daemon(svc: Service, version: str) -> ServiceRestart:
         if served != version:
             return _result(svc, False, None, f"answers as cwcli {served or 'nothing'}")
         return _result(svc, True, None, f"running cwcli {version}")
-    pid_file = auto_inspect.PID_FILE if svc.kind == "auto-inspect" else cred_daemon.PID_FILE
-    pid = daemon_identity.get_pid(pid_file) if daemon_identity.is_running(pid_file) else None
+    pid_file = svc.pid_file
+    pid = (
+        daemon_identity.get_pid(pid_file)
+        if pid_file is not None and daemon_identity.is_running(pid_file)
+        else None
+    )
     if pid is None or _same_process(pid, svc.started):
         return _result(svc, False, None, "not running after the restart")
     return _result(svc, True, pid, "running on the new version")
