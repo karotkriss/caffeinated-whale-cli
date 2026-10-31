@@ -162,20 +162,28 @@ class Chrome:
             raise RuntimeError(f"{method}: {reply['error']}")
         return reply.get("result", {})
 
-    def eval(self, expression: str):
+    def eval(self, expression: str, *, timeout: float = 30):
         result = self.send(
             "Runtime.evaluate",
             {"expression": expression, "returnByValue": True, "awaitPromise": True},
             page=True,
+            timeout=timeout,
         )
         if "exceptionDetails" in result:
             raise RuntimeError(result["exceptionDetails"].get("text", "evaluate failed"))
         return result["result"].get("value")
 
     def wait(self, expression: str, *, timeout: float = 30, desc: str = "page condition"):
-        return harness.wait_until(
-            lambda: self.eval(expression), timeout=int(timeout), interval=0.1, desc=desc
-        )
+        # Each poll's evaluate is bounded on its own: a reply lost around a page load (seen
+        # once right after the first navigation) is retried within the wait instead of
+        # consuming it whole.
+        def poll():
+            try:
+                return self.eval(expression, timeout=5)
+            except TimeoutError:
+                return False
+
+        return harness.wait_until(poll, timeout=int(timeout), interval=0.1, desc=desc)
 
     def click(self, selector: str) -> None:
         """A real mouse press on the element's centre (reka-ui tabs switch on pointerdown,
@@ -329,7 +337,9 @@ def run_proof(
         navigate(selector, arrives, desc)
 
 
-@pytest.fixture(scope="module")
+# Function-scoped like `running_instance` it depends on (a module scope here is a pytest
+# ScopeMismatch); the daemon starts in a second, once per case.
+@pytest.fixture()
 def ui(running_instance):
     with harness.ui_daemon(_TOKEN) as base:
         yield type("UI", (), {"base": base, "project": running_instance.name})
