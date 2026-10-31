@@ -51,6 +51,7 @@ class Service:
     kind: str  # "ui" | "auto-inspect" | "cred-bridge" | "scheduler"
     name: str  # what the report calls it
     pid: int | None
+    started: str | None = None  # the pid's creation time, so a recycled pid is never signalled
     owner: int | None = None  # uid the daemon runs as (pid-file daemons)
     unit: str | None = None  # the system unit that owns it, when systemd does
     port: int | None = None  # the web UI's port
@@ -150,10 +151,19 @@ def _run(
     except OSError as exc:
         return 127, [f"could not start {argv[0]}: {exc}"]
     assert process.stdout is not None
-    for line in process.stdout:
-        on_output(line)
-        if line.strip():
-            tail.append(line.rstrip())
+    try:
+        for line in process.stdout:
+            on_output(line)
+            if line.strip():
+                tail.append(line.rstrip())
+    except BaseException:
+        process.terminate()
+        try:
+            process.wait(timeout=_STOP_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
     return process.wait(), list(tail)
 
 
@@ -354,7 +364,15 @@ def running_services(*, exclude_pids: frozenset[int] = frozenset()) -> list[Serv
         who = _name_of(owner)
         name = _LABEL[kind] + (f" ({who}, port {port})" if kind == "ui" else f" ({who})")
         services.append(
-            Service(kind=kind, name=name, pid=pid, owner=owner, port=port, env=_environ(pid))
+            Service(
+                kind=kind,
+                name=name,
+                pid=pid,
+                started=daemon_identity.process_start_time(pid),
+                owner=owner,
+                port=port,
+                env=_environ(pid),
+            )
         )
     return services
 
@@ -414,7 +432,9 @@ def _restart_daemon(svc: Service, version: str) -> ServiceRestart:
         return _result(svc, False, svc.pid, "not restarted: it belongs to another user (use sudo)")
     run_as = svc.owner if me == 0 and svc.owner not in (None, 0) else None
     assert svc.pid is not None
-    if not _terminate(svc.pid):
+    if not _same_process(svc.pid, svc.started):
+        return _result(svc, True, None, "stopped during the upgrade, so it was left stopped")
+    if not _terminate(svc.pid, svc.started):
         return _result(svc, False, svc.pid, "the old process did not stop")
     if svc.kind == "ui":
         args: tuple[str, ...] = ("ui", "--no-browser", "--port", str(svc.port))
@@ -447,22 +467,31 @@ def _restart_daemon(svc: Service, version: str) -> ServiceRestart:
         return _result(svc, True, None, f"running cwcli {version}")
     pid_file = auto_inspect.PID_FILE if svc.kind == "auto-inspect" else cred_daemon.PID_FILE
     pid = daemon_identity.get_pid(pid_file) if daemon_identity.is_running(pid_file) else None
-    if pid is None or pid == svc.pid:
+    if pid is None or _same_process(pid, svc.started):
         return _result(svc, False, None, "not running after the restart")
     return _result(svc, True, pid, "running on the new version")
 
 
-def _terminate(pid: int) -> bool:
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGTERM)
+def _same_process(pid: int, started: str | None) -> bool:
+    return (
+        started is not None
+        and daemon_identity.pid_alive(pid)
+        and daemon_identity.process_start_time(pid) == started
+    )
+
+
+def _terminate(pid: int, started: str | None) -> bool:
+    if _same_process(pid, started):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + _STOP_TIMEOUT_S
-    while time.monotonic() < deadline and daemon_identity.pid_alive(pid):
+    while time.monotonic() < deadline and _same_process(pid, started):
         time.sleep(0.1)
-    if daemon_identity.pid_alive(pid):
+    if _same_process(pid, started):
         with contextlib.suppress(OSError):
             os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         time.sleep(0.5)
-    return not daemon_identity.pid_alive(pid)
+    return not _same_process(pid, started)
 
 
 def _ui_port(pid_file: Path) -> int | None:
