@@ -596,6 +596,7 @@ class PlanNode:
     missing_sites: list[str]  # target sites that do not have it installed
     action: str  # none | fetch | install | fetch+install
     readable: bool = True
+    requested_as: str | None = None  # the target string a requested app was asked for by
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -722,6 +723,7 @@ class _Planner:
         self.nodes: dict[str, PlanNode] = {}
         self.decls: dict[str, Declarations] = {}
         self.order: list[str] = []
+        self.requesting: str | None = None  # set while a requested target is visited
         self.problems: list[PlanProblem] = []
         self.bench_apps = state.apps or {}
         major = semver(state.frappe_version)
@@ -985,6 +987,7 @@ class _Planner:
             missing_sites=missing,
             action=self.action(on_bench, missing),
             readable=decl.readable,
+            requested_as=self.requesting if requested else None,
         )
         self.order.append(module)
         if not requested:
@@ -1134,6 +1137,7 @@ def build_plan(
             "checked.",
         )
     for target, ref in targets:
+        planner.requesting = target
         copy = planner.bench_copy(target)
         if copy is not None:
             planner.visit(

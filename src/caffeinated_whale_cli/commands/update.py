@@ -890,6 +890,10 @@ _UNREAD_WARNING_CODES = frozenset(
         "inspect.site_unread",
         "discover.bench_unreadable",
         "discover.site_unreadable",
+        # --with-deps: why a required app was not fetched or installed.
+        "app.required_app_install_failed",
+        "app.dependencies_changed",
+        "app.required_app_fetch_failed",
     }
 )
 

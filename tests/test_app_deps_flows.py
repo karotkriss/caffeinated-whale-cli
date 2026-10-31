@@ -107,6 +107,18 @@ def test_with_deps_fetches_and_installs_the_required_app_first(world, container)
     ]
 
 
+def test_a_plain_name_found_in_the_catalog_is_fetched_from_where_the_plan_read_it(
+    world, container  # noqa: F811
+):
+    """Not ``bench get-app <name>``: bench's own lookup lands that repository's default
+    branch, which the plan did not read (a real run fetched payments' develop branch,
+    built for the next Frappe major, when the plan had chosen version-16)."""
+    result = core_apps.install_apps("proj", ["customization"], sites=["a.localhost"])
+    assert result.data.ok, result.data.results
+    (get,) = _gets(container)
+    assert CUSTOMIZATION in get and "--branch develop" in get
+
+
 def test_a_blocker_refuses_with_nothing_fetched(world, container):  # noqa: F811
     world.repos[APPOINTMENTS]["master"] = Declarations(
         app="appointments", ranges={"frappe": ">=16.0.0,<17.0.0"}, branch="master"
