@@ -477,6 +477,12 @@ def read_remote(url: str, ref: str | None) -> Declarations:
 def _read_remote(url: str, ref: str | None) -> Declarations:
     name = app_catalog.remote_key(url) or url
     repo = name.rstrip("/").split("/")[-1]
+    if not git_refs._URL.match(url) or (ref or "").startswith("-"):
+        return Declarations(
+            app=repo.replace("-", "_"),
+            branch=ref,
+            error=f"not a repository URL and ref: {url} {ref or ''}".strip()[:200],
+        )
     with tempfile.TemporaryDirectory(prefix="cwcli-deps-") as tmp:
         _git(["init", "-q"], tmp)
         _git(["remote", "add", "origin", url], tmp)
@@ -560,8 +566,9 @@ def find_sources(module: str, pin: str | None = None) -> list[Source]:
         url = app_catalog._safe_remote_url(source.get("url") or f"https://{key}")
         if url and key not in found:
             found[key] = Source(url=url, key=key, default_branch=source.get("default_branch"))
-    if pin and pin_key and pin_key not in found:
-        found[pin_key] = Source(url=app_catalog._safe_remote_url(pin) or pin, key=pin_key)
+    pin_url = app_catalog._safe_remote_url(pin)
+    if pin_key and pin_url and pin_key not in found:
+        found[pin_key] = Source(url=pin_url, key=pin_key)
     return list(found.values())
 
 
@@ -1175,7 +1182,9 @@ def build_plan(
             chosen_ref, decl = (
                 (ref, planner.read(url, ref))
                 if ref
-                else planner.choose_ref(url, prefer_ref, found[0].default_branch if found else None)
+                else planner.choose_ref(
+                    url, prefer_ref, next((f.default_branch for f in found if f.url == url), None)
+                )
             )
             planner.visit(
                 target,
@@ -1192,12 +1201,14 @@ def build_plan(
             if resolved is None:
                 continue
             url, key, chosen_ref, decl = resolved
+            if ref:
+                chosen_ref, decl = ref, planner.read(url, ref)
             planner.visit(
                 target,
                 target=url,
                 parent=None,
                 requested=True,
-                ref=ref or chosen_ref,
+                ref=chosen_ref,
                 decl=decl,
                 source=key,
                 stack=[],

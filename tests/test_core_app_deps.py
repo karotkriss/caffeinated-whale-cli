@@ -329,6 +329,21 @@ class TestPlan:
         # The pick stays visible (with its alternatives) so it can be changed.
         assert any(p.code == "app.required_app_source_chosen" for p in picked.problems)
 
+    def test_a_named_ref_on_an_ambiguous_name_is_checked_at_that_ref(self):
+        world = _booking_world()
+        world.repo(
+            "https://github.com/someone/toolkit", "toolkit", branches=["main"], default="main"
+        )
+        world.repos[TOOLKIT]["v2.0.0"] = Declarations(
+            app="toolkit", version="2.0.0", ranges={"frappe": ">=16.0.0"}, branch="v2.0.0"
+        )
+        branch_names = world.branches
+        world.branches = lambda url: [b for b in branch_names(url) if b != "v2.0.0"]
+        plan = world.plan(_bench(), [("toolkit", "v2.0.0")], dep_sources={})
+        node = plan.nodes[0]
+        assert node.ref == "v2.0.0" and node.version == "2.0.0"
+        assert "app.frappe_range_mismatch" in [p.code for p in plan.problems]
+
     def test_a_required_app_on_the_bench_but_not_on_the_site_is_installed_first(self):
         world = _booking_world()
         bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
@@ -478,3 +493,20 @@ class TestChangedSincePlan:
 
 def test_the_module_self_check_holds():
     app_deps._self_check()
+
+
+@pytest.mark.parametrize(
+    ("url", "ref"),
+    [
+        ("/tmp/repo", None),
+        ("https://example.com/a/plain", "--upload-pack=touch /tmp/owned"),
+        ("ext::sh -c touch% /tmp/owned", "main"),
+    ],
+)
+def test_a_remote_read_refuses_a_non_url_or_an_option_ref_without_running_git(
+    monkeypatch, url, ref
+):
+    ran: list = []
+    monkeypatch.setattr(app_deps, "_git", lambda args, cwd, timeout=0: ran.append(args))
+    decl = app_deps._read_remote(url, ref)
+    assert not decl.readable and ran == []

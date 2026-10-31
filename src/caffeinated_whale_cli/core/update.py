@@ -954,14 +954,22 @@ def _dependency_facts(
                 "error": "the bench's apps could not be read",
             }
         ]
+    facts: list[dict] = []
     try:
         sites = sorted(bench_sites.list_sites(container, bench_path) or [])
-    except Exception:  # noqa: BLE001 - an unknown site set is reported per fact below
+    except Exception:  # noqa: BLE001 - an unknown site set is reported as unverified
         sites = []
+        facts.append(
+            {
+                "code": "app.dependencies_unverified",
+                "app": None,
+                "error": "the bench's sites could not be listed",
+            }
+        )
     if sites_filter:
         sites = [s for s in sites if s in sites_filter]
     installed = core_apps._read_installed_apps(container, bench_path, sites, emit=lambda _e: None)
-    facts: list[dict] = []
+    unread = [s for s in sites if installed.get(s, (None, None))[0] is None]
     tips: dict[str, tuple[app_deps.Declarations, str]] = {}
     for app in apps:
         if app not in bench:
@@ -1001,6 +1009,15 @@ def _dependency_facts(
             facts.append({"code": "app.dependencies_unverified", "app": app, "error": decl.error})
         app_sites = [s for s in sites if app in (installed.get(s, (None, None))[0] or [])]
         branch = ref.split("/", 1)[1]
+        if any(app_deps.entry_module(e)[0] not in ("frappe", app) for e in decl.required):
+            facts.extend(
+                {
+                    "code": "app.dependencies_unverified",
+                    "app": app,
+                    "error": f"the installed apps on {site} could not be read",
+                }
+                for site in unread
+            )
         for entry in decl.required:
             dep, _pin = app_deps.entry_module(entry)
             if dep in ("frappe", app):

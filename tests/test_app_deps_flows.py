@@ -261,6 +261,22 @@ def test_the_tier_finds_nothing_when_the_tip_requires_nothing_new(monkeypatch):
     )
 
 
+def test_a_site_whose_installed_apps_cannot_be_read_is_unverified_not_passed(monkeypatch):
+    bench = _UpdateBench(has_toolkit=True, tip_required=("toolkit",))
+    _wire_update(
+        monkeypatch, bench, {"jobs.localhost": ["frappe", "jobboard"], "dark.localhost": None}
+    )
+    facts = core_update._dependency_facts(
+        bench, bench_path=BENCH, apps=["jobboard"], sites_filter=None, ranges=False
+    )
+    assert {(f["code"], f.get("site")) for f in facts} == {
+        ("app.required_app_not_installed", "jobs.localhost"),
+        ("app.dependencies_unverified", None),
+    }
+    (unverified,) = [f for f in facts if f["code"] == "app.dependencies_unverified"]
+    assert "dark.localhost" in unverified["error"]
+
+
 def test_a_frappe_range_the_new_tip_breaks_is_the_existing_blocker_for_any_app(monkeypatch):
     bench = _UpdateBench(tip_required=())
     bench.tip["pyproject.toml"] = '[tool.bench.frappe-dependencies]\nfrappe = ">=16.0.0"\n'
