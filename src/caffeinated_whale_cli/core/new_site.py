@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import app_deps, db_password, resolvers
+from . import app_catalog, app_deps, db_password, resolvers
 from . import apps as core_apps
 from . import docker as core_docker
 from .envelope import Message, Result, Status
@@ -142,6 +142,12 @@ def new_site(
             hint="Pick another name, or open the existing site.",
         )
     urls = [u for u in (fetch or []) if u]
+    fetch_keys = {k for k in map(app_catalog.remote_key, urls) if k}
+    for a in wanted:
+        if not _directory_exists(container, f"{bench_path}/apps/{a}") and not (
+            {s.key for s in app_deps.find_sources(a)} & fetch_keys
+        ):
+            raise _app_missing(project, bench_path, a)
     picks: list[tuple[str, str | None]] = [(u, None) for u in urls]
     picks += [(a, None) for a in wanted]
     to_fetch: list[tuple[str, str | None]] = []
@@ -154,15 +160,20 @@ def new_site(
             dep_sources=dep_sources,
             ignore_frappe_range=ignore_frappe_range,
         )
-        for n in plan.nodes:
-            if n.requested and not n.on_bench and n.requested_as not in urls:
-                raise _app_missing(project, bench_path, n.app)
         asked = app_deps.enforce(plan, with_deps=with_deps)
         if asked is not None:
             return Result(status=asked.status, choice=asked.choice, warnings=warnings)
         warnings.extend(Message(p.code, p.message) for p in plan.problems if p.severity == "notice")
-        to_fetch = [(n.target, n.ref) for n in plan.nodes if not n.on_bench]
-        wanted = [n.app for n in plan.nodes if n.app != "frappe"]
+        to_fetch = [
+            (n.target, n.ref)
+            for n in plan.nodes
+            if not n.on_bench and (not n.requested or n.requested_as in urls)
+        ]
+        wanted = [
+            n.app
+            for n in plan.nodes
+            if n.app != "frappe" and (n.readable or n.requested_as not in urls)
+        ]
     for target, ref in to_fetch:
         # Remote picks and required apps land on the bench BEFORE the site exists: a
         # failed fetch stops here with no site left behind.

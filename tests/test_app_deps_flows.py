@@ -204,6 +204,64 @@ def test_new_site_never_fetches_a_named_app_the_bench_lacks(
     assert _gets(container) == []
 
 
+def _stop_before_the_site(monkeypatch, new_site):
+    from caffeinated_whale_cli.core import db_access
+
+    def stop(*_a, **_k):
+        raise CwcliError(ErrorKind.PRECONDITION, "test.reached_site_creation", "stop")
+
+    monkeypatch.setattr(db_access, "verify_root_password", stop)
+
+
+def test_new_site_does_not_refuse_an_app_on_a_bench_whose_apps_cannot_be_read(
+    world, container, monkeypatch  # noqa: F811
+):
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    monkeypatch.setattr(
+        app_deps,
+        "read_bench_state",
+        lambda _c, path, *, sites, new_site=None: app_deps.BenchState(
+            bench_path=path, apps=None, sites=list(sites), installed={}, frappe_version=None
+        ),
+    )
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site("proj", site="shop.localhost", admin_password="a", apps=["toolkit"])
+    assert raised.value.code == "test.reached_site_creation"
+    assert _gets(container) == []
+
+
+def test_new_site_fetches_a_web_pick_whose_repository_name_differs_from_its_app(
+    world, container, monkeypatch  # noqa: F811
+):
+    """The web job sends a remote pick as a URL and as its app name; an unreadable URL
+    is named after its repository, so only the catalog ties the two together."""
+    fork = "https://gitlab.example.com/team/frappe-booking"
+    world.catalog["booking"] = [
+        app_deps.Source(url=fork, key="gitlab.example.com/team/frappe-booking")
+    ]
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(
+        app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
+    )
+    monkeypatch.setattr(
+        new_site, "_directory_exists", lambda _c, path: "/apps/" in path and bool(_gets(container))
+    )
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["booking"],
+            fetch=[fork],
+        )
+    assert raised.value.code == "test.reached_site_creation"
+    (get,) = _gets(container)
+    assert fork in get
+
+
 def test_human_new_site_passes_app_as_a_bench_app_name_never_a_fetch(monkeypatch):
     from caffeinated_whale_cli import main
     from caffeinated_whale_cli.commands import new_site as new_site_cmd
