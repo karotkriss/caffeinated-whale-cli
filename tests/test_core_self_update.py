@@ -265,7 +265,6 @@ class TestRunningServices:
             ("cred-bridge", "cwcli-cred-bridge.service")
         ]
 
-
     def test_under_sudo_the_invoking_users_daemons_are_found(self, daemons, tmp_path, monkeypatch):
         # root's own ~/.cwcli has nothing; alice's daemons live in hers.
         run, spawn = daemons
@@ -291,6 +290,22 @@ class TestRunningServices:
         monkeypatch.setattr(su, "_user_env", lambda uid: {})
         (result,) = su.restart([found["auto-inspect"]], "1.1.0")
         assert result.ok, result.detail
+
+    def test_without_proc_the_owner_comes_from_the_daemons_pid_file(self, daemons, monkeypatch):
+        # macOS under sudo: no /proc, and our own uid is root's.
+        run, spawn = daemons
+        spawn(run / "auto-inspect.pid")
+        real_stat = os.stat
+
+        def stat(path, *a, **kw):
+            if str(path).startswith("/proc/"):
+                raise FileNotFoundError(path)
+            return real_stat(path, *a, **kw)
+
+        monkeypatch.setattr(su.os, "stat", stat)
+        monkeypatch.setattr(su.os, "getuid", lambda: 0)
+        (svc,) = su.running_services()
+        assert svc.owner == real_stat(run / "auto-inspect.pid").st_uid != 0
 
 
 class TestRestart:
