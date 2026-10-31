@@ -12,10 +12,10 @@
 [data-theme='dark'] { --cw-glass-rgb: 22 22 22; }
 .cw-glass { background: rgb(var(--cw-glass-rgb) / 0.78); -webkit-backdrop-filter: blur(28px) saturate(1.25); backdrop-filter: blur(28px) saturate(1.25); }
 
-/* Route content crossfade (opacity only; tens-of-times-a-day tier, so barely there). */
-.cw-fade-enter-active { transition: opacity 120ms var(--ease-out); }
-.cw-fade-leave-active { transition: opacity 80ms var(--ease-out); }
-.cw-fade-enter-from, .cw-fade-leave-to { opacity: 0; }
+/* Page-to-page cross-fade (tens-of-times-a-day tier, so barely there): a View Transition started by the router
+   (premium/page-transition.js), so the browser holds the old page until the next one has rendered and blends the two
+   snapshots; the sidebar is identical in both and so stays still. Reduced motion and effects off start no transition. */
+[data-vt='page']::view-transition-old(root), [data-vt='page']::view-transition-new(root) { animation-duration: 160ms; animation-timing-function: var(--ease-out); }
 
 /* Hero surfaces (the Instances hero and the detail header cards): the card IS the gradient; the scrim keeps ink text
    readable over it, a surface-coloured wash heaviest on the text side. */
