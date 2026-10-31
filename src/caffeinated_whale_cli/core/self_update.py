@@ -365,7 +365,7 @@ def running_services(*, exclude_pids: frozenset[int] = frozenset()) -> list[Serv
         pid = daemon_identity.get_pid(pid_file)
         if pid is None or pid in exclude_pids:
             continue
-        owner = _owner_of(pid)
+        owner = _owner_of(pid, pid_file)
         port = _ui_port(pid_file) if kind == "ui" else None
         who = _name_of(owner)
         name = _LABEL[kind] + (f" ({who}, port {port})" if kind == "ui" else f" ({who})")
@@ -574,11 +574,14 @@ def _unit_pid(service_name: str) -> int | None:
 # ------------------------------------------------------------------- process owners
 
 
-def _owner_of(pid: int) -> int | None:
-    try:
-        return os.stat(f"/proc/{pid}").st_uid
-    except OSError:
-        return os.getuid() if hasattr(os, "getuid") else None
+def _owner_of(pid: int, pid_file: Path) -> int | None:
+    """The daemon's uid: from /proc, else from the pid file the daemon wrote itself."""
+    if not hasattr(os, "getuid"):
+        return None
+    for path in (f"/proc/{pid}", pid_file):
+        with contextlib.suppress(OSError):
+            return os.stat(path).st_uid
+    return os.getuid()
 
 
 def _environ(pid: int) -> dict[str, str]:
