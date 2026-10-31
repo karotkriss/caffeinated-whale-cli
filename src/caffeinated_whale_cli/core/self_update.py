@@ -203,11 +203,20 @@ def _restore(root: Path, backup: Path | None) -> bool:
                 target.unlink(missing_ok=True)
                 shutil.copy2(saved / name, target, follow_symlinks=False)
     shutil.rmtree(saved, ignore_errors=True)
+    failed = root.with_name(root.name + ".cwcli-failed")
+    shutil.rmtree(failed, ignore_errors=True)
     try:
-        shutil.rmtree(root, ignore_errors=True)
-        os.replace(backup, root)
+        if root.exists() or root.is_symlink():
+            os.replace(root, failed)
     except OSError:
         return False
+    try:
+        os.replace(backup, root)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.replace(failed, root)
+        return False
+    shutil.rmtree(failed, ignore_errors=True)
     return True
 
 
