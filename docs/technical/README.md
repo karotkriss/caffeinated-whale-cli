@@ -35,7 +35,7 @@ caffeinated-whale-cli/
 │   │   ├── where.py           # Thin frontend over core.where
 │   │   ├── doctor.py          # Grouped renderer over the read-only core.doctor preflight
 │   │   ├── axi.py             # Agent-facing `cwcli axi` frontend
-│   │   ├── self_update.py     # Install-method-aware `cwcli self-update`, over core.version
+│   │   ├── self_update.py     # Install-method-aware `cwcli self-update`, over core.version + core.self_update
 │   │   └── ...                # Other commands
 │   ├── core/                   # UI-pure logic core (no rich/questionary/typer)
 │   │   ├── envelope.py         # Result/Status/Message/Choice DTOs
@@ -63,6 +63,7 @@ caffeinated-whale-cli/
 │   │   ├── config.py           # core.config - settings/search-paths/cache-inventory decisions (validation, clear-cache consent)
 │   │   ├── auto_inspect.py     # core.auto_inspect - fused desired-state enable/disable/stop/status/log_tail over the daemon+boot-hook utils
 │   │   ├── doctor.py           # core.doctor - system-wide read-only environment preflight
+│   │   ├── self_update.py      # core.self_update - upgrade the running install (with rollback), then restart running cwcli services
 │   │   └── version.py          # core.version - install-method detection + cached/fetched PyPI lookup + build provenance
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
