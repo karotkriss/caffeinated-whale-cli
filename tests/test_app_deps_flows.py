@@ -25,6 +25,22 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from tests.test_core_app_deps import BOOKING, TOOLKIT, _booking_world
 from tests.test_core_apps import BENCH, _cache, container  # noqa: F401 - the fixture
 
+@pytest.fixture(autouse=True)
+def _docker_present(monkeypatch):
+    """The CLI verbs here sit behind ``handle_docker_errors``, which checks for a docker
+    binary and a daemon that answers before the command runs. These tests stub every
+    container the command touches, so the guard must not depend on whether the machine
+    running them has Docker (a CI runner without it refused every one)."""
+    from caffeinated_whale_cli.utils import docker_utils
+
+    class _Client:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_utils.docker, "from_env", lambda: _Client())
+
+
 # ----------------------------------------------------------------------- install
 
 
