@@ -4,9 +4,10 @@
 // transition's pseudo-elements changes nothing), so a press ends the transition and is handed
 // to the live page instead: it is stopped at the window before anything else sees it, the
 // transition is skipped, and once the new DOM is in and has had a frame, the press, its
-// release and its click are dispatched again to the element under the pointer. Only the
-// primary button is handed over. Kept free of Vue and the DOM module graph so
-// tests/test_webui_press_through.py can drive it under node with fakes.
+// release and its click are dispatched again to the element under the pointer. Only a
+// primary press is handed over; any other press during the transition is stopped. Kept free
+// of Vue and the DOM module graph so tests/test_webui_press_through.py can drive it under
+// node with fakes.
 const GESTURE = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']
 
 export function passPressesThrough(vt, doc = document) {
@@ -26,10 +27,11 @@ export function passPressesThrough(vt, doc = document) {
   function handle(event) {
     if (!event.isTrusted) return // a press dispatched here
     if (press && event.type === 'pointerdown') end() // the last press was released off the page
-    if (!press && !(running && event.type === 'pointerdown' && event.button === 0)) return
+    if (!press && !running) return
     event.stopImmediatePropagation()
     if (event.type === 'mousedown') event.preventDefault() // focus stays where it is
     if (!press) {
+      if (event.type !== 'pointerdown' || event.button !== 0) return
       const p = (press = { events: [], target: null })
       vt.skipTransition()
       vt.updateCallbackDone.catch(() => {}).then(() =>

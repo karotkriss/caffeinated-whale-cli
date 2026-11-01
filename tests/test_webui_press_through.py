@@ -153,16 +153,34 @@ const out = { listeners: listeners.length }
     assert got["log"] == ["page:pointerdown"] and got["listeners"] == 0
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        pytest.param("{ button: 2 }", id="secondary-button"),
-        pytest.param("{ trusted: false }", id="a-press-a-script-dispatched"),
-    ],
-)
-def test_only_a_real_primary_press_is_handed_over(options):
-    got = _node(f"press('pointerdown', {options})\nconst out = {{}}")
+def test_a_press_a_script_dispatched_passes_untouched():
+    got = _node("press('pointerdown', { trusted: false })\nconst out = {}")
     assert got["log"] == ["page:pointerdown"]
+
+
+def test_another_button_during_a_transition_is_stopped_not_handed_over():
+    got = _node(
+        """
+const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup'].map((type) => press(type, { button: 2 }))
+const out = { stopped: events.map((e) => e.stopped) }
+"""
+    )
+    # Neither the page nor the dialog sees it, and the transition keeps running.
+    assert got["log"] == [] and got["open"] is True
+    assert got["stopped"] == [True] * 4
+
+
+def test_another_button_replacing_a_pending_press_is_stopped_too():
+    got = _node(
+        """
+press('pointerdown'); press('mousedown')
+const second = press('pointerdown', { button: 1 })
+update(); await tick(); frame()
+const out = { stopped: second.stopped }
+"""
+    )
+    assert got["stopped"] is True and got["open"] is True
+    assert "page:pointerdown" not in got["log"]
 
 
 def test_a_press_released_off_the_page_does_not_hold_the_next_one():
