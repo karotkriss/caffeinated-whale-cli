@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from . import harness
+from . import browser, harness
 
 # A fixed, non-secret throwaway admin password for the non-interactive session
 # instance (the interactive test covers the GENERATED-password path separately).
@@ -213,3 +213,18 @@ def running_instance(session_instance):
         harness.run_cwcli("start", session_instance.name, "--yes")
         harness.wait_for_site_ready(session_instance.name, session_instance.site)
     return session_instance
+
+
+@pytest.fixture(scope="module")
+def chrome(tmp_path_factory):
+    """One headless Chrome per browser-proof module (``tests/e2e/browser.py``); CI fails
+    rather than skips without a Chrome binary, a local run without one skips."""
+    if browser.CHROME is None:
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("no Chrome binary on this runner; the browser proofs need a real one")
+        pytest.skip("no Chrome binary found (set CWE2E_CHROME)")
+    chrome = browser.Chrome(tmp_path_factory.mktemp("cwe2e-chrome"))
+    try:
+        yield chrome
+    finally:
+        chrome.close()

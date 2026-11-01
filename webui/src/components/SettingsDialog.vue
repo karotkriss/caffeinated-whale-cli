@@ -6,8 +6,10 @@
 // and each row keeps its terminal twin as a compact copy affordance.
 import { computed, ref, watch } from 'vue'
 import AppearanceControls from '../premium/AppearanceControls.vue'
-import { Alert, Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Select, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
+import { Alert, Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Select, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsBody } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
+import SettingsHeader from '../components/SettingsHeader.vue'
+import SettingsRow from '../components/SettingsRow.vue'
 import CommandCopy from '../components/CommandCopy.vue'
 import DoctorView from '../components/DoctorView.vue'
 import { config, cacheProjects } from '../data/fleet'
@@ -280,9 +282,9 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               </div>
             </SettingsRow>
             <SettingsRow title="Add a path" description="An absolute path inside the container, for example /workspace/other-bench.">
-              <form class="flex items-center gap-2" @submit.prevent="addPath">
-                <FormControl v-model="newPath" class="w-56" placeholder="/workspace/other-bench" autocomplete="off" />
-                <Button type="submit" label="Add" :disabled="!newPath.trim()" :loading="busy('paths.add')" />
+              <form class="flex min-w-0 items-center gap-2" @submit.prevent="addPath">
+                <FormControl v-model="newPath" class="w-56 min-w-0" placeholder="/workspace/other-bench" autocomplete="off" />
+                <Button type="submit" class="shrink-0" label="Add" :disabled="!newPath.trim()" :loading="busy('paths.add')" />
               </form>
             </SettingsRow>
             <SettingsRow title="Unreferenced paths" description="Checks every path live against every instance. A path a stopped instance might still use is never removed.">
@@ -376,9 +378,9 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               <Button size="sm" variant="ghost" icon="lucide-x" :aria-label="`Remove ${x}`" :loading="busy('catalog.source_remove')" @click="removeSource(x)" />
             </SettingsRow>
             <SettingsRow title="Add an organisation or group" description="github:<org> or gitlab.com:<group/path>. Stored as [app_catalog] extra_sources in the config file.">
-              <form class="flex items-center gap-2" @submit.prevent="addSource">
-                <FormControl v-model="newSource" class="w-64" placeholder="github:frappe" autocomplete="off" />
-                <Button type="submit" label="Add" :disabled="!newSource.trim()" :loading="busy('catalog.source_add')" />
+              <form class="flex min-w-0 items-center gap-2" @submit.prevent="addSource">
+                <FormControl v-model="newSource" class="w-64 min-w-0" placeholder="github:frappe" autocomplete="off" />
+                <Button type="submit" class="shrink-0" label="Add" :disabled="!newSource.trim()" :loading="busy('catalog.source_add')" />
               </form>
             </SettingsRow>
           </SettingsBody>
@@ -419,7 +421,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
             <template v-else>
             <LoadingText v-if="integrations.loading && !integrations.list.length" class="py-3" />
             <div class="pt-3 text-sm font-medium text-ink-gray-5">Official{{ integrations.host ? ` · on ${machine}` : '' }}</div>
-            <div v-for="i in official" :key="i.id" class="flex items-center gap-8 py-3.5">
+            <div v-for="i in official" :key="i.id" class="flex items-center gap-8 py-3.5 max-sm:flex-col max-sm:items-stretch max-sm:gap-3">
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="text-base-medium leading-tighter text-ink-gray-8">{{ i.name }}</span>
@@ -429,7 +431,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 <div v-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
                 <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
               </div>
-              <div class="flex shrink-0 items-center gap-2">
+              <div class="flex shrink-0 items-center gap-2 max-sm:justify-end">
                 <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />
                 <Button :label="i.enabled ? 'Settings…' : i.state === 'needs_setup' ? 'Finish setup…' : 'Turn on…'" @click="openIntegration(i.id)" />
                 <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
@@ -442,7 +444,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               <div class="flex shrink-0 items-center gap-1"><CommandCopy command="cwcli integrations add <repository-url>" /><Button icon-left="lucide-package-plus" label="Add from a repository…" @click="openCommunity('add')" /></div>
             </div>
             <p class="mt-1 text-p-sm text-ink-gray-5">Added from a GitHub or GitLab repository and pinned to the commit you review. Nobody has reviewed community code: it runs with cwcli's own rights on this machine. Each starts off.</p>
-            <div v-for="i in community" :key="i.id" class="flex items-center gap-8 py-3.5">
+            <div v-for="i in community" :key="i.id" class="flex items-center gap-8 py-3.5 max-sm:flex-col max-sm:items-stretch max-sm:gap-3">
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="text-base-medium leading-tighter text-ink-gray-8">{{ i.name }}</span>
@@ -454,7 +456,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 <div v-else-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
                 <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
               </div>
-              <div class="flex shrink-0 items-center gap-2">
+              <div class="flex shrink-0 items-center gap-2 max-sm:justify-end">
                 <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />
                 <Button v-if="!i.community?.load_error" :label="i.enabled ? 'Settings…' : i.state === 'needs_setup' ? 'Finish setup…' : 'Turn on…'" @click="openIntegration(i.id)" />
                 <Dropdown :options="communityMenu(i)" align="end"><Button icon="lucide-ellipsis" :aria-label="`More for ${i.name}`" /></Dropdown>
@@ -493,26 +495,24 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
           </SettingsBody>
         </SettingsPanel>
       </template>
-        <!-- min-w-0: the panel is a flex-row item, so without it one no-wrap session row sets
-             the column's minimum width and the right edge of the panel leaves the dialog. -->
-        <SettingsPanel value="account" class="min-w-0">
+        <SettingsPanel value="account">
           <SettingsHeader title="Your account" :description="`Signed in as ${session.user?.name ? `${session.user.name} (${session.user.username})` : session.user?.username || ''} · ${ROLE_LABEL[session.user?.role] || 'Admin'}`" />
           <SettingsBody>
             <SettingsRow v-if="directoryUser && session.user?.source === 'ldap'" title="Directory account" :description="`Your directory groups gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password and groups are managed in the directory.`" />
             <SettingsRow v-else-if="directoryUser" title="Signed in through an integration" :description="`The sign-in integration that is on gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password is managed there, not in cwcli.`" />
             <template v-else>
-              <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
+              <SettingsRow title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
                 <Button :label="pwOpen ? 'Hide' : 'Change…'" @click="pwOpen = !pwOpen" />
               </SettingsRow>
               <div v-if="pwOpen" class="max-w-sm px-1 pb-4"><PasswordForm @done="pwOpen = false; pwChanged = true" /><p v-if="pwChanged" class="mt-2 text-p-sm text-ink-green-6">Password changed.</p></div>
             </template>
-            <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Other sessions" :description="otherSessions.length ? `${otherSessions.length} other ${otherSessions.length === 1 ? 'browser is' : 'browsers are'} signed in as ${session.user?.username}.` : 'No other browser is signed in.'">
+            <SettingsRow title="Other sessions" :description="otherSessions.length ? `${otherSessions.length} other ${otherSessions.length === 1 ? 'browser is' : 'browsers are'} signed in as ${session.user?.username}.` : 'No other browser is signed in.'">
               <Button label="Sign out everywhere else" :disabled="!otherSessions.length" :loading="signingOutOthers" @click="signOutOthers" />
             </SettingsRow>
             <ul v-if="otherSessions.length" class="space-y-1 px-1 pb-3 text-sm text-ink-gray-6">
               <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate" :title="s.agent || undefined">{{ s.agent || 'unknown browser' }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
             </ul>
-            <SettingsRow class="max-sm:flex-col max-sm:items-stretch max-sm:gap-3" title="Sign out" description="Ends this browser's session.">
+            <SettingsRow title="Sign out" description="Ends this browser's session.">
               <div class="flex items-center gap-1"><CommandCopy v-if="!directoryUser" command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>
             </SettingsRow>
           </SettingsBody>

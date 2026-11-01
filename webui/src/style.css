@@ -37,3 +37,21 @@ html { background: var(--surface-base); }
   .jobcard-enter-from, .jobcard-leave-to { transform: none; }
   .jobcard-move { transition: none; }
 }
+
+/* Nothing inside a dialog widens it. frappe-ui's Dialog clips its content box
+   (overflow-hidden), so a pane that grows past it is cut, not scrolled: in Settings
+   the Integrations header lost its last words and the cards' buttons left the
+   dialog once the Remote hosts card showed the hub key and its allow command.
+   Three causes, each fixed here for every dialog rather than per card:
+   - a tab panel is a flex-row item whose min-width defaults to its content's
+     width, so one unbreakable line (a key, a command, a URL) set the panel wider
+     than the dialog; min-width: 0 keeps it at the width the dialog gives it;
+   - a long token with no break opportunity still cannot wrap inside that width,
+     so dialog text may break anywhere when a word alone would overflow; prose
+     with spaces wraps as before, and truncated (nowrap) text is unaffected;
+   - a bare dialog's root (frappe-ui's SettingsDialog uses w-screen below sm) is
+     capped at the dialog's own width, which has 1rem margins on a phone.
+   Proven by tests/e2e/test_webui_modal_overflow_e2e.py at 1280 and 390 wide. */
+.dialog-content { overflow-wrap: anywhere; }
+.dialog-content > * { max-width: 100%; }
+.dialog-content [role='tabpanel'] { min-width: 0; }
