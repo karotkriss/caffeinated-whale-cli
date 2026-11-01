@@ -134,19 +134,15 @@ class Chrome:
 
         return harness.wait_until(poll, timeout=int(timeout), interval=0.1, desc=desc)
 
-    def click(self, selector: str, text: str | None = None) -> None:
+    def click(self, selector: str) -> None:
         """A real mouse press on the element's centre (reka-ui tabs switch on pointerdown,
-        which a synthetic ``click()`` never produces). With ``text``, the first visible
-        match of ``selector`` whose text starts with it."""
+        which a synthetic ``click()`` never produces)."""
         box = self.eval(
-            f"(() => {{ const text = {json.dumps(text)};"
-            f" const el = [...document.querySelectorAll({json.dumps(selector)})].find((e) =>"
-            " e.getClientRects().length && (text === null || e.textContent.trim().startsWith(text)));"
-            " if (!el) return null;"
+            f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return null;"
             " el.scrollIntoView({block: 'center'}); const r = el.getBoundingClientRect();"
             " return {x: r.left + r.width / 2, y: r.top + r.height / 2} })()"
         )
-        assert box, f"nothing visible matches {selector!r} {text!r}"
+        assert box, f"nothing matches {selector!r}"
         for kind in ("mousePressed", "mouseReleased"):
             self.send(
                 "Input.dispatchMouseEvent",
@@ -174,16 +170,6 @@ class Chrome:
 
     def navigate(self, url: str) -> None:
         self.send("Page.navigate", {"url": url}, page=True)
-
-    def screenshot(self, path: Path, *, clip: dict | None = None) -> None:
-        """Save a PNG of the viewport, or of ``clip`` (``{x, y, width, height}``) only."""
-        import base64
-
-        params: dict = {"format": "png"}
-        if clip:
-            params["clip"] = {**clip, "scale": 1}
-        data = self.send("Page.captureScreenshot", params, page=True)["data"]
-        path.write_bytes(base64.b64decode(data))
 
     def close(self) -> None:
         try:
