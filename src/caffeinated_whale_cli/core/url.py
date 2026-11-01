@@ -148,13 +148,17 @@ def probe_url(
             "Docker port binding, then retry.",
         )
     elif address.url is None:
+        command = (
+            f" (cwcli run {project_name} --site {resolved_site} set-config host_name <address>)"
+            if resolved_site is not None
+            else ""
+        )
         reason = Message(
             "url.port_unpublished",
             f"The site's address {address.declared} names a port this instance does not "
-            "publish, so cwcli cannot tell where it opens. Correct the site's host_name "
-            f"(cwcli run {project_name} --site {resolved_site} set-config host_name "
-            "<address>), or open that address directly if something else on this "
-            "machine serves it.",
+            f"publish, so cwcli cannot tell where it opens. Correct the site's host_name"
+            f"{command}, or open that address directly if something else on this machine "
+            "serves it.",
         )
     if reason is not None:
         warnings.append(reason)
@@ -192,7 +196,7 @@ def probe_url(
             internal_port=address.internal_port,
             webserver_port_in=address.webserver_port_in,
             fix=fix,
-            reason=reason.text if reason is not None else None,
+            reason=reason.text if reason is not None and address.url is None else None,
         ),
         warnings=warnings,
     )

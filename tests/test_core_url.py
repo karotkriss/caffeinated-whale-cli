@@ -220,6 +220,43 @@ class TestUnreadableRoutingData:
         assert result.data.reason == warning.text
 
 
+class TestReason:
+    """``reason`` explains a missing ``url`` and is None whenever ``url`` is set."""
+
+    def test_an_unpublished_port_with_no_site_suggests_no_site_command(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default=None, sites=[])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "http_port": 8080, "socketio_port": 9000}},
+            ports=_default_ports(),
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url is None
+        warning = next(w for w in result.warnings if w.code == "url.port_unpublished")
+        assert "http://localhost:8080" in warning.text
+        assert "--site None" not in warning.text and "cwcli run" not in warning.text
+        assert result.data.reason == warning.text
+
+    def test_a_resolved_url_carries_no_reason_even_with_an_unknown_web_port(
+        self, monkeypatch, wire
+    ):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}},
+            ports=_default_ports(),
+            procfile="worker: bench worker\n",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://site.example.com"
+        assert any(w.code == "url.unresolved" for w in result.warnings)
+        assert result.data.reason is None
+
+
 class TestExplicitMultiBenchSelection:
     def test_bench_selector_reaches_exactly_the_named_bench(self, monkeypatch, wire):
         _site_cache(monkeypatch, default=None, sites=[])
