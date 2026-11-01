@@ -47,8 +47,13 @@ export function answerPortWarning(open) {
   done?.(open)
 }
 
+// frappe-ui renders a toast description as sanitized HTML, which strips an
+// unknown tag such as a command's `<address>` placeholder, so server text is
+// escaped to reach the toast as written.
+const text = (s) => s?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
 function hint(e) {
-  return e?.hint ? `${e.message} ${e.hint}` : e?.message
+  return text(e?.hint ? `${e.message} ${e.hint}` : e?.message)
 }
 
 // Why an action on a remote host cannot run right now, or null.
@@ -137,7 +142,7 @@ async function openSite(ctx) {
   try {
     const probe = await getJsonUrl(ctx.project, query, ctx.host)
     if (!/^https?:\/\/[^/]/i.test(probe.url || '')) {
-      toast.warning(`${ctx.site} has no address to open`, { description: probe.reason || 'cwcli could not resolve an address for this site; nothing was guessed.' })
+      toast.warning(`${ctx.site} has no address to open`, { description: text(probe.reason) || 'cwcli could not resolve an address for this site; nothing was guessed.' })
       return null
     }
     const open = () => window.open(probe.url, '_blank', 'noopener')

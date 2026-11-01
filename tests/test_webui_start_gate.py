@@ -13,7 +13,9 @@ job store answers a bench-less start on a multi-bench instance with ``needs_choi
 the way ``core.start`` does.
 """
 
+import html
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -605,3 +607,22 @@ def test_a_site_with_no_address_shows_the_probes_own_reason(run):
     assert out["probe"] is None
     assert _opened(out) == []
     assert [t["options"]["description"] for t in out["toasts"]] == [reason]
+
+
+def _as_rendered(description):
+    """The text frappe-ui's toast shows: it sanitizes a description as HTML (only
+    a/em/strong/i/b/u survive), so any other tag vanishes and entities decode."""
+    kept = re.sub(r"</?(?!(?:a|em|strong|i|b|u)\b)[a-z][^>]*>", "", description, flags=re.I)
+    return html.unescape(kept)
+
+
+def test_the_no_address_toast_keeps_the_suggested_commands_placeholder(run):
+    # A suggested command must be copy-paste accurate; a toast that strips its
+    # <address> placeholder as an unknown HTML tag leaves `set-config host_name )`.
+    reason = (
+        "Correct the site's host_name (cwcli run my-project --site dev.localhost"
+        " set-config host_name <address>), or open that address directly & retry."
+    )
+    out = _open(run, {"url": None, "reachable": False, "reason": reason}, answer=True)
+
+    assert [_as_rendered(t["options"]["description"]) for t in out["toasts"]] == [reason]
