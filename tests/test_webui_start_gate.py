@@ -52,7 +52,7 @@ STUBS = {
         "export const loadDetail = () => {}\n"
         "export async function getJsonUrl(project, query) {\n"
         "  globalThis.__t.calls.push({ url: project, query: Object.fromEntries(query) })\n"
-        "  return { url: globalThis.__t.probeUrl ?? 'http://b.localhost:12101', reachable: true }\n"
+        "  return { url: globalThis.__t.probeUrl ?? 'http://b.localhost:12101', reachable: true, ...globalThis.__t.probe }\n"
         "}"
     ),
     "./api": (
@@ -486,3 +486,102 @@ def test_the_job_dialog_names_the_machine_a_remote_job_runs_on(run, verb, ctx, t
         "return { open: jobDialog.jobDialog.open, title: jobDialog.jobDialogTitle() }"
     )
     assert out["open"] and out["title"] == title
+
+
+# --- Open site on an address that carries the bench's internal port ---------------
+#
+# While webserver_port is set, Frappe builds a site's URLs with the bench's own web
+# port, and cwcli keeps that port: it is what Frappe reports, and a *.localhost
+# development site needs it. A site named by a real hostname is usually served
+# through a reverse proxy, where that port is internal and the address fails, so the
+# daemon flags it (`internal_port`) and the page asks first, with the advice to
+# remove the key, instead of opening a dead tab or rewriting the address.
+
+RUNNING_ONE_BENCH = {
+    "acme": {
+        "project": "acme",
+        "container_running": True,
+        "benches": [{"index": 0, "overall": "running"}],
+    }
+}
+HOSTNAME_SITE = {
+    "project": "acme",
+    "bench": "0",
+    "benchName": "bench-a",
+    "site": "site.example.com",
+}
+FIX = [
+    {
+        "step": "Remove webserver_port",
+        "command": "cwcli run acme config remove-common-config webserver_port",
+    },
+]
+INTERNAL = {
+    "url": "http://site.example.com:8000",
+    "site": "site.example.com",
+    "internal_port": True,
+    "webserver_port_in": ["sites/common_site_config.json"],
+    "fix": FIX,
+}
+
+# Open the site, let the probe settle, then answer the warning (when one is asked).
+OPEN_THEN = """
+globalThis.__t.probe = %s
+const pending = dialog.runAction('site.open', %s, {})
+await new Promise((r) => setTimeout(r, 50))
+const asked = dialog.portWarning.open
+const shown = dialog.portWarning.probe
+const before = globalThis.__t.calls.filter((c) => c.open).length
+if (asked) dialog.answerPortWarning(%s)
+const probe = await pending
+return { asked, shown, before, probe }
+"""
+
+
+def _open(run, probe, *, answer):
+    return run(
+        OPEN_THEN % (json.dumps(probe), json.dumps(HOSTNAME_SITE), json.dumps(answer)),
+        instances=RUNNING_ONE_BENCH,
+    )
+
+
+def _opened(out):
+    return [c["open"] for c in out["calls"] if "open" in c]
+
+
+def test_an_address_with_the_internal_port_asks_before_opening(run):
+    out = _open(run, INTERNAL, answer=True)
+
+    assert out["asked"] is True
+    assert out["before"] == 0, "nothing opens before the warning is answered"
+    # The dialog shows the address as Frappe reports it, with the removal advice.
+    assert out["shown"]["url"] == "http://site.example.com:8000"
+    assert out["shown"]["fix"] == FIX
+    # Open anyway keeps the port: cwcli warns, it never rewrites the address.
+    assert _opened(out) == ["http://site.example.com:8000"]
+
+
+def test_cancelling_the_warning_opens_nothing(run):
+    out = _open(run, INTERNAL, answer=False)
+
+    assert out["asked"] is True
+    assert out["probe"] is None
+    assert _opened(out) == []
+
+
+def test_a_localhost_address_opens_with_its_port_and_no_warning(run):
+    probe = {"url": "http://dev.localhost:8000", "internal_port": False, "fix": []}
+
+    out = _open(run, probe, answer=True)
+
+    assert out["asked"] is False
+    assert _opened(out) == ["http://dev.localhost:8000"]
+
+
+def test_a_hostname_without_the_key_opens_by_name_and_no_warning(run):
+    probe = {"url": "http://site.example.com", "internal_port": False, "fix": []}
+
+    out = _open(run, probe, answer=True)
+
+    assert out["asked"] is False
+    assert _opened(out) == ["http://site.example.com"]

@@ -234,25 +234,20 @@ def _up_mark(up: bool) -> str:
 
 
 def _host_web_target(container, bench: BenchStatus) -> str | None:
-    """The host-reachable ``site:port`` for a bench, or None if unresolvable.
+    """The host-reachable ``site:port`` of the bench's web server, or None.
 
     Maps the bench's CONTAINER web port (``bench.web_port``) through the container's
-    live host bindings via :func:`resolvers.resolve_host_web_url` - the exact two-hop
-    resolution the init banner and ``cwcli axi url`` use - and returns just the
-    ``host:port`` (no scheme) to slot into the web line. None when there is no
-    container, no resolved port, or no published host binding.
+    live host bindings (:func:`resolvers.published_host_port`) and names it for the
+    probed site, to slot into the web line: the line reports where the probe went,
+    which is the bench's own port whatever address the site is opened at. None when
+    there is no container, no resolved port, or no published host binding.
     """
     if container is None or bench.web_port is None:
         return None
-    url = resolvers.resolve_host_web_url(
-        container,
-        bench.bench_path,
-        site=bench.web_site,
-        assigned_ports=(bench.web_port, 0),
-    )
-    if url is None:
+    host_port = resolvers.published_host_port(container, bench.web_port)
+    if host_port is None:
         return None
-    return url.removeprefix("http://")
+    return f"{bench.web_site or 'localhost'}:{host_port}"
 
 
 def _web_line(bench: BenchStatus, verbose: bool, host_target: str | None) -> str | None:

@@ -804,8 +804,8 @@ def _wire_running_bench(monkeypatch, *, restart_code=0, web_state="RUNNING", pro
     monkeypatch.setattr(core_apps.supervision, "restart_program", restart)
     monkeypatch.setattr(
         core_apps.supervision.resolvers,
-        "resolve_assigned_ports",
-        lambda *a, **k: {BENCH: (8000, 9000)},
+        "resolve_web_ports",
+        lambda *a, **k: {BENCH: 8000},
     )
     monkeypatch.setattr(
         core_apps.supervision,
@@ -1019,8 +1019,8 @@ def test_an_unsupervised_running_bench_is_verified_without_being_restarted(monke
     )
     monkeypatch.setattr(
         core_apps.supervision.resolvers,
-        "resolve_assigned_ports",
-        lambda *a, **k: {BENCH: (8000, 9000)},
+        "resolve_web_ports",
+        lambda *a, **k: {BENCH: 8000},
     )
     probed = []
     monkeypatch.setattr(
@@ -1055,8 +1055,8 @@ def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(monk
     )
     monkeypatch.setattr(
         core_apps.supervision.resolvers,
-        "resolve_assigned_ports",
-        lambda *a, **k: {BENCH: (8000, 9000)},
+        "resolve_web_ports",
+        lambda *a, **k: {BENCH: 8000},
     )
     _unserved(monkeypatch, ["a.localhost"])
 
@@ -1094,17 +1094,36 @@ def test_post_mutation_failures_are_reported_without_erasing_the_landed_change(
     assert any(f"{stage} failed" in warning.text for warning in result.warnings)
 
 
+# The real resolver, kept before any test stubs it, for the tests that must drive it.
+_REAL_WEB_PORTS = resolvers.resolve_web_ports
+
+
+def _without_webserver_port(container):
+    """Serve a bench config that omits ``webserver_port`` and a Procfile that names
+    the port, through the REAL port resolver rather than a stub of it."""
+    run = container._run
+
+    def answer(cmd):
+        if isinstance(cmd, list) and cmd[:1] == ["cat"]:
+            if cmd[1].endswith("/sites/common_site_config.json"):
+                return 0, json.dumps({"socketio_port": 9000})
+            if cmd[1].endswith("/Procfile"):
+                return 0, "web: bench serve --port 8000\nworker: bench worker\n"
+        return run(cmd)
+
+    container._run = answer
+
+
 def test_an_absent_port_falls_back_to_evidence_instead_of_erroring(monkeypatch, container):
-    """A bench MAY legitimately omit `webserver_port` (a DNS-multitenant bench
-    serving many domain-named sites removes it deliberately) - that is not "the
-    config could not be read", so it must not fail the update. The fallback
-    (live process evidence, then Frappe's default) still lets the real site probe
-    below confirm serving, which `_wire_running_bench` reports as a success."""
+    """A bench MAY legitimately omit `webserver_port` (a bench served by its hostname
+    through a reverse proxy removes it so Frappe builds URLs without the internal
+    port) - that is not "the config could not be read", so it must not fail the
+    update. The port comes from the Procfile's web line, and the real site probe
+    below confirms serving, which `_wire_running_bench` reports as a success."""
     _cache(monkeypatch, [{"path": BENCH}])
     _wire_running_bench(monkeypatch)
-    monkeypatch.setattr(
-        core_apps.supervision.resolvers, "resolve_assigned_ports", lambda *a, **k: {}
-    )
+    monkeypatch.setattr(core_apps.supervision.resolvers, "resolve_web_ports", _REAL_WEB_PORTS)
+    _without_webserver_port(container)
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
@@ -1117,9 +1136,8 @@ def test_an_absent_port_still_fails_honestly_when_the_sites_genuinely_do_not_ser
 ):
     _cache(monkeypatch, [{"path": BENCH}])
     _wire_running_bench(monkeypatch)
-    monkeypatch.setattr(
-        core_apps.supervision.resolvers, "resolve_assigned_ports", lambda *a, **k: {}
-    )
+    monkeypatch.setattr(core_apps.supervision.resolvers, "resolve_web_ports", _REAL_WEB_PORTS)
+    _without_webserver_port(container)
     _unserved(monkeypatch, ["a.localhost"])
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])

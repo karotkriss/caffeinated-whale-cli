@@ -9,8 +9,10 @@ wrappers in ``commands/utils.py`` that call these.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -510,55 +512,130 @@ def require_site_dir(frappe_container, bench_path: str, site: str) -> str:
 WEB_CONTAINER_BASE = 8000
 SOCKETIO_CONTAINER_BASE = 9000
 
+# The bench's Procfile ``web:`` line, and the port it names: ``bench serve --port N``
+# (what bench writes while ``webserver_port`` is set) or a gunicorn ``-b <host>:N``.
+_WEB_LINE_RE = re.compile(r"^[ \t]*web[ \t]*:(.*)$", re.MULTILINE)
+_PORT_FLAG_RE = re.compile(r"--port[=\s]+(\d+)")
+_BIND_FLAG_RE = re.compile(r"(?:--bind|-b)[=\s]+\S*:(\d+)")
+
+
+def _read_json_file(container, path: str) -> dict | None:
+    """A JSON object file read inside the container, or None if unreadable or not one."""
+    exit_code, output = container.exec_run(["cat", path])
+    if exit_code != 0:
+        return None
+    try:
+        data = json.loads(_decode(output))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _common_site_config(container, bench_path: str) -> dict | None:
+    return _read_json_file(container, f"{bench_path.rstrip('/')}/sites/common_site_config.json")
+
+
+def _procfile_web_port(container, bench_path: str) -> int | None:
+    """The port the bench's Procfile ``web:`` line binds, or None when it has none.
+
+    The Procfile is what runs: cwcli's supervisord launcher and honcho both exec its
+    ``web:`` line. bench writes ``bench serve --port <webserver_port>`` there at init,
+    so the line still names the bench's port after an administrator removes the key.
+    A line written without the key names no port, and ``bench serve`` and gunicorn
+    then bind their own default, 8000.
+    """
+    exit_code, output = container.exec_run(["cat", f"{bench_path.rstrip('/')}/Procfile"])
+    if exit_code != 0:
+        return None
+    line = _WEB_LINE_RE.search(_decode(output))
+    if line is None:
+        return None
+    command = line.group(1)
+    named = _PORT_FLAG_RE.search(command) or _BIND_FLAG_RE.search(command)
+    if named is not None:
+        return int(named.group(1))
+    if any(server in command for server in ("bench serve", "frappe serve", "gunicorn")):
+        return WEB_CONTAINER_BASE
+    return None
+
+
+def _web_port_value(container, bench_path: str, config: dict):
+    """``webserver_port`` as written, else the Procfile's port; None when neither says."""
+    configured = config.get("webserver_port")
+    if configured is not None:
+        return configured
+    return _procfile_web_port(container, bench_path)
+
+
+def _web_port(container, bench_path: str, config: dict) -> int | None:
+    """:func:`_web_port_value` as a number; None when unknown or not numeric."""
+    try:
+        value = _web_port_value(container, bench_path, config)
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_web_ports(container, bench_paths: list[str]) -> dict[str, int]:
+    """Each bench's CONTAINER web port: where its web process listens.
+
+    Resolution order, each step evidence rather than a guess:
+
+    1. ``webserver_port`` in the bench's ``sites/common_site_config.json`` - the port
+       bench's ``make_ports`` assigned and wrote there.
+    2. The port the bench's Procfile ``web:`` line binds (see
+       :func:`_procfile_web_port`). An administrator may remove ``webserver_port``
+       on purpose: it is the only way to stop Frappe appending the internal port to
+       the URLs it builds (``frappe.utils.get_url``) on a bench served by its
+       hostname through a reverse proxy, and such a bench runs fully without it.
+
+    A bench whose config is unreadable, unparseable, or not a mapping, or that names
+    a non-numeric port, or whose Procfile has no web line, is SKIPPED (absent from
+    the result) - never defaulted, so a caller can tell "this bench serves 8000"
+    from "I could not find out". A guessed 8000 measures a sibling bench's server on
+    any bench past the first.
+    """
+    ports: dict[str, int] = {}
+    for bench_path in bench_paths:
+        config = _common_site_config(container, bench_path)
+        web = _web_port(container, bench_path, config) if config is not None else None
+        if web is not None:
+            ports[bench_path] = web
+    return ports
+
 
 def resolve_assigned_ports(
     container, bench_paths: list[str], *, fill_defaults: bool
 ) -> dict[str, tuple[int, int]]:
-    """Each bench's assigned ``(webserver_port, socketio_port)`` from its OWN config.
+    """Each bench's ``(web, socket.io)`` container ports, for callers that need both.
 
-    Reads ``sites/common_site_config.json`` live inside the container - the source of
-    truth, written by bench's ``make_ports``; cwcli writes zero port config. A bench
-    whose config is unreadable, unparseable, not a mapping, or carries a non-numeric
-    port is SKIPPED (absent from the result), never defaulted, so a caller can tell
-    "this bench serves 8000" from "I could not find out".
+    The web half is :func:`resolve_web_ports`'s answer; the socket.io half is the
+    config's ``socketio_port``. Unreadable configs and non-numeric ports are SKIPPED,
+    as there.
 
-    ``fill_defaults`` decides the one remaining case - a config that parses as a
-    mapping but simply OMITS a port key - and the two callers need opposite answers,
-    which is why it is keyword-only with NO default:
+    ``fill_defaults`` decides what is left - a web port neither the config nor the
+    Procfile names, or an omitted ``socketio_port`` - and the two callers need
+    opposite answers, which is why it is keyword-only with NO default:
 
-    - ``True`` (``core.scale``): fall back to 8000/9000, the same assumption bench
-      itself makes. Correct there, because scale is computing which host ports to
-      PUBLISH and a bench serving Frappe's default must be covered by the range.
-    - ``False`` (``core.status``, ``core.start``): skip the bench. These callers turn
-      the answer into a PROBE TARGET, and probing a guessed 8000 is the exact defect
-      this resolver was promoted to fix - on any bench past the first it measures a
-      different bench's web server. Unresolved is reported as unresolved.
-
-    Promoted out of ``core.scale``'s private ``_read_assigned_ports`` when status and
-    start became its second and third callers (the ``set_maintenance`` precedent:
-    promote, never copy - three copies of "which port does this bench serve" drift,
-    and the day they drift is the day the bug comes back on one of them).
+    - ``True`` (``core.scale``): fall back to 8000/9000, Frappe's own defaults.
+      Scale is computing which host ports to PUBLISH, so a bench serving a default
+      must be covered by the range.
+    - ``False`` (``resolve_host_ports``, a reverse proxy's forwarding target): skip
+      the bench. Forwarding a site to a guessed port is the defect this resolver
+      exists to prevent.
     """
     assigned: dict[str, tuple[int, int]] = {}
     for bench_path in bench_paths:
-        config_file = f"{bench_path.rstrip('/')}/sites/common_site_config.json"
-        exit_code, output = container.exec_run(["cat", config_file])
-        if exit_code != 0:
+        config = _common_site_config(container, bench_path)
+        if config is None:
             continue
-        try:
-            config = json.loads(_decode(output))
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(config, dict):
-            continue
+        web = _web_port_value(container, bench_path, config)
+        sio = config.get("socketio_port")
         if fill_defaults:
-            web = config.get("webserver_port", WEB_CONTAINER_BASE)
-            sio = config.get("socketio_port", SOCKETIO_CONTAINER_BASE)
-        else:
-            web = config.get("webserver_port")
-            sio = config.get("socketio_port")
-            if web is None or sio is None:
-                continue
+            web = WEB_CONTAINER_BASE if web is None else web
+            sio = SOCKETIO_CONTAINER_BASE if sio is None else sio
+        if web is None or sio is None:
+            continue
         try:
             assigned[bench_path] = (int(web), int(sio))
         except (TypeError, ValueError):
@@ -566,64 +643,128 @@ def resolve_assigned_ports(
     return assigned
 
 
-def resolve_host_web_url(
-    container,
-    bench_path: str,
-    *,
-    site: str | None = None,
-    assigned_ports: tuple[int, int] | None = None,
-) -> str | None:
-    """The URL a browser ON THE HOST reaches this bench at, or None if unresolvable.
+def _is_localhost(host: str) -> bool:
+    """``localhost``, a ``*.localhost`` name, or a loopback IP: an address on this machine.
 
-    Two hops, neither of them guessed:
-
-    1. the CONTAINER port this bench serves, from
-       :func:`resolve_assigned_ports` (``fill_defaults=False`` - this becomes a URL
-       handed to a user, so an unreadable config is reported as unknown, never as
-       Frappe's 8000);
-    2. the HOST port that container port is published on, read from the container's
-       OWN live port bindings. Docker's binding table IS the published mapping, so
-       there is nothing to re-derive from the compose file and nothing that can drift
-       out of step with what is actually bound.
-
-    Both hops are load-bearing on a real instance, and skipping either is the defect
-    this replaces: a banner that printed ``http://<site>:8000`` named a CONTAINER
-    port as if it were a host port (wrong under any ``--port`` base) AND ignored that
-    bench's ``make_ports`` assignment (wrong for every bench past the first). On a
-    ``--port 21000`` instance, bench 1 is ``8001`` inside and ``21001`` outside.
-
-    ``site`` becomes the host part, because Frappe routes by Host: the URL must name
-    the site to reach it. With no site the URL falls back to ``localhost``, which is
-    still the right port - and still answers, with Frappe's own site-not-found page.
+    Browsers resolve every ``*.localhost`` name to loopback (RFC 6761), so such a site
+    is reached on the host through the instance's published port.
     """
-    assigned = assigned_ports
-    if assigned is None:
-        ports = resolve_assigned_ports(container, [bench_path], fill_defaults=False)
-        assigned = ports.get(bench_path)
-    if assigned is None:
-        return None
-    host_port = _published_host_port(container, assigned[0])
+    name = host.strip().lower().rstrip(".")
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SiteAddress:
+    """The address a person opens to reach a site, and where it came from.
+
+    ``url`` is None only when the address needs the bench's port and no host binding
+    publishes it. ``source`` is ``host_name`` (the site's own declared address) or
+    ``site`` (the site's name). ``internal_port`` is True when the url carries the
+    bench's web port only because ``webserver_port`` is set while the name is not a
+    localhost one - what Frappe reports, but an address that fails when the site is
+    served by its hostname through a reverse proxy. ``webserver_port_in`` names the
+    bench-relative config files that set ``webserver_port``. ``web_port`` is the
+    bench's CONTAINER web port (:func:`resolve_web_ports`'s answer, read in the same
+    pass), where a probe of the site goes; None when it cannot be determined.
+    """
+
+    url: str | None
+    source: str
+    internal_port: bool
+    webserver_port_in: list[str]
+    web_port: int | None
+
+
+def resolve_site_address(container, bench_path: str, *, site: str | None) -> SiteAddress:
+    """The address a person opens to reach ``site``, built the way Frappe builds it.
+
+    Frappe's own ``bench browse`` opens ``frappe.utils.get_site_url(site)``: the site's
+    ``host_name`` when set, else ``http://<site>:<webserver_port>``. Read from the
+    site's merged config (``sites/common_site_config.json`` overridden by
+    ``sites/<site>/site_config.json``, Frappe's merge order), the order here is:
+
+    1. ``host_name`` - the site's own address, used as written (``http://`` added
+       when it names no scheme, as ``frappe.utils.get_url`` does). Nothing is
+       appended to it.
+    2. The site name, with the bench's port when ``webserver_port`` is set. The port
+       is never stripped then: the address is what Frappe reports for the site, and
+       removing the key is the administrator's fix (see ``internal_port``).
+    3. The site name with no port when the key is absent and the name is not a
+       localhost one: Frappe builds the site's URLs the same way, because such a
+       bench is served by its hostname, for example through a reverse proxy.
+
+    A ``localhost``/``*.localhost`` site (and ``localhost`` itself when there is no
+    site) always carries the port: on the host it is only reachable through the
+    instance's published port, key or no key. The port is the HOST port Docker
+    publishes for the bench's container web port (a ``--port 21000`` instance
+    publishes container 8001 as 21001) - never the container port itself.
+    """
+    bench = bench_path.rstrip("/")
+    common = _common_site_config(container, bench)
+    web_port = _web_port(container, bench, common) if common is not None else None
+    common = common or {}
+    own = (
+        (_read_json_file(container, f"{bench}/sites/{site}/site_config.json") or {}) if site else {}
+    )
+    conf = {**common, **own}
+    files = [("sites/common_site_config.json", common)]
+    if site:
+        files.append((f"sites/{site}/site_config.json", own))
+    set_in = [name for name, config in files if config.get("webserver_port")]
+
+    def address(url: str | None, source: str = "site", internal_port: bool = False) -> SiteAddress:
+        return SiteAddress(
+            url=url,
+            source=source,
+            internal_port=internal_port,
+            webserver_port_in=set_in,
+            web_port=web_port,
+        )
+
+    host_name = conf.get("host_name")
+    if host_name:
+        url = str(host_name)
+        return address(
+            url if url.startswith(("http://", "https://")) else f"http://{url}", "host_name"
+        )
+
+    name = site or "localhost"
+    local = _is_localhost(name)
+    if not local and not conf.get("webserver_port"):
+        return address(f"http://{name}")
+    host_port = published_host_port(container, web_port) if web_port is not None else None
     if host_port is None:
-        return None
-    return f"http://{site or 'localhost'}:{host_port}"
+        return address(None)
+    return address(f"http://{name}:{host_port}", internal_port=not local)
 
 
 def resolve_host_ports(container, bench_path: str) -> tuple[int, int] | None:
     """The HOST ports ``(web, socket.io)`` this bench is published on, or None.
 
-    The same two hops as :func:`resolve_host_web_url`, for both of the bench's ports:
-    a reverse proxy in front of the bench needs the socket.io port as well as the web
-    port. Either one unresolved is None, never a guess.
+    Two hops for each of the bench's ports - its container port
+    (:func:`resolve_assigned_ports`), then the host port Docker publishes it on
+    (:func:`published_host_port`): a reverse proxy in front of the bench needs the
+    socket.io port as well as the web port. Either one unresolved is None, never a
+    guess.
     """
     assigned = resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(bench_path)
     if assigned is None:
         return None
-    web, socketio = (_published_host_port(container, port) for port in assigned)
+    web, socketio = (published_host_port(container, port) for port in assigned)
     return (web, socketio) if web and socketio else None
 
 
-def _published_host_port(container, container_port: int) -> int | None:
-    """The host port ``container_port/tcp`` is published on, from the live bindings."""
+def published_host_port(container, container_port: int) -> int | None:
+    """The host port ``container_port/tcp`` is published on, from the live bindings.
+
+    Docker's binding table IS the published mapping, so nothing is re-derived from
+    the compose file and nothing can drift out of step with what is bound.
+    """
     bindings = getattr(container, "ports", None) or {}
     entries = bindings.get(f"{container_port}/tcp") or []
     for entry in entries:

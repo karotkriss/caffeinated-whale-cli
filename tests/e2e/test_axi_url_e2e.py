@@ -27,7 +27,7 @@ pytestmark = [pytest.mark.e2e]
 
 def _docker_port(container_id: str, container_port: int) -> int:
     """The REAL host port ``container_port/tcp`` is published on, read straight
-    from Docker via the CLI - independently of ``resolve_host_web_url``'s own
+    from Docker via the CLI - independently of ``published_host_port``'s own
     docker-py read, so a passing test is not just checking cwcli against itself."""
     r = subprocess.run(
         ["docker", "port", container_id, f"{container_port}/tcp"],

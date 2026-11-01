@@ -21,6 +21,32 @@ export const dialogState = reactive({
   running: false,
 })
 
+// Open site on an address that carries the bench's own web port on a name that is not
+// a localhost one (the probe's `internal_port`): what Frappe itself reports while
+// webserver_port is set, and an address that fails behind a reverse proxy, where that
+// port is internal. The page asks first (components/PortWarningDialog.vue) and explains
+// how to remove the key; it never rewrites the address.
+export const portWarning = reactive({ open: false, probe: null, host: null })
+let settlePortWarning = null
+
+function askPortWarning(probe, host) {
+  return new Promise((resolve) => {
+    settlePortWarning?.(false)
+    settlePortWarning = resolve
+    portWarning.probe = probe
+    portWarning.host = host
+    portWarning.open = true
+  })
+}
+
+// `open`: the dialog's Open button, whose click is the one that may open the tab.
+export function answerPortWarning(open) {
+  portWarning.open = false
+  const done = settlePortWarning
+  settlePortWarning = null
+  done?.(open)
+}
+
 function hint(e) {
   return e?.hint ? `${e.message} ${e.hint}` : e?.message
 }
@@ -114,11 +140,18 @@ async function openSite(ctx) {
       toast.warning(`${ctx.site} is not serving`, { description: 'No published port resolves for this bench; nothing was guessed.' })
       return null
     }
+    const open = () => window.open(probe.url, '_blank', 'noopener')
+    const where = ctx.host ? ` (an address on ${hostName(ctx.host)}; it must resolve from this browser)` : ''
+    // Warn before an address that carries the bench's internal port; the dialog's own
+    // Open click is a live one, so the tab opens straight from it.
+    if (probe.internal_port) {
+      if (!(await askPortWarning(probe, ctx.host ?? null))) return null
+      open()
+      return probe
+    }
     // A browser opens a tab only while the click that asked for it is still live. After
     // the start prompt's wait it is long gone and the tab would be blocked without a
     // word, so the tab is offered on a button, whose own click opens it.
-    const open = () => window.open(probe.url, '_blank', 'noopener')
-    const where = ctx.host ? ` (an address on ${hostName(ctx.host)}; it must resolve from this browser)` : ''
     if (navigator.userActivation?.isActive === false) {
       const offer = { duration: Infinity, action: { label: 'Open', onClick: open } }
       if (probe.reachable) toast.success(`${ctx.site} is ready`, { ...offer, description: probe.url + where })

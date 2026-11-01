@@ -1327,20 +1327,28 @@ def axi_url(
         help="Send this Host header. Omit to use the bench's representative site.",
     ),
 ) -> None:
-    """Resolve a bench's host URL and probe it fresh; emit both as TOON.
+    """Resolve a site's address and probe its bench fresh; emit both as TOON.
 
-    Answers what no other ``axi`` verb does: the HOST address a browser reaches this
-    bench at (``cwcli axi status``'s ``web_http_code`` is measured against the
-    container-internal port and never states it), and whether that address answers
-    HTTP right now. This verb and ``cwcli axi status`` both perform a fresh one-shot
-    probe. Only the human ``cwcli status --watch`` path suppresses HTTP probing.
+    Answers what no other ``axi`` verb does: the address a browser opens the site at
+    (``cwcli axi status``'s ``web_http_code`` is measured against the
+    container-internal port and never states it), and whether the bench answers HTTP
+    for that site right now. This verb and ``cwcli axi status`` both perform a fresh
+    one-shot probe. Only the human ``cwcli status --watch`` path suppresses HTTP
+    probing.
+
+    The address is built the way Frappe builds it: the site's ``host_name``, else the
+    site name with the bench's published port while ``webserver_port`` is set, else
+    the bare site name (a ``*.localhost`` site always keeps the published port).
+    ``source`` says which. When the port is there only because ``webserver_port`` is
+    set on a name that is not a localhost one, ``internal_port`` is true and a
+    warning plus ``fix`` name the commands that remove the key.
 
     A stopped project is a usage error naming ``cwcli start`` (exit 2, no ``--yes``
     on this verb); a multi-bench project with no ``--bench`` is a usage error naming
-    it. An unreadable port config is reported as ``url: null`` / ``reachable: false``
-    with a warning rather than guessed - never falls back to ``:8000``. ``http_code``
-    is whatever code curl saw, verbatim (a 404/500 counts as reachable, exactly as
-    ``cwcli axi status`` already treats "any code is serving").
+    it. A bench port cwcli cannot determine is reported as ``url: null`` /
+    ``reachable: false`` with a warning rather than guessed - never falls back to
+    ``:8000``. ``http_code`` is whatever code curl saw, verbatim (a 404/500 counts as
+    reachable, exactly as ``cwcli axi status`` already treats "any code is serving").
     """
     try:
         result = core_url.probe_url(project, bench=bench, site=site)

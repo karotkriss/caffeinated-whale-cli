@@ -19,9 +19,11 @@ but never writes). The probe used to hardcode ``localhost:8000``, so on any benc
 past the first it measured a DIFFERENT bench's web server: a fully healthy bench 1
 reported ``degraded`` (its port was never asked), and a bench 1 serving nothing
 reported bench 0's live HTTP code. Each bench's port now comes from
-``resolvers.resolve_assigned_ports(..., fill_defaults=False)`` and is passed
-explicitly to :func:`supervision.web_http_code`; a bench whose port cannot be
-resolved reports ``web_port=None``/``web_port_verified=False``, is NOT probed, and
+``resolvers.resolve_web_ports`` (its ``webserver_port``, else the port its Procfile's
+``web:`` line binds - the key is optional, and a bench behind a reverse proxy drops
+it on purpose) and is passed explicitly to :func:`supervision.web_http_code`; a bench
+whose port cannot be resolved reports ``web_port=None``/``web_port_verified=False``,
+is NOT probed, and
 does NOT degrade on that account (see ``_overall``'s ``web_probed``) - a gap in
 cwcli's knowledge is not a fault in the bench, and falling back to 8000 IS the bug.
 
@@ -124,8 +126,9 @@ class BenchStatus:
     is the attributed-lie class this change exists to remove.
 
     ``web_port`` is the CONTAINER-side port this bench serves, read from its own
-    ``sites/common_site_config.json``, and it is the port ``web_http_code`` was
-    actually measured on. ``web_port_verified`` is False when that read failed: the
+    ``sites/common_site_config.json`` (or, without ``webserver_port`` there, from its
+    Procfile's ``web:`` line), and it is the port ``web_http_code`` was actually
+    measured on. ``web_port_verified`` is False when neither says: the
     port is then None, no probe was made, ``web_http_code`` is None, and a
     ``status.web_port_unknown`` warning names the bench. The honest value/verified
     pair ``scale.BenchPortMap`` already uses - never a guessed 8000 reported as fact.
@@ -303,12 +306,10 @@ def status(
     targets, target_warnings = _targets(project_name, bench, bench_path)
     warnings.extend(target_warnings)
 
-    # Each bench's own serving port, read from its own config. fill_defaults=False:
-    # an omitted key is UNRESOLVED here, never Frappe's 8000 - this answer becomes a
-    # probe target, and a guessed 8000 measures whichever bench happens to serve it.
-    assigned = resolvers.resolve_assigned_ports(
-        frappe_container, [path for _, path, _ in targets], fill_defaults=False
-    )
+    # Each bench's own serving port: its webserver_port, else the port its Procfile's
+    # web line binds. Never a guessed 8000 - this answer becomes a probe target, and a
+    # guessed 8000 measures whichever bench happens to serve it.
+    web_ports = resolvers.resolve_web_ports(frappe_container, [path for _, path, _ in targets])
 
     # Does each of those remembered paths still exist? ONE exec for the whole list,
     # so the cost is flat in bench count on every tier including the fused one. It
@@ -318,14 +319,15 @@ def status(
 
     benches: list[BenchStatus] = []
     for index, path, label in targets:
-        ports = assigned.get(path)
-        web_port = ports[0] if ports is not None else None
+        web_port = web_ports.get(path)
         if web_port is None:
             warnings.append(
                 Message(
                     "status.web_port_unknown",
-                    f"Could not read the web port for bench {path}; its web server was "
-                    f"not probed. Run 'cwcli inspect {project_name}' to refresh.",
+                    f"Could not determine the web port for bench {path} from its "
+                    "sites/common_site_config.json (webserver_port) or its Procfile (the web "
+                    f"line); its web server was not probed. Run 'cwcli inspect {project_name}' "
+                    "to refresh.",
                 )
             )
         read = _bench_status_fused if fused else _bench_status

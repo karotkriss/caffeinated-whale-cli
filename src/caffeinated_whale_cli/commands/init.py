@@ -362,19 +362,19 @@ def _refresh_cache(project: str, verbose: bool, bench_path: str) -> None:
 
 
 def _bench_web_url(project: str, bench_path: str, site: str) -> str | None:
-    """The new bench's REAL host URL for the success banner, or None.
+    """The new site's REAL address for the success banner, or None.
 
     The banner used to hardcode ``http://{site}:8000``, which is wrong twice over on
     any real instance: 8000 is a CONTAINER port (a ``--port 21000`` instance
     publishes it as 21000), and every bench past the first serves its own
-    ``make_ports`` assignment (bench 1 is 8001 -> 21001). Both hops now come from
-    ``resolvers.resolve_host_web_url``, the one reader of that question. Degrades to
+    ``make_ports`` assignment (bench 1 is 8001 -> 21001). The address now comes from
+    ``resolvers.resolve_site_address``, the one reader of that question. Degrades to
     None - and the banner then simply omits the line - rather than printing an
     address the user cannot reach.
     """
     try:
         container = core_docker.get_frappe_container(project)
-        return core_resolvers.resolve_host_web_url(container, bench_path, site=site)
+        return core_resolvers.resolve_site_address(container, bench_path, site=site).url
     except Exception:  # noqa: BLE001 - a banner hint must never fail a successful init
         return None
 

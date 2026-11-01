@@ -7,6 +7,7 @@ usage error), and that no live Docker object leaks across a core boundary.
 """
 
 import dataclasses
+import json
 
 import pytest
 import typer
@@ -272,11 +273,22 @@ class TestResolveBenchPathWrapper:
         assert exc.value.exit_code == 1
 
 
-class _PortContainer:
-    """A frappe container with a readable bench config and published port bindings."""
+B1 = "/w/b1"
+_PROCFILE_8001 = "web: bench serve  --port 8001\nsocketio: bench socketio\n"
 
-    def __init__(self, *, config='{"webserver_port": 8001, "socketio_port": 9001}', ports=None):
-        self.config = config
+
+class _BenchFiles:
+    """A frappe container serving a bench's files by path, plus its published ports.
+
+    ``files`` maps an absolute in-container path to its content (a dict is written as
+    JSON); any other path reads as missing, as ``cat`` reports it.
+    """
+
+    def __init__(self, files, *, ports=None):
+        self.files = {
+            path: json.dumps(body) if isinstance(body, dict) else body
+            for path, body in files.items()
+        }
         self.ports = (
             ports
             if ports is not None
@@ -285,46 +297,170 @@ class _PortContainer:
                 "8001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21001"}],
             }
         )
+        self.reads: list[str] = []
 
     def exec_run(self, cmd, **kwargs):
-        if self.config is None:
-            return 1, b""
-        return 0, self.config.encode()
+        assert cmd[0] == "cat", cmd
+        self.reads.append(cmd[1])
+        body = self.files.get(cmd[1])
+        return (1, b"") if body is None else (0, body.encode())
 
 
-class TestResolveHostWebUrl:
-    """The address a bench is actually reachable at, from the HOST.
+def _bench(common=None, *, procfile=_PROCFILE_8001, sites=None, bench=B1, ports=None):
+    """A bench's files: its common config, Procfile, and each site's own config."""
+    files: dict = {}
+    if common is not None:
+        files[f"{bench}/sites/common_site_config.json"] = common
+    if procfile is not None:
+        files[f"{bench}/Procfile"] = procfile
+    for site, config in (sites or {}).items():
+        files[f"{bench}/sites/{site}/site_config.json"] = config
+    return _BenchFiles(files, ports=ports)
 
-    Two hops, and skipping either was the shipped defect: `http://<site>:8000`
-    named a CONTAINER port as if it were a host port (wrong under any --port base)
-    and ignored per-bench port assignment (wrong for every bench past the first).
+
+class TestResolveWebPorts:
+    """Where each bench's web process listens, with or without webserver_port.
+
+    The key is optional: an administrator removes it so Frappe stops appending the
+    internal port to the URLs it builds behind a reverse proxy, and the bench runs
+    fully without it. cwcli then reads the port the Procfile's web line binds.
     """
 
-    def test_the_container_port_is_mapped_through_the_published_bindings(self):
-        url = resolvers.resolve_host_web_url(_PortContainer(), "/w/b1", site="two.localhost")
-        # bench 1 serves 8001 INSIDE and is published on 21001 OUTSIDE.
-        assert url == "http://two.localhost:21001"
+    def test_the_configured_webserver_port_wins_and_the_procfile_is_not_read(self):
+        c = _bench({"webserver_port": 8001, "socketio_port": 9001})
+        assert resolvers.resolve_web_ports(c, [B1]) == {B1: 8001}
+        assert f"{B1}/Procfile" not in c.reads
 
-    def test_the_site_is_the_host_part_because_frappe_routes_by_host(self):
-        url = resolvers.resolve_host_web_url(
-            _PortContainer(config='{"webserver_port": 8000, "socketio_port": 9000}'),
-            "/w/b0",
-            site="one.localhost",
-        )
-        assert url == "http://one.localhost:21000"
+    @pytest.mark.parametrize(
+        ("web_line", "port"),
+        [
+            ("web: bench serve  --port 8003", 8003),
+            ("web: bench serve --port=8004", 8004),
+            ("web: gunicorn -b 127.0.0.1:8005 -w 2 frappe.app:application", 8005),
+            ("web: gunicorn --bind=0.0.0.0:8006 frappe.app:application", 8006),
+            # bench writes the line without --port when the key is absent at init;
+            # bench serve and gunicorn then bind their own default.
+            ("web: bench serve", 8000),
+        ],
+    )
+    def test_without_the_key_the_procfile_web_line_names_the_port(self, web_line, port):
+        c = _bench({"socketio_port": 9001}, procfile=f"redis_cache: redis-server\n{web_line}\n")
+        assert resolvers.resolve_web_ports(c, [B1]) == {B1: port}
+
+    def test_without_the_key_or_a_web_line_the_port_is_unknown_never_8000(self):
+        c = _bench({"socketio_port": 9001}, procfile="worker: bench worker\n")
+        assert resolvers.resolve_web_ports(c, [B1]) == {}
+
+    def test_an_unreadable_config_is_unknown_never_8000(self):
+        assert resolvers.resolve_web_ports(_bench(None), [B1]) == {}
+
+    def test_a_non_numeric_port_is_unknown(self):
+        assert resolvers.resolve_web_ports(_bench({"webserver_port": "eight"}), [B1]) == {}
+
+    def test_the_pair_resolver_shares_the_web_answer(self):
+        # core.scale and the reverse-proxy forwarding read both ports; the web half
+        # must not need the key either, or a bench without it is never published.
+        c = _bench({"socketio_port": 9001})
+        assert resolvers.resolve_assigned_ports(c, [B1], fill_defaults=False) == {B1: (8001, 9001)}
+        assert resolvers.resolve_assigned_ports(
+            _bench({}, procfile=None), [B1], fill_defaults=True
+        ) == {B1: (8000, 9000)}
+
+
+class TestResolveSiteAddress:
+    """The address a person opens to reach a site, built the way Frappe builds it.
+
+    Frappe's own ``bench browse`` opens ``frappe.utils.get_site_url``: the site's
+    host_name, else ``http://<site>:<webserver_port>``. cwcli maps that port to the
+    HOST port Docker publishes, keeps it whenever the key is set, and keeps it on a
+    localhost site key or no key, because that site is only reachable through it.
+    """
+
+    KEY = {"webserver_port": 8001, "socketio_port": 9001}
+    NO_KEY = {"socketio_port": 9001}
+
+    def _address(self, common, site, *, sites=None, **kwargs):
+        return resolvers.resolve_site_address(_bench(common, sites=sites, **kwargs), B1, site=site)
+
+    def test_a_localhost_site_opens_on_the_published_port(self):
+        a = self._address(self.KEY, "two.localhost")
+        # bench 1 serves 8001 INSIDE and is published on 21001 OUTSIDE.
+        assert a.url == "http://two.localhost:21001"
+        assert (a.source, a.internal_port) == ("site", False)
+
+    def test_a_localhost_site_keeps_the_published_port_without_the_key(self):
+        a = self._address(self.NO_KEY, "two.localhost")
+        assert a.url == "http://two.localhost:21001"
+        assert a.internal_port is False
+        assert a.webserver_port_in == []
+        # The same pass resolved the container port from the Procfile's web line.
+        assert a.web_port == 8001
 
     def test_no_site_still_gives_the_right_port(self):
-        url = resolvers.resolve_host_web_url(_PortContainer(), "/w/b1")
-        assert url == "http://localhost:21001"
+        assert self._address(self.KEY, None).url == "http://localhost:21001"
 
-    def test_an_unreadable_bench_config_is_unknown_never_8000(self):
-        assert resolvers.resolve_host_web_url(_PortContainer(config=None), "/w/b1") is None
+    @pytest.mark.parametrize("site", ["127.0.0.1", "LOCALHOST", "a.b.localhost"])
+    def test_every_loopback_name_counts_as_localhost(self, site):
+        a = self._address(self.KEY, site)
+        assert a.url == f"http://{site}:21001"
+        assert a.internal_port is False
+
+    def test_a_hostname_keeps_the_port_while_the_key_is_set_and_says_so(self):
+        a = self._address(self.KEY, "site.example.com")
+        # Never stripped: it is what Frappe reports for the site.
+        assert a.url == "http://site.example.com:21001"
+        assert a.internal_port is True
+        assert a.webserver_port_in == ["sites/common_site_config.json"]
+
+    def test_the_key_in_the_sites_own_config_counts_too(self):
+        a = self._address(
+            self.NO_KEY,
+            "site.example.com",
+            sites={"site.example.com": {"webserver_port": 8001}},
+        )
+        assert a.url == "http://site.example.com:21001"
+        assert a.internal_port is True
+        assert a.webserver_port_in == ["sites/site.example.com/site_config.json"]
+
+    def test_a_hostname_without_the_key_opens_by_name_with_no_port(self):
+        a = self._address(self.NO_KEY, "site.example.com", ports={})
+        # Frappe builds the same portless URL; no host binding is needed for it.
+        assert a.url == "http://site.example.com"
+        assert a.internal_port is False
+
+    def test_host_name_is_the_sites_address_as_written(self):
+        a = self._address(
+            self.KEY,
+            "site.example.com",
+            sites={"site.example.com": {"host_name": "https://site.example.com"}},
+        )
+        assert a.url == "https://site.example.com"
+        assert (a.source, a.internal_port) == ("host_name", False)
+
+    def test_host_name_without_a_scheme_gets_http_as_frappe_adds_it(self):
+        a = self._address(
+            self.NO_KEY,
+            "site.example.com",
+            sites={"site.example.com": {"host_name": "erp.example.com"}},
+        )
+        assert a.url == "http://erp.example.com"
+
+    def test_the_sites_config_overrides_the_common_host_name(self):
+        common = {**self.KEY, "host_name": "https://bench.example.com"}
+        shared = self._address(common, "one.example.com")
+        own = self._address(
+            common,
+            "two.example.com",
+            sites={"two.example.com": {"host_name": "https://two.example.com"}},
+        )
+        assert shared.url == "https://bench.example.com"
+        assert own.url == "https://two.example.com"
 
     def test_an_unpublished_container_port_is_unknown_never_the_container_port(self):
         # The 7th bench binds :8006 inside but is published nowhere. Reporting 8006
         # as a host port would send the user to a port nothing listens on.
-        c = _PortContainer(config='{"webserver_port": 8006, "socketio_port": 9006}')
-        assert resolvers.resolve_host_web_url(c, "/w/b6") is None
+        a = self._address({"webserver_port": 8006, "socketio_port": 9006}, "one.localhost")
+        assert a.url is None
 
 
 class TestResolveRepresentativeSite:

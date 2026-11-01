@@ -688,7 +688,7 @@ def _check_port_collisions() -> tuple:
     compose file a second time: Docker's ``HostConfig.PortBindings`` is the
     CONFIGURED port mapping and is present regardless of run state (the same
     "don't re-parse the compose file, the binding table is the truth" call
-    ``resolvers.resolve_host_web_url`` already made), so this single call catches
+    ``resolvers.published_host_port`` already made), so this single call catches
     stopped-vs-stopped collisions too, not only a currently-bound conflict.
     """
     from ..utils.port_utils import format_port_list

@@ -49,11 +49,9 @@ def _curl(container, port: int, site: str, path: str) -> bytes | None:
 
 
 def fetch_live(container, bench_path: str, site: str) -> dict[str, Any] | None:
-    ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False)
-    assigned = ports.get(bench_path)
-    if assigned is None:
+    port = resolvers.resolve_web_ports(container, [bench_path]).get(bench_path)
+    if port is None:
         return None
-    port = assigned[0]
     candidates: list[str] = []
     html = _curl(container, port, site, "/")
     if html:

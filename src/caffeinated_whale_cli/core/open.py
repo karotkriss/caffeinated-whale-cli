@@ -48,7 +48,7 @@ class LaunchTarget:
     container_name: str  # a NAME string; both handover mechanisms consume the name
     working_dir: str  # the bench path, or {bench}/apps/{app} under --app
     editor: str  # "docker" | "code" | "code-insiders" | "cursor"
-    # The host URL this bench actually serves on (``resolvers.resolve_host_web_url``),
+    # The address this bench's site is opened at (``resolvers.resolve_site_address``),
     # or None when it cannot be read. ``open`` hands over to an editor or a shell and
     # never opens a browser, but it is the command every "open it at ..." hint points
     # at, so it is the one place that owes the reader the real address: bench 1 of a
@@ -221,7 +221,7 @@ def open_plan(
 
 
 def _web_url(project_name: str, frappe_container, bench_path: str) -> str | None:
-    """This bench's real host URL, or None.
+    """This bench's site address (``resolvers.resolve_site_address``), or None.
 
     Fails SOFT by design: the URL is a convenience the plan carries, never the thing
     ``open`` was asked to do, so an unreadable config or port table costs the caller
@@ -229,7 +229,7 @@ def _web_url(project_name: str, frappe_container, bench_path: str) -> str | None
     """
     try:
         site = resolvers.resolve_representative_site(project_name, bench_path)
-        return resolvers.resolve_host_web_url(frappe_container, bench_path, site=site)
+        return resolvers.resolve_site_address(frappe_container, bench_path, site=site).url
     except Exception:  # noqa: BLE001 - a hint must never fail the launch
         return None
 
