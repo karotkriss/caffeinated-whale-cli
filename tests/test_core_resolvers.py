@@ -560,6 +560,43 @@ class TestResolveSiteAddress:
         )
         assert a.url == "http://dev.localhost:21001"
 
+    OVERLAP = {
+        "8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8001"}],
+        "8001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8002"}],
+    }
+
+    @pytest.mark.parametrize(
+        ("host_name", "url"),
+        [
+            # The bench's own host port: already the address that opens.
+            ("http://dev.localhost:8001", "http://dev.localhost:8001"),
+            # The bench's own container port, as Frappe appends it.
+            ("http://dev.localhost:8000", "http://dev.localhost:8001"),
+            ("http://dev.localhost", "http://dev.localhost:8001"),
+            # Another bench's host port is kept; nothing else is guessed.
+            ("http://dev.localhost:8002", "http://dev.localhost:8002"),
+            ("http://dev.localhost:8003", None),
+        ],
+    )
+    def test_an_overlapping_host_range_never_mistakes_a_host_port(self, host_name, url):
+        # A --port 8001 instance: container 8000 is host 8001, container 8001 is host
+        # 8002, so 8001 is both this bench's host port and a sibling's container port.
+        a = self._address(
+            {"webserver_port": 8000, "socketio_port": 9000},
+            "dev.localhost",
+            sites={"dev.localhost": {"host_name": host_name}},
+            ports=self.OVERLAP,
+        )
+        assert a.url == url
+
+    def test_no_port_and_an_unpublished_web_port_is_unknown_not_port_80(self):
+        a = self._address(
+            {"webserver_port": 8002, "socketio_port": 9002, "restart_supervisor_on_update": 1},
+            "dev.localhost",
+            ports=self.OVERLAP,
+        )
+        assert a.url is None
+
     def test_a_localhost_host_name_naming_an_unpublished_port_is_unknown(self):
         a = self._address(
             self.KEY,

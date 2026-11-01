@@ -766,13 +766,16 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
        flagged ``internal_port``.
 
     A ``localhost``/``*.localhost`` address is always opened through the instance's
-    published port, because that is the only way the host reaches it: its port (a
-    CONTAINER port) is mapped to the HOST port Docker publishes for it, and an
-    address with no port gets the published port of the bench's web server (a
-    ``--port 21000`` instance publishes container 8001 as 21001). A port that is
-    not a container port but is already one of the instance's published host ports
+    published port, because that is the only way the host reaches it. An address
+    with no port, or naming the bench's own CONTAINER web port (what Frappe appends
+    from ``webserver_port``), gets the HOST port Docker publishes for that web port (a
+    ``--port 21000`` instance publishes container 8001 as 21001). An address already
+    naming one of the instance's published HOST ports
     (``host_name: http://dev.localhost:21001``) is kept as written. Any other port is
-    ``url=None`` - never the container port itself.
+    ``url=None`` - never a guess. The bench's own web port is decided first, so an
+    instance whose host range overlaps its container range (``--port 8001``
+    publishes container 8000 as 8001 and 8001 as 8002) never reads a host port as
+    another bench's container port.
     """
     bench = bench_path.rstrip("/")
     common = _common_site_config(container, bench)
@@ -816,14 +819,18 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
     if not _is_localhost(parts.hostname or ""):
         return address(url, internal_port=bool(appended) and not conf.get("http_port"))
     try:
-        container_port = parts.port or web_port
+        named = parts.port
     except ValueError:
-        container_port = None
-    host_port = published_host_port(container, container_port) if container_port else None
-    if host_port is None:
-        return address(url if _is_published_host_port(container, container_port) else None)
-    netloc = parts.netloc.rsplit(":", 1)[0] if parts.port else parts.netloc
-    return address(urlunsplit(parts._replace(netloc=f"{netloc}:{host_port}")))
+        return address(None)
+    own_host_port = published_host_port(container, web_port) if web_port is not None else None
+    if named is None or named == web_port:
+        if own_host_port is None:
+            return address(None)
+        netloc = parts.netloc.rsplit(":", 1)[0] if named is not None else parts.netloc
+        return address(urlunsplit(parts._replace(netloc=f"{netloc}:{own_host_port}")))
+    if named == own_host_port or _is_published_host_port(container, named):
+        return address(url)
+    return address(None)
 
 
 def resolve_host_ports(container, bench_path: str) -> tuple[int, int] | None:

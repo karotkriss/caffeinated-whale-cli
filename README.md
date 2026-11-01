@@ -2365,9 +2365,10 @@ cwcli reads the site's config merged with the bench's (`sites/<site>/site_config
 2. When that start names no port and neither `restart_supervisor_on_update` nor `restart_systemd_on_update` is set, Frappe adds `:<http_port>`, or `:<webserver_port>` when `http_port` is not set. For example, a site named `site.example.com` on a bench with `webserver_port: 8000` gets `http://site.example.com:8000`, and without either key it gets `http://site.example.com`.
 
 A `localhost` or `*.localhost` address always opens through the port Docker publishes for it, because the host reaches it only that way.
-cwcli replaces its port, which is a port inside the container, with the published host port, and gives an address with no port the published port of the bench's web server.
+When the address names no port, or names the bench's own web port inside the container (the port Frappe adds from `webserver_port`), cwcli gives it the host port Docker publishes for that web port.
 For example, an instance created with `--port 21000` opens `http://dev.localhost:8000` as `http://dev.localhost:21000`.
 A port that is already one of the instance's published host ports, such as `host_name: http://dev.localhost:21000` on that instance, is kept as written.
+For any other port, cwcli shows no address instead of guessing one.
 
 `webserver_port` is optional.
 On a bench that serves its sites by hostname through a reverse proxy, administrators remove it: it is the only way to stop Frappe from adding the bench's internal port to the URLs it builds, such as the OAuth and SSO redirect URLs that go into an identity provider.
