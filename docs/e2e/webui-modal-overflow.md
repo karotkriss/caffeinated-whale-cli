@@ -36,4 +36,5 @@ Measured after the fix, on the same seeded state: no element in any Settings pan
 
 `tests/e2e/test_webui_modal_overflow_e2e.py` repeats this in CI at both widths: it seeds the long values through the API (the integration's hub key and allow command, a long search path, a long app source, a long remote host address, long browser user agents), opens every Settings pane and every dialog above, and fails when any element inside the topmost dialog lies past its horizontal edges or a control is clipped by an inner scroll region.
 Each pane and dialog is measured as served and again with an unbreakable token appended to its text, so a long value anywhere in it is covered.
-A second case on the shared session instance covers the instance-backed dialogs: new bench, stop, new site, clone or move sites, clear cache.
+A second case on the shared session instance, `tests/e2e/test_webui_overflow_instance_dialogs_e2e.py`, covers the instance-backed dialogs: new bench, stop, new site, clone or move sites, clear cache.
+Its file name sorts after `test_webui_navigation_e2e.py` on purpose, so it runs after the navigation proof, and both share the measurement in `tests/e2e/dialogs.py`.
