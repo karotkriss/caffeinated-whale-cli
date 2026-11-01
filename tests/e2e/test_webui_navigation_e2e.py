@@ -512,13 +512,22 @@ def test_a_press_during_a_transition_reaches_the_live_page(chrome, ui):
             desc="the press made mid cross-fade to open Sites",
         )
         # A press mid cross-fade on a text field of the page being opened leaves it focused
-        # and ready to type, as a native press would.
-        advisories, search = (
-            'a[href="/advisories"]',
-            'input[placeholder="Search ids, titles, text"]',
+        # and ready to type, as a native press would. Backups' search field sits below
+        # content drawn from the store snapshot alone, which changes only after a job and
+        # outlives the page: once the snapshot is in (no summary value still reads '…'),
+        # the field is where it is measured, on this visit and on the next.
+        backups, search = (
+            'a[href="/backups"]',
+            'input[placeholder="Search sites, instances, notes"]',
         )
-        chrome.click(advisories)
-        chrome.wait(f"!!document.querySelector({json.dumps(search)})", desc="Advisories open")
+        chrome.click(backups)
+        chrome.wait(
+            f"!!document.querySelector({json.dumps(search)})"
+            " && [...document.querySelectorAll('.text-2xl')].length >= 4"
+            " && [...document.querySelectorAll('.text-2xl')].every((e) => e.textContent.trim() !== '…')",
+            timeout=10,
+            desc="Backups open with the store snapshot in",
+        )
         field = chrome.stable_point(search)
         chrome.click('a[href="/sites"]')
         chrome.wait(
@@ -526,7 +535,7 @@ def test_a_press_during_a_transition_reaches_the_live_page(chrome, ui):
             timeout=10,
             desc="Sites open again",
         )
-        _press_mid_transition(chrome, advisories, field, "cross-fade onto a text field")
+        _press_mid_transition(chrome, backups, field, "cross-fade onto a text field")
         chrome.wait(
             f"document.activeElement === document.querySelector({json.dumps(search)})",
             timeout=10,
