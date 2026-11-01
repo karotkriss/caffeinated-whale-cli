@@ -34,10 +34,10 @@ const tick = () => new Promise((r) => setTimeout(r, 0))
 class Ev {
   constructor(type, init = {}) {
     Object.assign(this, init)
-    Object.assign(this, { type, isTrusted: false, stopped: false, prevented: false })
+    Object.assign(this, { type, isTrusted: false, stopped: false, defaultPrevented: false })
   }
   stopImmediatePropagation() { this.stopped = true }
-  preventDefault() { this.prevented = true }
+  preventDefault() { this.defaultPrevented = true }
 }
 const listeners = []
 const frames = []
@@ -50,9 +50,16 @@ const win = {
   },
   requestAnimationFrame: (fn) => frames.push(fn),
 }
-const element = (name) => ({
-  dispatchEvent: (e) => log.push(`${name}:${e.type}:${e.isTrusted ? 'native' : 'handed'}:${e.clientX},${e.clientY}`),
-})
+// `focusable` marks an element that is (or sits in) a field a press focuses.
+const element = (name) => {
+  const el = {
+    focusable: false,
+    dispatchEvent: (e) => log.push(`${name}:${e.type}:${e.isTrusted ? 'native' : 'handed'}:${e.clientX},${e.clientY}`),
+    closest: () => (el.focusable ? el : null),
+    focus: () => log.push(`${name}:focus`),
+  }
+  return el
+}
 const oldPage = element('old'), newPage = element('new')
 let under = oldPage
 const doc = { defaultView: win, documentElement: element('html'), elementFromPoint: () => under }
@@ -103,7 +110,7 @@ const openDuring = dialog.open
 update(); await tick()
 log.push('new page in')
 frame(); end(); await tick()
-const out = { openDuring, stopped: events.map((e) => e.stopped), prevented: events.map((e) => e.prevented) }
+const out = { openDuring, stopped: events.map((e) => e.stopped), prevented: events.map((e) => e.defaultPrevented) }
 """
     )
     # Nothing reached the page: the dialog stayed open. The transition was skipped at the
@@ -194,3 +201,29 @@ const out = { listeners: listeners.length }
     )
     assert got["log"] == ["skip", *HANDED[:2], "page:pointerdown"]
     assert got["listeners"] == 0
+
+
+def test_a_handed_press_on_a_field_focuses_it_as_a_native_press_would():
+    got = _node(
+        """
+newPage.focusable = true
+GESTURE.forEach((type) => press(type))
+update(); await tick(); frame()
+const out = {}
+"""
+    )
+    assert got["log"] == ["skip", *HANDED[:2], "new:focus", *HANDED[2:]]
+
+
+def test_a_handed_press_whose_mousedown_the_page_cancels_moves_no_focus():
+    got = _node(
+        """
+newPage.focusable = true
+const dispatch = newPage.dispatchEvent
+newPage.dispatchEvent = (e) => { if (e.type === 'mousedown') e.preventDefault(); dispatch(e) }
+GESTURE.forEach((type) => press(type))
+update(); await tick(); frame()
+const out = {}
+"""
+    )
+    assert "new:focus" not in got["log"] and got["log"][-1] == HANDED[-1]

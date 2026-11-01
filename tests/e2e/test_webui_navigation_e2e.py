@@ -511,6 +511,29 @@ def test_a_press_during_a_transition_reaches_the_live_page(chrome, ui):
             timeout=10,
             desc="the press made mid cross-fade to open Sites",
         )
+        # A press mid cross-fade on a text field of the page being opened leaves it focused
+        # and ready to type, as a native press would.
+        advisories, search = (
+            'a[href="/advisories"]',
+            'input[placeholder="Search ids, titles, text"]',
+        )
+        chrome.click(advisories)
+        chrome.wait(f"!!document.querySelector({json.dumps(search)})", desc="Advisories open")
+        field = chrome.stable_point(search)
+        chrome.click('a[href="/sites"]')
+        chrome.wait(
+            "location.pathname === '/sites' && !document.activeViewTransition",
+            timeout=10,
+            desc="Sites open again",
+        )
+        _press_mid_transition(chrome, advisories, field, "cross-fade onto a text field")
+        chrome.wait(
+            f"document.activeElement === document.querySelector({json.dumps(search)})",
+            timeout=10,
+            desc="the field pressed mid cross-fade to have focus",
+        )
+        chrome.send("Input.insertText", {"text": "cw"}, page=True)
+        assert chrome.eval(f"document.querySelector({json.dumps(search)}).value") == "cw"
         # A press inside the open Appearance dialog while the scheme wipe runs.
         light = '[aria-label="Colour scheme"] [role=radio]:nth-of-type(1)'
         dark = '[aria-label="Colour scheme"] [role=radio]:nth-of-type(2)'
