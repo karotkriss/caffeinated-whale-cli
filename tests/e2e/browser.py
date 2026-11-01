@@ -195,16 +195,6 @@ class Chrome:
     def navigate(self, url: str) -> None:
         self.send("Page.navigate", {"url": url}, page=True)
 
-    def screenshot(self, path: Path, *, clip: dict | None = None) -> None:
-        """Save a PNG of the viewport, or of ``clip`` (``{x, y, width, height}``) only."""
-        import base64
-
-        params: dict = {"format": "png"}
-        if clip:
-            params["clip"] = {**clip, "scale": 1}
-        data = self.send("Page.captureScreenshot", params, page=True)["data"]
-        path.write_bytes(base64.b64decode(data))
-
     def close(self) -> None:
         try:
             self.send("Browser.close", timeout=5)
