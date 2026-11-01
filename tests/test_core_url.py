@@ -343,17 +343,17 @@ class TestInternalPort:
 
         result = core_url.probe_url("proj")
 
-        assert result.data.url == "http://site.example.com:21000"
+        assert result.data.url == "http://site.example.com:8000"
         assert result.data.internal_port is True
         assert result.data.webserver_port_in == ["sites/common_site_config.json"]
+        # Only the key's removal and the restart: nothing else is written.
         assert [s.command for s in result.data.fix] == [
             "cwcli run proj config remove-common-config webserver_port",
             "cwcli stop proj --bench 0",
             "cwcli start proj --bench 0",
-            "cwcli run proj --site site.example.com set-config host_name https://site.example.com",
         ]
         warning = next(w for w in result.warnings if w.code == "url.internal_port")
-        assert "http://site.example.com:21000" in warning.text
+        assert "http://site.example.com:8000" in warning.text
         assert warning.detail["fix"][0]["command"] == result.data.fix[0].command
 
     def test_a_key_in_the_sites_own_config_is_removed_with_frappes_set_config(
@@ -370,7 +370,7 @@ class TestInternalPort:
 
         result = core_url.probe_url("proj")
 
-        assert result.data.url == "http://site.example.com:21000"
+        assert result.data.url == "http://site.example.com:8000"
         assert result.data.webserver_port_in == ["sites/site.example.com/site_config.json"]
         commands = [s.command for s in result.data.fix]
         assert (
@@ -394,10 +394,28 @@ class TestInternalPort:
         assert result.data.fix == []
         assert not any(w.code == "url.internal_port" for w in result.warnings)
 
-    def test_host_name_is_the_address_and_carries_no_warning(self, monkeypatch, wire):
+    def test_host_name_gets_the_key_appended_and_is_flagged(self, monkeypatch, wire):
         _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
         c = UrlFakeContainer(
             configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            site_configs={"site.example.com": {"host_name": "https://site.example.com"}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        # Frappe's get_url appends the port to a host_name that names none.
+        assert result.data.url == "https://site.example.com:8000"
+        assert result.data.source == "host_name"
+        assert result.data.internal_port is True
+        assert any(w.code == "url.internal_port" for w in result.warnings)
+
+    def test_host_name_is_the_address_and_carries_no_warning(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}},
             site_configs={"site.example.com": {"host_name": "https://site.example.com"}},
             ports=_default_ports(),
             web_code="200",

@@ -585,3 +585,12 @@ def test_a_hostname_without_the_key_opens_by_name_and_no_warning(run):
 
     assert out["asked"] is False
     assert _opened(out) == ["http://site.example.com"]
+
+
+def test_a_host_name_with_the_appended_port_asks_before_opening(run):
+    probe = {**INTERNAL, "url": "https://site.example.com:8000", "source": "host_name"}
+
+    out = _open(run, probe, answer=True)
+
+    assert out["asked"] is True
+    assert _opened(out) == ["https://site.example.com:8000"]

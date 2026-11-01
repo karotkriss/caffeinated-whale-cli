@@ -1336,12 +1336,12 @@ def axi_url(
     one-shot probe. Only the human ``cwcli status --watch`` path suppresses HTTP
     probing.
 
-    The address is built the way Frappe builds it: the site's ``host_name``, else the
-    site name with the bench's published port while ``webserver_port`` is set, else
-    the bare site name (a ``*.localhost`` site always keeps the published port).
-    ``source`` says which. When the port is there only because ``webserver_port`` is
-    set on a name that is not a localhost one, ``internal_port`` is true and a
-    warning plus ``fix`` name the commands that remove the key.
+    The address is built the way Frappe's ``get_url`` builds it: the site's
+    ``host_name``, else the site name, with ``webserver_port`` appended while it is set
+    (a ``*.localhost`` address is opened on its published host port). ``source`` says
+    which. When Frappe appends ``webserver_port`` to a name that is not a localhost
+    one, ``internal_port`` is true and a warning plus ``fix`` name the commands that
+    remove the key.
 
     A stopped project is a usage error naming ``cwcli start`` (exit 2, no ``--yes``
     on this verb); a multi-bench project with no ``--bench`` is a usage error naming

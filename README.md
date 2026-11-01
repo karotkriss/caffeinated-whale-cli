@@ -2354,21 +2354,24 @@ Everything recovers by itself once Docker answers again, with no daemon restart.
 
 #### Site addresses
 
-The site page's **Open site** opens the address Frappe itself builds for the site, the way Frappe's own `bench browse` does (`frappe.utils.get_site_url`).
+The site page's **Open site** opens the address Frappe itself builds for the site, with the same rule as `frappe.utils.get_url`, which also builds the site's OAuth and SSO redirect URLs.
 The `cwcli open` and `cwcli init` banners and `cwcli axi url` print the same address.
-cwcli builds it in this order:
+cwcli reads the site's config merged with the bench's (`sites/<site>/site_config.json` overrides `sites/common_site_config.json`) and builds the address in two steps:
 
-1. The site's `host_name`, from `sites/<site>/site_config.json` (or bench-wide from `sites/common_site_config.json`, which a site's own config overrides), used as written. cwcli adds `http://` when it names no scheme, as Frappe does, and never adds a port.
-2. Otherwise, while `webserver_port` is set in `sites/common_site_config.json` or in the site's own config, the site name with the bench's port, for example `http://dev.localhost:8000`. The port is the host port Docker publishes for the bench's web server, so an instance created with `--port 21000` shows its first bench on `21000`.
-3. Otherwise the site name with no port, for example `http://site.example.com`. Without `webserver_port`, Frappe builds the site's URLs the same way.
+1. The start of the address is the site's `host_name` (or `hostname`), used as written. Without one, it is the site name, with `https://` when `ssl_certificate` is set and `http://` otherwise. cwcli adds `http://` when `host_name` names no scheme, as Frappe does.
+2. When that start names no port and neither `restart_supervisor_on_update` nor `restart_systemd_on_update` is set, Frappe adds `:<http_port>`, or `:<webserver_port>` when `http_port` is not set. For example, a site named `site.example.com` on a bench with `webserver_port: 8000` gets `http://site.example.com:8000`, and without either key it gets `http://site.example.com`.
 
-A `localhost` or `*.localhost` site always keeps the published port, with or without `webserver_port`, because on the host it is reachable only through that port.
+A `localhost` or `*.localhost` address always opens through the port Docker publishes for it, because the host reaches it only that way.
+cwcli replaces its port, which is a port inside the container, with the published host port, and gives an address with no port the published port of the bench's web server.
+For example, an instance created with `--port 21000` opens `http://dev.localhost:8000` as `http://dev.localhost:21000`.
 
 `webserver_port` is optional.
 On a bench that serves its sites by hostname through a reverse proxy, administrators remove it: it is the only way to stop Frappe from adding the bench's internal port to the URLs it builds, such as the OAuth and SSO redirect URLs that go into an identity provider.
-Without the key, cwcli reads the port the bench's web process listens on from the `web:` line of the bench's Procfile (`bench serve --port 8000`; a `bench serve` with no `--port` listens on 8000), so Open site, `status`, `start`, process restarts, `scale` and publishing keep working.
+Without the key, cwcli reads the port the bench's web process listens on from the `web:` line of the bench's Procfile (`bench serve --port 8000`), so Open site, `status`, `start`, process restarts, `scale` and publishing keep working.
+A `bench serve` with no `--port` listens on 8000.
+cwcli uses 8000 for such a bench only while no process outside that bench listens on it; on a multi-bench instance where a sibling bench holds 8000, cwcli reports the port as unknown instead of measuring the sibling.
 
-When `webserver_port` is set and the site's name is not `localhost` or `*.localhost`, the address includes the bench's port.
+When Frappe adds `webserver_port` to an address whose name is not `localhost` or `*.localhost`, the address includes the bench's port.
 That is what Frappe reports for the site, so cwcli keeps the port, but the web UI asks before it opens the address.
 The warning's "Is ... not the right address?" question lists the commands that remove the key and restart the bench's processes, for example:
 
@@ -2377,7 +2380,6 @@ cwcli run my-project config remove-common-config webserver_port   # bench's own 
 cwcli run my-project --site site.example.com set-config webserver_port None   # when the site's config sets it
 cwcli stop my-project --bench 0
 cwcli start my-project --bench 0
-cwcli run my-project --site site.example.com set-config host_name https://site.example.com   # optional, for HTTPS
 ```
 
 After the change, copy any OAuth or SSO redirect URL from Frappe again, because URLs made while the key was set include the port.
@@ -3148,8 +3150,8 @@ cwcli axi doctor
 
 `cwcli axi url <project>` answers two questions no other `axi` verb does: what address a site is opened at, and whether its bench is answering HTTP for it right now.
 `cwcli axi status`'s `web_http_code` is measured against the bench's CONTAINER-internal port and never states that address.
-The address is built the way the web UI's Open site builds it (see [Site addresses](#site-addresses)): the site's `host_name`, else the site name with the bench's published host port while `webserver_port` is set, else the site name with no port; a `localhost`/`*.localhost` site always keeps the published port. `source` says whether the address came from `host_name` or from the site name.
-When the port is in the address only because `webserver_port` is set on a site whose name is not a localhost one, the document carries `internal_port: true`, `webserver_port_in` (which config files set the key), a `url.internal_port` warning, and `fix`, the commands that remove the key and restart the bench's processes.
+The address is built the way the web UI's Open site builds it (see [Site addresses](#site-addresses)): the site's `host_name`, else the site name, with `webserver_port` added the way Frappe's `get_url` adds it; a `localhost`/`*.localhost` address opens on its published host port. `source` says whether the address came from `host_name` or from the site name.
+When Frappe adds `webserver_port` to an address whose name is not a localhost one, the document carries `internal_port: true`, `webserver_port_in` (which config files set the key), a `url.internal_port` warning, and `fix`, the commands that remove the key and restart the bench's processes.
 The probe is a fresh `curl` run **every invocation**, inside the container against the bench's own web port (`webserver_port`, else the port the Procfile's `web:` line binds), with the site as the `Host` header.
 `cwcli axi status` also performs a fresh one-shot probe; only the human `cwcli status --watch` path suppresses HTTP probing.
 Like other single-bench verbs such as `cwcli axi logs`, a stopped project is a usage error naming `cwcli start` (exit 2, no `--yes`) and an ambiguous multi-bench project with no `--bench` is a usage error naming it.

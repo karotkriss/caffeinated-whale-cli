@@ -116,14 +116,32 @@ def test_open_site_status_and_web_restart_work_without_webserver_port(running_in
 def test_the_sites_host_name_is_its_address(running_instance):
     inst = running_instance
     _ensure_serving(inst.name)
+    port = _common_config(inst)["webserver_port"]
+    published = _docker_port(harness.frappe_container_id(inst.name), int(port))
 
     with _host_name(inst, "https://site.example.com"):
+        # Frappe's get_url appends webserver_port to a host_name that names no port,
+        # so the address keeps it and is flagged, with the steps that remove the key.
         fields, out = _axi_url(inst)
-        assert fields["url"] == "https://site.example.com", out
+        assert fields["url"] == f"https://site.example.com:{port}", out
         assert fields["source"] == "host_name", out
-        assert fields["internal_port"] == "false", out
+        assert fields["internal_port"] == "true", out
+        assert "remove-common-config webserver_port" in out, out
         # The bench itself is still probed on its own port, for the site's Host.
         assert fields["http_code"] == "200", out
+
+        with _without_webserver_port(inst):
+            fields, out = _axi_url(inst)
+            assert fields["url"] == "https://site.example.com", out
+            assert fields["internal_port"] == "false", out
+
+    # A localhost host_name opens on the port Docker publishes, never the
+    # container port it names.
+    with _host_name(inst, f"http://{inst.site}:{port}"):
+        fields, out = _axi_url(inst)
+        assert fields["url"] == f"http://{inst.site}:{published}", out
+        assert fields["source"] == "host_name", out
+        assert fields["internal_port"] == "false", out
 
     fields, out = _axi_url(inst)
     assert fields["source"] == "site", out

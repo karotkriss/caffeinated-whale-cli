@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from docker.errors import APIError, NotFound
 
@@ -518,6 +519,41 @@ _WEB_LINE_RE = re.compile(r"^[ \t]*web[ \t]*:(.*)$", re.MULTILINE)
 _PORT_FLAG_RE = re.compile(r"--port[=\s]+(\d+)")
 _BIND_FLAG_RE = re.compile(r"(?:--bind|-b)[=\s]+\S*:(\d+)")
 
+# Exit 0 when every listener on the port belongs to a process running in the bench (or
+# nothing listens yet); 1 when any listener is held by another process, or by one
+# whose ownership cannot be read.
+_FOREIGN_LISTENER_SCRIPT = r"""
+import os
+import sys
+
+port = int(sys.argv[1])
+bench = os.path.realpath(sys.argv[2])
+listeners = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        with open(table, encoding="ascii") as rows:
+            next(rows)
+            for row in rows:
+                fields = row.split()
+                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                    listeners.add(f"socket:[{fields[9]}]")
+    except OSError:
+        pass
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        cwd = os.path.realpath(f"/proc/{pid}/cwd")
+        if os.path.commonpath((cwd, bench)) != bench:
+            continue
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                listeners.discard(os.readlink(f"/proc/{pid}/fd/{fd}"))
+            except OSError:
+                pass
+    except (OSError, ValueError):
+        continue
+raise SystemExit(1 if listeners else 0)
+""".strip()
+
 
 def _read_json_file(container, path: str) -> dict | None:
     """A JSON object file read inside the container, or None if unreadable or not one."""
@@ -542,7 +578,9 @@ def _procfile_web_port(container, bench_path: str) -> int | None:
     ``web:`` line. bench writes ``bench serve --port <webserver_port>`` there at init,
     so the line still names the bench's port after an administrator removes the key.
     A line written without the key names no port, and ``bench serve`` and gunicorn
-    then bind their own default, 8000.
+    then bind their own default, 8000 - which a sibling bench may already hold, so
+    8000 is accepted only while no process outside this bench listens on it
+    (:func:`_no_foreign_listener`); otherwise the port is unknown.
     """
     exit_code, output = container.exec_run(["cat", f"{bench_path.rstrip('/')}/Procfile"])
     if exit_code != 0:
@@ -555,8 +593,24 @@ def _procfile_web_port(container, bench_path: str) -> int | None:
     if named is not None:
         return int(named.group(1))
     if any(server in command for server in ("bench serve", "frappe serve", "gunicorn")):
-        return WEB_CONTAINER_BASE
+        if _no_foreign_listener(container, bench_path, WEB_CONTAINER_BASE):
+            return WEB_CONTAINER_BASE
     return None
+
+
+def _no_foreign_listener(container, bench_path: str, port: int) -> bool:
+    """Whether ``port`` is free of listeners held by processes outside this bench.
+
+    A bench whose web line names no port binds 8000, but on a multi-bench instance a
+    sibling bench may already hold it; probing 8000 then measures that sibling. True
+    when this bench's own process holds the listener or nothing listens yet (a probe
+    then honestly finds nothing); False when another process holds it or its owner
+    cannot be read.
+    """
+    exit_code, _output = container.exec_run(
+        ["python3", "-c", _FOREIGN_LISTENER_SCRIPT, str(port), bench_path.rstrip("/")]
+    )
+    return bool(exit_code == 0)
 
 
 def _web_port_value(container, bench_path: str, config: dict):
@@ -584,7 +638,8 @@ def resolve_web_ports(container, bench_paths: list[str]) -> dict[str, int]:
     1. ``webserver_port`` in the bench's ``sites/common_site_config.json`` - the port
        bench's ``make_ports`` assigned and wrote there.
     2. The port the bench's Procfile ``web:`` line binds (see
-       :func:`_procfile_web_port`). An administrator may remove ``webserver_port``
+       :func:`_procfile_web_port`); a line naming no port binds 8000, accepted only
+       while no process outside this bench listens there. An administrator may remove ``webserver_port``
        on purpose: it is the only way to stop Frappe appending the internal port to
        the URLs it builds (``frappe.utils.get_url``) on a bench served by its
        hostname through a reverse proxy, and such a bench runs fully without it.
@@ -662,15 +717,15 @@ def _is_localhost(host: str) -> bool:
 class SiteAddress:
     """The address a person opens to reach a site, and where it came from.
 
-    ``url`` is None only when the address needs the bench's port and no host binding
-    publishes it. ``source`` is ``host_name`` (the site's own declared address) or
-    ``site`` (the site's name). ``internal_port`` is True when the url carries the
-    bench's web port only because ``webserver_port`` is set while the name is not a
-    localhost one - what Frappe reports, but an address that fails when the site is
-    served by its hostname through a reverse proxy. ``webserver_port_in`` names the
-    bench-relative config files that set ``webserver_port``. ``web_port`` is the
-    bench's CONTAINER web port (:func:`resolve_web_ports`'s answer, read in the same
-    pass), where a probe of the site goes; None when it cannot be determined.
+    ``url`` is None only when a localhost address needs a host port and no host
+    binding publishes it. ``source`` is ``host_name`` (the site's own declared address)
+    or ``site`` (the site's name). ``internal_port`` is True when Frappe appended the
+    bench's ``webserver_port`` to an address whose name is not a localhost one - what
+    Frappe reports, but an address that fails when the site is served by its hostname
+    through a reverse proxy. ``webserver_port_in`` names the bench-relative config
+    files that set ``webserver_port``. ``web_port`` is the bench's CONTAINER web port
+    (:func:`resolve_web_ports`'s answer, read in the same pass), where a probe of the
+    site goes; None when it cannot be determined.
     """
 
     url: str | None
@@ -680,29 +735,42 @@ class SiteAddress:
     web_port: int | None
 
 
+def _site_protocol(conf: dict, site: str) -> str:
+    """``https://`` when Frappe would serve ``site`` over TLS, as ``get_url`` decides it."""
+    if conf.get("ssl_certificate"):
+        return "https://"
+    wildcard = conf.get("wildcard")
+    if isinstance(wildcard, dict):
+        domain = wildcard.get("domain")
+        if domain and site.endswith(domain) and wildcard.get("ssl_certificate"):
+            return "https://"
+    return "http://"
+
+
 def resolve_site_address(container, bench_path: str, *, site: str | None) -> SiteAddress:
     """The address a person opens to reach ``site``, built the way Frappe builds it.
 
-    Frappe's own ``bench browse`` opens ``frappe.utils.get_site_url(site)``: the site's
-    ``host_name`` when set, else ``http://<site>:<webserver_port>``. Read from the
-    site's merged config (``sites/common_site_config.json`` overridden by
-    ``sites/<site>/site_config.json``, Frappe's merge order), the order here is:
+    Frappe's ``frappe.utils.get_url`` (behind ``bench browse`` and every URL Frappe
+    builds, OAuth/SSO redirect URLs included), read from the site's merged config
+    (``sites/common_site_config.json`` overridden by ``sites/<site>/site_config.json``):
 
-    1. ``host_name`` - the site's own address, used as written (``http://`` added
-       when it names no scheme, as ``frappe.utils.get_url`` does). Nothing is
-       appended to it.
-    2. The site name, with the bench's port when ``webserver_port`` is set. The port
-       is never stripped then: the address is what Frappe reports for the site, and
-       removing the key is the administrator's fix (see ``internal_port``).
-    3. The site name with no port when the key is absent and the name is not a
-       localhost one: Frappe builds the site's URLs the same way, because such a
-       bench is served by its hostname, for example through a reverse proxy.
+    1. The base is ``host_name`` (or ``hostname``), else the site name with
+       ``https://`` when ``ssl_certificate`` (or a matching ``wildcard``) is set and
+       ``http://`` otherwise, else ``http://localhost`` when there is no site.
+       ``http://`` is added to a base that names no scheme.
+    2. When the base names no port and neither ``restart_supervisor_on_update`` nor
+       ``restart_systemd_on_update`` is set, ``:<http_port or webserver_port>`` is
+       appended when one is set. The port is never stripped: the address is what
+       Frappe reports, and removing ``webserver_port`` is the administrator's fix, so
+       an appended ``webserver_port`` on a name that is not a localhost one is
+       flagged ``internal_port``.
 
-    A ``localhost``/``*.localhost`` site (and ``localhost`` itself when there is no
-    site) always carries the port: on the host it is only reachable through the
-    instance's published port, key or no key. The port is the HOST port Docker
-    publishes for the bench's container web port (a ``--port 21000`` instance
-    publishes container 8001 as 21001) - never the container port itself.
+    A ``localhost``/``*.localhost`` address is always opened through the instance's
+    published port, because that is the only way the host reaches it: its port (a
+    CONTAINER port) is mapped to the HOST port Docker publishes for it, and an
+    address with no port gets the published port of the bench's web server (a
+    ``--port 21000`` instance publishes container 8001 as 21001). No binding is
+    ``url=None`` - never the container port itself.
     """
     bench = bench_path.rstrip("/")
     common = _common_site_config(container, bench)
@@ -717,7 +785,23 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
         files.append((f"sites/{site}/site_config.json", own))
     set_in = [name for name, config in files if config.get("webserver_port")]
 
-    def address(url: str | None, source: str = "site", internal_port: bool = False) -> SiteAddress:
+    declared = conf.get("host_name") or conf.get("hostname")
+    if declared:
+        url, source = str(declared), "host_name"
+    elif site:
+        url, source = _site_protocol(conf, site) + site, "site"
+    else:
+        url, source = "http://localhost", "site"
+    if not url.startswith(("http://", "https://")):
+        url = f"http://{url}"
+    appended = None
+    restarts = conf.get("restart_supervisor_on_update") or conf.get("restart_systemd_on_update")
+    if len(url.split(":")) <= 2 and not restarts:
+        appended = conf.get("http_port") or conf.get("webserver_port")
+        if appended:
+            url = f"{url}:{appended}"
+
+    def address(url: str | None, internal_port: bool = False) -> SiteAddress:
         return SiteAddress(
             url=url,
             source=source,
@@ -726,21 +810,18 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
             web_port=web_port,
         )
 
-    host_name = conf.get("host_name")
-    if host_name:
-        url = str(host_name)
-        return address(
-            url if url.startswith(("http://", "https://")) else f"http://{url}", "host_name"
-        )
-
-    name = site or "localhost"
-    local = _is_localhost(name)
-    if not local and not conf.get("webserver_port"):
-        return address(f"http://{name}")
-    host_port = published_host_port(container, web_port) if web_port is not None else None
+    parts = urlsplit(url)
+    if not _is_localhost(parts.hostname or ""):
+        return address(url, internal_port=bool(appended) and not conf.get("http_port"))
+    try:
+        container_port = parts.port or web_port
+    except ValueError:
+        container_port = None
+    host_port = published_host_port(container, container_port) if container_port else None
     if host_port is None:
         return address(None)
-    return address(f"http://{name}:{host_port}", internal_port=not local)
+    netloc = parts.netloc.rsplit(":", 1)[0] if parts.port else parts.netloc
+    return address(urlunsplit(parts._replace(netloc=f"{netloc}:{host_port}")))
 
 
 def resolve_host_ports(container, bench_path: str) -> tuple[int, int] | None:

@@ -266,7 +266,8 @@ are now the whole point. Each note below guards a real bug.
   retained-but-unreachable prompt is how the refusal comes back. `status` is therefore non-prompting on EVERY
   path, which satisfies the both-modes standard trivially. **Each bench is probed on its OWN port**, read from
   its `sites/common_site_config.json` or, without `webserver_port`, its Procfile's `web:` line
-  (`resolvers.resolve_web_ports`) and passed
+  (`resolvers.resolve_web_ports`; a bare `bench serve` line means 8000, accepted only while no process outside
+  the bench listens there, so a sibling bench's listener is never probed in its place) and passed
   explicitly to `supervision.web_http_code(container, port=..., site=...)`; the probe used to hardcode `localhost:8000`,
   so a healthy bench 1 read `degraded` (F3) and a dead bench 1 reported bench 0's live code (F4). An unresolved
   port is `web_port: null`/`web_port_verified: false`, NO probe, a `status.web_port_unknown` warning, and

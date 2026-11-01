@@ -284,7 +284,8 @@ class _BenchFiles:
     JSON); any other path reads as missing, as ``cat`` reports it.
     """
 
-    def __init__(self, files, *, ports=None):
+    def __init__(self, files, *, ports=None, foreign_listener=False):
+        self.foreign_listener = foreign_listener
         self.files = {
             path: json.dumps(body) if isinstance(body, dict) else body
             for path, body in files.items()
@@ -300,13 +301,25 @@ class _BenchFiles:
         self.reads: list[str] = []
 
     def exec_run(self, cmd, **kwargs):
+        if cmd[0] == "python3":
+            # The /proc listener check for a bare web line's implicit 8000.
+            assert cmd[3:] == ["8000", B1], cmd
+            return (1 if self.foreign_listener else 0), b""
         assert cmd[0] == "cat", cmd
         self.reads.append(cmd[1])
         body = self.files.get(cmd[1])
         return (1, b"") if body is None else (0, body.encode())
 
 
-def _bench(common=None, *, procfile=_PROCFILE_8001, sites=None, bench=B1, ports=None):
+def _bench(
+    common=None,
+    *,
+    procfile=_PROCFILE_8001,
+    sites=None,
+    bench=B1,
+    ports=None,
+    foreign_listener=False,
+):
     """A bench's files: its common config, Procfile, and each site's own config."""
     files: dict = {}
     if common is not None:
@@ -315,7 +328,7 @@ def _bench(common=None, *, procfile=_PROCFILE_8001, sites=None, bench=B1, ports=
         files[f"{bench}/Procfile"] = procfile
     for site, config in (sites or {}).items():
         files[f"{bench}/sites/{site}/site_config.json"] = config
-    return _BenchFiles(files, ports=ports)
+    return _BenchFiles(files, ports=ports, foreign_listener=foreign_listener)
 
 
 class TestResolveWebPorts:
@@ -347,6 +360,12 @@ class TestResolveWebPorts:
         c = _bench({"socketio_port": 9001}, procfile=f"redis_cache: redis-server\n{web_line}\n")
         assert resolvers.resolve_web_ports(c, [B1]) == {B1: port}
 
+    def test_a_bare_web_line_never_borrows_a_sibling_benchs_8000(self):
+        # bench writes a bare `bench serve` when the key is absent; that bench cannot
+        # bind 8000 while bench 0 holds it, so 8000 would measure bench 0's server.
+        c = _bench({"socketio_port": 9001}, procfile="web: bench serve\n", foreign_listener=True)
+        assert resolvers.resolve_web_ports(c, [B1]) == {}
+
     def test_without_the_key_or_a_web_line_the_port_is_unknown_never_8000(self):
         c = _bench({"socketio_port": 9001}, procfile="worker: bench worker\n")
         assert resolvers.resolve_web_ports(c, [B1]) == {}
@@ -370,10 +389,10 @@ class TestResolveWebPorts:
 class TestResolveSiteAddress:
     """The address a person opens to reach a site, built the way Frappe builds it.
 
-    Frappe's own ``bench browse`` opens ``frappe.utils.get_site_url``: the site's
-    host_name, else ``http://<site>:<webserver_port>``. cwcli maps that port to the
-    HOST port Docker publishes, keeps it whenever the key is set, and keeps it on a
-    localhost site key or no key, because that site is only reachable through it.
+    Frappe's ``frappe.utils.get_url``: host_name, else the site name, with
+    ``:<http_port or webserver_port>`` appended when the address names no port and
+    no restart-on-update key is set. A localhost address is opened on the HOST port
+    Docker publishes, key or no key, because that is the only way the host reaches it.
     """
 
     KEY = {"webserver_port": 8001, "socketio_port": 9001}
@@ -407,8 +426,8 @@ class TestResolveSiteAddress:
 
     def test_a_hostname_keeps_the_port_while_the_key_is_set_and_says_so(self):
         a = self._address(self.KEY, "site.example.com")
-        # Never stripped: it is what Frappe reports for the site.
-        assert a.url == "http://site.example.com:21001"
+        # Never stripped or rewritten: it is exactly what Frappe reports for the site.
+        assert a.url == "http://site.example.com:8001"
         assert a.internal_port is True
         assert a.webserver_port_in == ["sites/common_site_config.json"]
 
@@ -418,7 +437,7 @@ class TestResolveSiteAddress:
             "site.example.com",
             sites={"site.example.com": {"webserver_port": 8001}},
         )
-        assert a.url == "http://site.example.com:21001"
+        assert a.url == "http://site.example.com:8001"
         assert a.internal_port is True
         assert a.webserver_port_in == ["sites/site.example.com/site_config.json"]
 
@@ -428,14 +447,69 @@ class TestResolveSiteAddress:
         assert a.url == "http://site.example.com"
         assert a.internal_port is False
 
-    def test_host_name_is_the_sites_address_as_written(self):
+    def test_host_name_without_the_key_is_the_sites_address_as_written(self):
         a = self._address(
-            self.KEY,
+            self.NO_KEY,
             "site.example.com",
             sites={"site.example.com": {"host_name": "https://site.example.com"}},
         )
         assert a.url == "https://site.example.com"
         assert (a.source, a.internal_port) == ("host_name", False)
+
+    def test_frappe_appends_the_key_to_a_host_name_that_names_no_port(self):
+        a = self._address(
+            self.KEY,
+            "site.example.com",
+            sites={"site.example.com": {"host_name": "https://site.example.com"}},
+        )
+        # Every URL Frappe builds for this site, OAuth redirects included, carries it.
+        assert a.url == "https://site.example.com:8001"
+        assert (a.source, a.internal_port) == ("host_name", True)
+
+    def test_a_host_name_that_names_its_port_is_used_as_written(self):
+        a = self._address(
+            self.KEY,
+            "site.example.com",
+            sites={"site.example.com": {"host_name": "https://site.example.com:8443"}},
+        )
+        assert a.url == "https://site.example.com:8443"
+        assert a.internal_port is False
+
+    @pytest.mark.parametrize("key", ["restart_supervisor_on_update", "restart_systemd_on_update"])
+    def test_a_production_bench_gets_no_port_appended(self, key):
+        a = self._address({**self.KEY, key: 1}, "site.example.com")
+        assert a.url == "http://site.example.com"
+        assert a.internal_port is False
+
+    def test_http_port_wins_over_the_key_and_is_not_the_internal_port(self):
+        a = self._address({**self.KEY, "http_port": 8080}, "site.example.com")
+        assert a.url == "http://site.example.com:8080"
+        assert a.internal_port is False
+
+    def test_hostname_is_read_when_host_name_is_absent(self):
+        a = self._address({**self.NO_KEY, "hostname": "erp.example.com"}, "site.example.com")
+        assert (a.url, a.source) == ("http://erp.example.com", "host_name")
+
+    def test_an_ssl_certificate_makes_the_site_name_https(self):
+        a = self._address({**self.NO_KEY, "ssl_certificate": "/c.pem"}, "site.example.com")
+        assert a.url == "https://site.example.com"
+
+    def test_a_localhost_host_name_opens_on_the_published_port_not_the_container_port(self):
+        a = self._address(
+            self.KEY,
+            "dev.localhost",
+            sites={"dev.localhost": {"host_name": "http://dev.localhost:8001"}},
+        )
+        assert a.url == "http://dev.localhost:21001"
+        assert (a.source, a.internal_port) == ("host_name", False)
+
+    def test_a_localhost_host_name_without_a_port_gets_the_webs_published_port(self):
+        a = self._address(
+            {**self.NO_KEY, "restart_supervisor_on_update": 1},
+            "dev.localhost",
+            sites={"dev.localhost": {"host_name": "http://dev.localhost"}},
+        )
+        assert a.url == "http://dev.localhost:21001"
 
     def test_host_name_without_a_scheme_gets_http_as_frappe_adds_it(self):
         a = self._address(
@@ -446,7 +520,7 @@ class TestResolveSiteAddress:
         assert a.url == "http://erp.example.com"
 
     def test_the_sites_config_overrides_the_common_host_name(self):
-        common = {**self.KEY, "host_name": "https://bench.example.com"}
+        common = {**self.NO_KEY, "host_name": "https://bench.example.com"}
         shared = self._address(common, "one.example.com")
         own = self._address(
             common,

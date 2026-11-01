@@ -50,9 +50,9 @@ const more = computed(() => [
   dangerGroup(['site.remove'], ctx.value),
 ])
 
-// The address is built the way Frappe builds it (the site's host_name, else its name
-// with the bench's published port while webserver_port is set), asked of the daemon
-// fresh: never a guessed :8000.
+// The address is built the way Frappe's get_url builds it (the site's host_name, else
+// its name, with webserver_port appended while it is set; a localhost address on its
+// published port), asked of the daemon fresh: never a guessed :8000.
 const probe = ref({ loading: false, data: null, error: null })
 async function checkUrl() {
   if (!running.value) return

@@ -12,8 +12,8 @@ orchestration over already-tested primitives, reused rather than re-derived (the
 never re-implement):
 
 - :func:`resolvers.resolve_site_address` for the address, built the way Frappe's
-  own ``bench browse`` builds it (the site's ``host_name``, else the site name with
-  the bench's port while ``webserver_port`` is set), with that port mapped to the
+  ``frappe.utils.get_url`` builds it (the site's ``host_name``, else its name, with
+  ``webserver_port`` appended while it is set), a localhost address mapped to the
   HOST port Docker publishes - and, from the same read, the bench's container web
   port (``webserver_port``, else the port its Procfile ``web:`` line binds; see
   :func:`resolvers.resolve_web_ports`).
@@ -23,8 +23,8 @@ never re-implement):
   answered 404 by a healthy bench). It is called directly here, never through
   ``core.status``, so the read is fresh on every invocation.
 
-When the address carries the bench's port only because ``webserver_port`` is set on
-a site whose name is not a localhost one, it is still returned unchanged - it is
+When Frappe appends the bench's ``webserver_port`` to an address whose name is not a
+localhost one, it is still returned unchanged - it is
 what Frappe itself reports for that site - but flagged ``internal_port`` with a
 ``url.internal_port`` warning and the steps that remove the key, because behind a
 reverse proxy that port is internal and the address fails. Fixing that is the
@@ -218,13 +218,6 @@ def _fix_steps(
             command=f"cwcli stop {project}{selector}",
         ),
         FixStep(step="Start them again", command=f"cwcli start {project}{selector}"),
-        FixStep(
-            step=(
-                f"Optionally, if {site} is served over HTTPS, record its address so "
-                "Frappe and cwcli use it"
-            ),
-            command=f"cwcli run {project}{flag} --site {site} set-config host_name https://{site}",
-        ),
     ]
     return steps
 
