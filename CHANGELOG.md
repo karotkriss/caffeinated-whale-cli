@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-11-01
+
+### Added
+
+- **`apps install` checks an app's Frappe range and required apps before it lands** - it reads the app's `[tool.bench.frappe-dependencies]` range and `required_apps` at the exact ref that will be installed, before anything reaches the instance.
+  - A Frappe range that does not fit the bench refuses the install with nothing fetched and names the `version-N` branch to pick; `--ignore-frappe-range` installs anyway.
+  - A missing required app is shown as an ordered plan and fetched and installed first only with consent: a terminal asks once, `--with-deps` answers yes for a script, and a script without it refuses and names the flag. Required apps come only from the apps catalog, and `--dep-source APP=URL` picks among several catalog repositories with the same name.
+  - `new-site`, `new-bench`, `axi apps install` and the web UI Install sheet, New site and New bench run the same check, and the web UI shows the plan live as you pick apps.
+- **Every `apps update` checks its new code's required apps and Frappe range** - an update whose new code needs an app the bench or a site lacks refuses with nothing pulled, and `--with-deps` installs those apps first. `--no-preflight` skips the check; the data-loss guard still runs.
+
+### Changed
+
+- **Site addresses follow Frappe's own rule** - Open site in the web UI, the `cwcli open` and `cwcli init` banners and `cwcli axi url` build the address the way Frappe does: the site's `host_name`, else the site name, with Frappe's `webserver_port` added when it applies. A `localhost` address still opens through the port Docker publishes.
+  - When the address carries the bench's internal port on a name that is not a localhost one, the web UI warns before opening it and lists the commands that remove `webserver_port`; `cwcli axi url` reports it as `internal_port: true`.
+
+### Fixed
+
+- **Benches without `webserver_port` work again** - Open site, web process restarts, `status`, `start`, `scale` and publishing failed or reported the bench as not serving when `sites/common_site_config.json` had no `webserver_port`, as on a bench served by its hostname through a reverse proxy. cwcli now reads the port from the bench's Procfile `web:` line when the key is absent.
+- **The web UI no longer flashes a blank page between pages** - navigation keeps the current page on screen until the next one has rendered, then cross-fades; with reduced motion or effects off the swap is instant.
+
 ## [3.6.0] - 2026-10-31
 
 ### Added
