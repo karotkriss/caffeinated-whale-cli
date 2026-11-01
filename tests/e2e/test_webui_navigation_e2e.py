@@ -48,10 +48,12 @@ _CHROME = os.environ.get("CWE2E_CHROME") or next(
 
 # Sampled on every animation frame: the first text in the content column and the opacity
 # it is painted at (its own and every ancestor's up to the column). A frame with no text,
-# or text under 0.9 opacity, is a frame the user sees as blank or fading.
+# or text under 0.9 opacity, is a frame the user sees as blank or fading. While a view
+# transition runs it also records the latest end time of the transition's own animations:
+# the browser delivers no pointer event to the page until they have all finished.
 _SAMPLER = """
 (() => {
-  const nav = (window.__nav = { on: false, frames: 0, bad: [] })
+  const nav = (window.__nav = { on: false, frames: 0, bad: [], vt: 0 })
   const column = () => document.querySelector('[data-slot="desktop-shell-content"]')
   const visible = () => {
     const root = column()
@@ -73,6 +75,12 @@ _SAMPLER = """
     if (nav.on) {
       nav.frames += 1
       if (!visible()) nav.bad.push(nav.frames)
+      if (document.activeViewTransition) {
+        for (const a of document.documentElement.getAnimations({ subtree: true })) {
+          if (a.effect?.pseudoElement?.startsWith('::view-transition'))
+            nav.vt = Math.max(nav.vt, a.effect.getComputedTiming().endTime)
+        }
+      }
     }
     requestAnimationFrame(tick)
   }
@@ -294,8 +302,10 @@ def run_proof(
     if reduced_motion:
         assert chrome.eval("matchMedia('(prefers-reduced-motion: reduce)').matches") is True
 
-    def navigate(selector: str, located: str, ready: str | None, desc: str) -> None:
-        chrome.eval("(() => { __nav.frames = 0; __nav.bad = []; __nav.on = true })()")
+    def navigate(selector: str, located: str, ready: str | None, desc: str) -> float:
+        chrome.eval(
+            "(() => { __nav.frames = 0; __nav.bad = []; __nav.vt = 0; __nav.on = true })()"
+        )
         chrome.click(selector)
         # The press's own effect first: the router changes the location as soon as the
         # route is resolved, before any data read, so a dropped or mis-aimed press fails
@@ -312,11 +322,16 @@ def run_proof(
             desc=f"{desc}: the cross-fade to end and 10 frames sampled",
         )
         got = chrome.eval(
-            "(() => { __nav.on = false; return { frames: __nav.frames, bad: __nav.bad } })()"
+            "(() => { __nav.on = false;"
+            " return { frames: __nav.frames, bad: __nav.bad, vt: __nav.vt } })()"
         )
         assert (
             got["bad"] == []
         ), f"{desc}: frames {got['bad']} of {got['frames']} had no visible page"
+        # premium.css's page cross-fade: every animation of the transition, the group's
+        # included, must end with it, or the page stays deaf to presses for longer.
+        assert got["vt"] <= 160, f"{desc}: the page transition ran {got['vt']} ms, over 160"
+        return got["vt"]
 
     at = lambda path: f"location.pathname === {json.dumps(path)}"  # noqa: E731
     bench_href = f"{instance_href}/benches/0"
@@ -348,8 +363,13 @@ def run_proof(
             "instance again, from cache",
         ),
     ]
-    for selector, located, ready, desc in steps:
-        navigate(selector, located, ready, desc)
+    longest = max(
+        navigate(selector, located, ready, desc) for selector, located, ready, desc in steps
+    )
+    if reduced_motion:
+        assert longest == 0, f"a view transition ran under reduced motion ({longest} ms)"
+    else:
+        assert longest > 0, "no page transition was measured on any navigation"
 
 
 # Function-scoped like `running_instance` it depends on (a module scope here is a pytest
