@@ -2146,9 +2146,12 @@ the report says which site it asked for (`web_site`). That keeps the code
 attributable the same way the port does: it is that site's code, not a claim about
 the bench as a whole. A bench with no site recorded probes without a `Host` header,
 as before, and reports `web_site: null`. The human `cwcli status` web line shows the
-**host-reachable** address (`web <site>:<host-port> -> <code>`) - the same one the
-init banner and `cwcli axi url` print, so it is copy-pasteable - resolved by mapping
-the bench's container web port through the container's live host bindings; when that
+**host-reachable** port the probe went to (`web <site>:<host-port> -> <code>`),
+resolved by mapping the bench's container web port through the container's live host
+bindings. It names where the bench was probed, not the site's address: the init banner
+and `cwcli axi url` print the address Frappe builds (see
+[Site addresses](#site-addresses)), which may be the site's `host_name` or carry
+`webserver_port`. When that
 host binding cannot be resolved it falls back to the container port labelled
 `(in-container)` so nobody tries to open an unreachable address.
 

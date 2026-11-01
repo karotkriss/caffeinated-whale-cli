@@ -8,6 +8,9 @@ usage error), and that no live Docker object leaks across a core boundary.
 
 import dataclasses
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 import typer
@@ -384,6 +387,51 @@ class TestResolveWebPorts:
         assert resolvers.resolve_assigned_ports(
             _bench({}, procfile=None), [B1], fill_defaults=True
         ) == {B1: (8000, 9000)}
+
+
+@pytest.mark.skipif(not os.path.exists("/proc/net/tcp"), reason="needs Linux /proc")
+class TestForeignListenerScript:
+    """The real /proc check behind a bare web line's implicit 8000, run on this host.
+
+    Exit 0 means no process outside the bench holds the port; exit 1 means one does,
+    and the port is then unknown rather than a sibling bench's listener.
+    """
+
+    LISTEN = (
+        "import socket, sys\n"
+        "s = socket.socket()\n"
+        "s.bind(('127.0.0.1', 0))\n"
+        "s.listen()\n"
+        "print(s.getsockname()[1], flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+
+    def _check(self, port, bench):
+        return subprocess.run(
+            [sys.executable, "-c", resolvers._FOREIGN_LISTENER_SCRIPT, str(port), str(bench)],
+            timeout=10,
+        ).returncode
+
+    def test_the_benchs_own_listener_passes_and_a_siblings_does_not(self, tmp_path):
+        bench, sibling = tmp_path / "bench", tmp_path / "sibling"
+        (bench / "sites").mkdir(parents=True)
+        sibling.mkdir()
+        child = subprocess.Popen(
+            [sys.executable, "-c", self.LISTEN],
+            cwd=bench / "sites",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            port = int(child.stdout.readline())
+            assert self._check(port, bench) == 0
+            assert self._check(port, sibling) == 1
+        finally:
+            child.stdin.close()
+            child.wait(timeout=10)
+        # Nothing listens any more: nothing can be borrowed, so the port is accepted.
+        assert self._check(port, sibling) == 0
 
 
 class TestResolveSiteAddress:
