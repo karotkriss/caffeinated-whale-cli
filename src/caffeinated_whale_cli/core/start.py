@@ -336,13 +336,11 @@ def _start_bench(
             idle_processes = _launched_processes(frappe_container, resolved_path, snapshot)
             idle_warnings = list(warnings)
             if "web" in {p.label for p in idle_processes}:
-                idle_ports = resolvers.resolve_assigned_ports(
-                    frappe_container, [resolved_path], fill_defaults=False
-                ).get(resolved_path)
-                if idle_ports is not None:
-                    port_warning = _no_host_port_warning(
-                        frappe_container, project_name, resolved_path, idle_ports
-                    )
+                idle_port = resolvers.resolve_web_ports(frappe_container, [resolved_path]).get(
+                    resolved_path
+                )
+                if idle_port is not None:
+                    port_warning = _no_host_port_warning(frappe_container, project_name, idle_port)
                     if port_warning is not None:
                         idle_warnings.append(port_warning)
             emit(StartStepEnd(phase="supervisor", status="already-running"))
@@ -375,41 +373,39 @@ def _start_bench(
     #    `degraded`). Only wait when the Procfile actually defines a web program;
     #    a timeout degrades to a warning, never a failure (the stack IS launched).
     #
-    #    The port is READ from the bench's own config, never assumed: this wait used
-    #    to poll a hardcoded :8000, so `cwcli start <p> --bench 1` sat 60 seconds
-    #    watching bench 0's port and then warned that a perfectly healthy bench had
-    #    not started - then pointed the user at `cwcli status`, which confirmed the
-    #    phantom fault by making the same mistake. With no resolvable port the wait
-    #    is SKIPPED and `web_ready` stays None (its existing "not probed" value):
-    #    spending the timeout on a guess is worse than saying nothing.
+    #    The port is READ from the bench's own config (or, without webserver_port, its
+    #    Procfile's web line), never assumed: this wait used to poll a hardcoded :8000,
+    #    so `cwcli start <p> --bench 1` sat 60 seconds watching bench 0's port and then
+    #    warned that a perfectly healthy bench had not started - then pointed the user
+    #    at `cwcli status`, which confirmed the phantom fault by making the same
+    #    mistake. With no resolvable port the wait is SKIPPED and `web_ready` stays
+    #    None (its existing "not probed" value): spending the timeout on a guess is
+    #    worse than saying nothing.
     web_ready: bool | None = None
     if "web" in {p.label for p in processes}:
         emit(StartStepStart(phase="web_ready", message="Waiting for the web server"))
-        ports = resolvers.resolve_assigned_ports(
-            frappe_container, [resolved_path], fill_defaults=False
-        ).get(resolved_path)
-        if ports is None:
+        web_port = resolvers.resolve_web_ports(frappe_container, [resolved_path]).get(resolved_path)
+        if web_port is None:
             warnings.append(
                 Message(
                     "start.web_port_unknown",
-                    "Dev services launched, but the bench's web port could not be read, "
-                    f"so cwcli did not wait for it. Run 'cwcli inspect {project_name}' "
-                    "to refresh, then check 'cwcli status'.",
+                    "Dev services launched, but the bench's web port could not be "
+                    "determined from its sites/common_site_config.json (webserver_port) or "
+                    "its Procfile (the web line), so cwcli did not wait for it. Run "
+                    f"'cwcli inspect {project_name}' to refresh, then check 'cwcli status'.",
                 )
             )
         else:
-            web_ready = supervision.wait_web_ready(frappe_container, port=ports[0])
+            web_ready = supervision.wait_web_ready(frappe_container, port=web_port)
             if not web_ready:
                 warnings.append(
                     Message(
                         "start.web_not_ready",
                         "Dev services launched, but the web server did not begin serving "
-                        f"on :{ports[0]} in time. Check 'cwcli status' / 'cwcli logs'.",
+                        f"on :{web_port} in time. Check 'cwcli status' / 'cwcli logs'.",
                     )
                 )
-            port_warning = _no_host_port_warning(
-                frappe_container, project_name, resolved_path, ports
-            )
+            port_warning = _no_host_port_warning(frappe_container, project_name, web_port)
             if port_warning is not None:
                 warnings.append(port_warning)
         emit(
@@ -451,25 +447,20 @@ def _start_bench(
     )
 
 
-def _no_host_port_warning(
-    frappe_container, project_name: str, resolved_path: str, ports: tuple[int, int]
-) -> Message | None:
+def _no_host_port_warning(frappe_container, project_name: str, web_port: int) -> Message | None:
     """An unmissable warning when this bench's web server has no live HOST
     publish - "running" must stop meaning "reachable". A bench whose container
     was created (or recreated) without its port mapping otherwise reports
     fully healthy here and is only ever discovered by a caller's HTTP request
-    failing. Silent when a host port IS published; ``ports`` is the bench's
+    failing. Silent when a host port IS published; ``web_port`` is the bench's
     OWN container port, already resolved by the caller.
     """
-    if (
-        resolvers.resolve_host_web_url(frappe_container, resolved_path, assigned_ports=ports)
-        is not None
-    ):
+    if resolvers.published_host_port(frappe_container, web_port) is not None:
         return None
     return Message(
         "start.no_host_port",
         f"'{project_name}' is running, but no host port is published for this bench's "
-        f"web server (container port {ports[0]}) - it is not reachable from outside the "
+        f"web server (container port {web_port}) - it is not reachable from outside the "
         "container. Recreate the instance with 'cwcli init' to publish its ports.",
     )
 

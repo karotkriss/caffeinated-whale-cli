@@ -10,6 +10,8 @@ and an explicit ``--bench``/``--site`` reaches exactly the bench/site named.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from caffeinated_whale_cli.core import docker as core_docker
@@ -31,12 +33,17 @@ class UrlFakeContainer(FakeContainer):
     widening a fixture every other core-supervision test also imports.
     """
 
-    def __init__(self, *, ports=None, missing_sites=(), **kwargs):
+    def __init__(self, *, ports=None, missing_sites=(), site_configs=None, **kwargs):
         super().__init__(**kwargs)
         self.ports = ports or {}
         self.missing_sites = set(missing_sites)
+        self.site_configs = site_configs or {}
 
     def _exec_list(self, cmd, detach):
+        if cmd[0] == "cat" and cmd[1].endswith("/site_config.json"):
+            site = cmd[1].rsplit("/", 2)[-2]
+            config = self.site_configs.get(site)
+            return (1, b"") if config is None else (0, json.dumps(config).encode())
         if cmd[0] == "test" and cmd[1] == "-d":
             site_path = cmd[2]
             if any(site_path.endswith(f"/sites/{s}") for s in self.missing_sites):
@@ -170,7 +177,7 @@ class TestUnreadableRoutingData:
         assert result.data.reachable is False
         assert any(w.code == "url.unresolved" for w in result.warnings)
         assert "common_site_config.json" in result.warnings[-1].text
-        assert "numeric webserver_port and socketio_port" in result.warnings[-1].text
+        assert "Procfile" in result.warnings[-1].text
         # Never probed - there is no port to have probed.
         assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
 
@@ -188,6 +195,66 @@ class TestUnreadableRoutingData:
         assert result.data.reachable is False
         assert "has no live host binding" in result.warnings[-1].text
         assert "run 'cwcli axi scale proj'" in result.warnings[-1].text
+        assert result.data.reason == result.warnings[-1].text
+
+    def test_a_host_name_naming_an_unpublished_port_says_so_not_a_missing_binding(
+        self, monkeypatch, wire
+    ):
+        # The bench's own port IS published; only the site's declared port is not.
+        _site_cache(monkeypatch, default="dev.localhost", sites=["dev.localhost"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            site_configs={"dev.localhost": {"host_name": "http://dev.localhost:31337"}},
+            ports=_default_ports(),
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url is None
+        warning = next(w for w in result.warnings if w.code == "url.port_unpublished")
+        assert "http://dev.localhost:31337" in warning.text
+        assert "set-config host_name" in warning.text
+        assert "scale" not in warning.text and "host binding" not in warning.text
+        assert not any(w.code == "url.unresolved" for w in result.warnings)
+        assert result.data.reason == warning.text
+
+
+class TestReason:
+    """``reason`` explains a missing ``url`` and is None whenever ``url`` is set."""
+
+    def test_an_unpublished_port_with_no_site_suggests_no_site_command(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default=None, sites=[])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "http_port": 8080, "socketio_port": 9000}},
+            ports=_default_ports(),
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url is None
+        warning = next(w for w in result.warnings if w.code == "url.port_unpublished")
+        assert "http://localhost:8080" in warning.text
+        assert "--site None" not in warning.text and "cwcli run" not in warning.text
+        assert result.data.reason == warning.text
+
+    def test_a_resolved_url_carries_no_reason_even_with_an_unknown_web_port(
+        self, monkeypatch, wire
+    ):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}},
+            ports=_default_ports(),
+            procfile="worker: bench worker\n",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://site.example.com"
+        assert any(w.code == "url.unresolved" for w in result.warnings)
+        assert result.data.reason is None
 
 
 class TestExplicitMultiBenchSelection:
@@ -274,3 +341,152 @@ class TestNoSiteAtAll:
         assert result.data.site is None
         assert result.data.url == "http://localhost:21000"
         assert any(w.code == "url.no_site" for w in result.warnings)
+
+
+class TestWithoutWebserverPort:
+    """A bench whose common_site_config.json omits ``webserver_port``.
+
+    Removing the key is how an administrator stops Frappe appending the internal
+    port to the site URLs it builds behind a reverse proxy, and such a bench runs
+    fully without it, so Open site must too: the port its web process binds comes
+    from the Procfile's web line.
+    """
+
+    def test_a_localhost_site_resolves_and_is_probed_on_the_procfile_port(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="one.localhost", sites=["one.localhost"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}}, ports=_default_ports(), web_code="200"
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://one.localhost:21000"
+        assert result.data.reachable is True
+        assert result.data.internal_port is False
+        curl_calls = [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"]
+        assert curl_calls[0][-1] == "http://localhost:8000"
+        assert not any(w.code == "url.unresolved" for w in result.warnings)
+
+    def test_a_hostname_site_opens_by_name_without_the_internal_port(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}}, ports=_default_ports(), web_code="200"
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        # Frappe's own URLs for this site carry no port once the key is gone.
+        assert result.data.url == "http://site.example.com"
+        assert result.data.reachable is True
+        assert result.data.internal_port is False
+        assert result.data.fix == []
+        assert not any(w.code == "url.internal_port" for w in result.warnings)
+
+
+class TestInternalPort:
+    """``webserver_port`` set on a site whose name is not a localhost one.
+
+    The address keeps the port - it is what Frappe reports - and is flagged with the
+    steps that remove the key, because behind a reverse proxy the port is internal.
+    """
+
+    def test_the_port_is_kept_and_the_fix_names_bench_and_frappe_commands(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://site.example.com:8000"
+        assert result.data.internal_port is True
+        assert result.data.webserver_port_in == ["sites/common_site_config.json"]
+        # Only the key's removal and the restart: nothing else is written.
+        assert [s.command for s in result.data.fix] == [
+            "cwcli run proj config remove-common-config webserver_port",
+            "cwcli stop proj --bench 0",
+            "cwcli start proj --bench 0",
+        ]
+        warning = next(w for w in result.warnings if w.code == "url.internal_port")
+        assert "http://site.example.com:8000" in warning.text
+        assert warning.detail["fix"][0]["command"] == result.data.fix[0].command
+
+    def test_a_key_in_the_sites_own_config_is_removed_with_frappes_set_config(
+        self, monkeypatch, wire
+    ):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}},
+            site_configs={"site.example.com": {"webserver_port": 8000}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://site.example.com:8000"
+        assert result.data.webserver_port_in == ["sites/site.example.com/site_config.json"]
+        commands = [s.command for s in result.data.fix]
+        assert (
+            commands[0] == "cwcli run proj --site site.example.com set-config webserver_port None"
+        )
+        assert not any("remove-common-config" in command for command in commands)
+
+    def test_a_localhost_site_keeps_its_port_with_no_warning(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="one.localhost", sites=["one.localhost"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "http://one.localhost:21000"
+        assert result.data.internal_port is False
+        assert result.data.fix == []
+        assert not any(w.code == "url.internal_port" for w in result.warnings)
+
+    def test_host_name_gets_the_key_appended_and_is_flagged(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            site_configs={"site.example.com": {"host_name": "https://site.example.com"}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        # Frappe's get_url appends the port to a host_name that names none.
+        assert result.data.url == "https://site.example.com:8000"
+        assert result.data.source == "host_name"
+        assert result.data.internal_port is True
+        assert any(w.code == "url.internal_port" for w in result.warnings)
+
+    def test_host_name_is_the_address_and_carries_no_warning(self, monkeypatch, wire):
+        _site_cache(monkeypatch, default="site.example.com", sites=["site.example.com"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"socketio_port": 9000}},
+            site_configs={"site.example.com": {"host_name": "https://site.example.com"}},
+            ports=_default_ports(),
+            web_code="200",
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url == "https://site.example.com"
+        assert result.data.source == "host_name"
+        assert result.data.internal_port is False
+        # The bench is still probed on its own port, with the site as the Host.
+        curl_calls = [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"]
+        assert curl_calls[0][-1] == "http://localhost:8000"

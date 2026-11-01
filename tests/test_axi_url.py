@@ -24,8 +24,12 @@ def _probe(**overrides):
         bench_path="/workspace/frappe-bench",
         site="one.localhost",
         url="http://one.localhost:21000",
+        source="site",
         reachable=True,
         http_code="200",
+        internal_port=False,
+        webserver_port_in=["sites/common_site_config.json"],
+        fix=[],
     )
     defaults.update(overrides)
     return UrlProbe(**defaults)

@@ -174,7 +174,7 @@ export const ACTIONS = {
     confirm: 'none',
     read: true,
     cli: (c) => `cwcli axi url ${q(c.project)}${benchFlag(c)} --site ${q(c.site)}`,
-    says: () => 'Resolves the host URL from the published ports and probes it fresh.',
+    says: () => "Resolves the site's address the way Frappe builds it and probes the bench fresh.",
   },
   'site.unlock': {
     job: true,

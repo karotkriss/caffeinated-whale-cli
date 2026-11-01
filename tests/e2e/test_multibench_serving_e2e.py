@@ -570,7 +570,7 @@ def test_instance_wide_status_latency_on_two_serving_benches(two_benches, capsys
 # --------------------------------------------------------------------------- #
 def _real_host_port(project: str, container_port: int) -> int:
     """The ACTUAL Docker-published host port, read via the CLI - independent of
-    ``resolve_host_web_url``'s own docker-py read, so a passing test is not just
+    ``published_host_port``'s own docker-py read, so a passing test is not just
     comparing cwcli's answer to itself."""
     cid = harness.frappe_container_id(project)
     r = subprocess.run(

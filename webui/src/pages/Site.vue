@@ -50,8 +50,9 @@ const more = computed(() => [
   dangerGroup(['site.remove'], ctx.value),
 ])
 
-// The address is two hops (bench port from its config, then the host port Docker
-// publishes), asked of the daemon fresh: never a guessed :8000.
+// The address is built the way Frappe's get_url builds it (the site's host_name, else
+// its name, with webserver_port appended while it is set; a localhost address on its
+// published port), asked of the daemon fresh: never a guessed :8000.
 const probe = ref({ loading: false, data: null, error: null })
 async function checkUrl() {
   if (!running.value) return
@@ -136,10 +137,10 @@ const heroFacts = computed(() => [
         </div>
         <div class="mt-1 text-xs text-ink-gray-5">
           <template v-if="!running">the instance is stopped</template>
-          <template v-else-if="probe.data && probe.data.url">{{ probe.data.reachable ? `answers HTTP ${probe.data.http_code}` : 'resolved, but did not answer' }}{{ host ? ` · an address on ${hostName(host)}` : '' }}</template>
-          <template v-else-if="probe.data">no published port resolves for this bench</template>
+          <template v-else-if="probe.data && probe.data.url">{{ probe.data.reachable ? `answers HTTP ${probe.data.http_code}` : 'resolved, but did not answer' }}{{ probe.data.source === 'host_name' ? ' · its host_name' : '' }}{{ probe.data.internal_port ? " · includes the bench's port" : '' }}{{ host ? ` · an address on ${hostName(host)}` : '' }}</template>
+          <template v-else-if="probe.data">{{ probe.data.reason || 'no address resolves for this site' }}</template>
           <template v-else-if="probe.error">{{ probe.error.message }}</template>
-          <template v-else>resolved from Docker's published ports on request</template>
+          <template v-else>resolved on request, the way Frappe builds it</template>
         </div>
       </div>
       <div class="rounded-6 border border-outline-gray-1 p-4">

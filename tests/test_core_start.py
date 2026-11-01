@@ -168,6 +168,25 @@ class TestLaunch:
         probed = {cmd[-1] for cmd in frappe.calls if isinstance(cmd, list) and cmd[0] == "curl"}
         assert probed == {"http://localhost:8001"}
 
+    def test_without_webserver_port_the_wait_polls_the_procfile_port(self, wire):
+        # The key is optional (a bench behind a reverse proxy drops it so Frappe builds
+        # URLs without the internal port). The web process still binds the port the
+        # Procfile's web line names, so the wait polls that one instead of being
+        # skipped and leaving `web_ready` unknown.
+        frappe = FakeContainer(
+            ps="1 0 5 0.0 1000 /sbin/init\n",
+            cwds={},
+            web_code={8002: "200"},
+            configs={BENCH: {"socketio_port": 9002}},
+            procfile=_PROCFILE.replace("--port 8000", "--port 8002"),
+        )
+        wire(frappe)
+        result = core_start.start("proj")
+        assert result.data.web_ready is True
+        probed = {cmd[-1] for cmd in frappe.calls if isinstance(cmd, list) and cmd[0] == "curl"}
+        assert probed == {"http://localhost:8002"}
+        assert not any(w.code == "start.web_port_unknown" for w in result.warnings)
+
     def test_an_unresolvable_port_skips_the_wait_rather_than_guessing(self, wire, monkeypatch):
         # Fail honest: with no readable port the wait is SKIPPED and web_ready stays
         # None (its existing "not probed" value). Falling back to 8000 would spend the

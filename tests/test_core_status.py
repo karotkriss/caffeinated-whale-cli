@@ -18,6 +18,7 @@ from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from tests.test_core_supervision import (
     _CTL_SINGLE,
+    _PROCFILE,
     _PS_HONCHO,
     _PS_SINGLE,
     BENCH,
@@ -429,14 +430,37 @@ class TestFailHonestPort:
         assert report.overall == "running"
         assert _bench(report).overall == "running"
 
-    def test_a_config_that_omits_the_port_is_unresolved_not_defaulted_to_8000(self, wire):
-        # THE tightening. core.scale reads the same file and DOES default an omitted
-        # key to 8000, correctly - it is computing which host ports to publish. Here
-        # the same answer becomes a PROBE TARGET, so carrying that default across
-        # would silently re-create the defect inside the change that removes it: a
-        # bench past the first would report web_port 8000 / verified true and measure
-        # bench 0's server.
-        c = FakeContainer(marker=_MARKER, web_code="200", configs={BENCH: {"some_other_key": 1}})
+    def test_a_config_that_omits_the_port_is_probed_on_its_procfile_port(self, wire):
+        # The key is optional: a bench served by its hostname through a reverse proxy
+        # drops it so Frappe builds URLs without the internal port. Its web process
+        # still listens where the Procfile's web line says - 8001 here, so the probe
+        # goes there and never to a guessed 8000 (bench 0's server on a multi-bench
+        # instance).
+        procfile = _PROCFILE.replace("--port 8000", "--port 8001")
+        c = FakeContainer(
+            marker=_MARKER,
+            web_code={8001: "200"},
+            configs={BENCH: {"some_other_key": 1}},
+            procfile=procfile,
+        )
+        wire(c, benches=[{"path": BENCH}])
+        result = core_status.status("proj")
+        bench = _bench(result.data)
+        assert bench.web_port == 8001
+        assert bench.web_port_verified is True
+        assert bench.web_http_code == "200"
+        probed = [cmd[-1] for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"]
+        assert probed == ["http://localhost:8001"]
+        assert not any(w.code == "status.web_port_unknown" for w in result.warnings)
+
+    def test_no_key_and_no_procfile_web_line_is_unresolved_never_8000(self, wire):
+        procfile = "\n".join(line for line in _PROCFILE.splitlines() if not line.startswith("web:"))
+        c = FakeContainer(
+            marker=_MARKER,
+            web_code="200",
+            configs={BENCH: {"some_other_key": 1}},
+            procfile=procfile,
+        )
         wire(c, benches=[{"path": BENCH}])
         result = core_status.status("proj")
         bench = _bench(result.data)

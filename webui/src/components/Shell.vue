@@ -41,6 +41,7 @@ const SCHEME_CYCLE = { light: 'dark', dark: 'system', system: 'light' }
 const SCHEME_ICON = { light: 'lucide-sun', dark: 'lucide-moon', system: 'lucide-monitor' }
 function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
+import PortWarningDialog from './PortWarningDialog.vue'
 import AddHostDialog from './AddHostDialog.vue'
 import { fleet, instances, localInstances, doctor, details, countSites, instancePath } from '../data/fleet'
 import { hostList, hasHosts, linkLook, loadHosts } from '../data/hosts'
@@ -257,6 +258,7 @@ watch(() => route.name, (name) => {
     <SettingsDialog />
     <AddHostDialog />
     <StartGateDialog />
+    <PortWarningDialog />
     <JobToasts />
     <Dialog v-model:open="notifOpen" title="Notifications" size="md">
       <div class="mb-2 flex items-center gap-2 text-sm text-ink-gray-5">

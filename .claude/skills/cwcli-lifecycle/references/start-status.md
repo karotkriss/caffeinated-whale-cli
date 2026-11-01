@@ -136,7 +136,8 @@ are now the whole point. Each note below guards a real bug.
   `supervision.wait_web_ready(container, port=...)` (bounded 60s, 1s poll interval) reuses the existing
   `web_http_code` probe via the `web_is_serving` helper (status's own "up" definition: any code not in
   `(None, "000")`). **The port is REQUIRED, keyword-only, and undefaulted**, and the port itself is READ from the
-  bench's own `sites/common_site_config.json` via `resolvers.resolve_assigned_ports(..., fill_defaults=False)` -
+  bench's own `sites/common_site_config.json` (or, without `webserver_port`, its Procfile's `web:` line) via
+  `resolvers.resolve_web_ports` -
   this wait used to poll a hardcoded `:8000`, so `cwcli start <p> --bench 1` sat 60 seconds watching bench 0's
   port and then warned that a perfectly healthy bench had not started (audit F5), then pointed the user at
   `cwcli status`, which confirmed the phantom fault by making the same mistake. **With no resolvable port the
@@ -156,8 +157,8 @@ are now the whole point. Each note below guards a real bug.
   calls) and `test_core_start.py`/`test_core_supervision.py` for the unit coverage of the branches above.
 - **A running web process without a live host port binding produces an unconditional warning** (`fm/cwcli-init-silent-portless-instance`).
   A container created or recreated without its port mapping can serve internally while remaining unreachable from the host.
-  `core.start` therefore calls `resolvers.resolve_host_web_url` after a genuine launch and on the idempotent already-running no-op path.
-  The check uses the bench's resolved container port and Docker's live published bindings, which is the same two-hop reader used by `cwcli axi url` and init's success banner.
+  `core.start` therefore calls `resolvers.published_host_port` after a genuine launch and on the idempotent already-running no-op path.
+  The check uses the bench's resolved container port and Docker's live published bindings, the same two hops `resolvers.resolve_site_address` uses for `cwcli axi url` and init's success banner.
   A missing binding adds `Message("start.no_host_port", ...)` naming the container port and advising recreation with `cwcli init`.
   The human `cwcli start` renderers and both init frontends surface this warning unconditionally on stderr.
   `cwcli axi start` carries it in its TOON warning output.
@@ -264,7 +265,9 @@ are now the whole point. Each note below guards a real bug.
   prompt-and-retry loop and `commands/axi.py:axi_status`'s `emit_axi_choice_as_usage_error` branch - because a
   retained-but-unreachable prompt is how the refusal comes back. `status` is therefore non-prompting on EVERY
   path, which satisfies the both-modes standard trivially. **Each bench is probed on its OWN port**, read from
-  its `sites/common_site_config.json` (`resolvers.resolve_assigned_ports(..., fill_defaults=False)`) and passed
+  its `sites/common_site_config.json` or, without `webserver_port`, its Procfile's `web:` line
+  (`resolvers.resolve_web_ports`; a bare `bench serve` line means 8000, accepted only while no process outside
+  the bench listens there, so a sibling bench's listener is never probed in its place) and passed
   explicitly to `supervision.web_http_code(container, port=..., site=...)`; the probe used to hardcode `localhost:8000`,
   so a healthy bench 1 read `degraded` (F3) and a dead bench 1 reported bench 0's live code (F4). An unresolved
   port is `web_port: null`/`web_port_verified: false`, NO probe, a `status.web_port_unknown` warning, and
