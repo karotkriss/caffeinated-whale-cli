@@ -551,6 +551,23 @@ class TestResolveSiteAddress:
         assert a.url == "http://dev.localhost:21001"
         assert (a.source, a.internal_port) == ("host_name", False)
 
+    def test_a_localhost_host_name_naming_the_published_host_port_is_kept(self):
+        # 21001 is where container 8001 is published: already the host address.
+        a = self._address(
+            self.KEY,
+            "dev.localhost",
+            sites={"dev.localhost": {"host_name": "http://dev.localhost:21001"}},
+        )
+        assert a.url == "http://dev.localhost:21001"
+
+    def test_a_localhost_host_name_naming_an_unpublished_port_is_unknown(self):
+        a = self._address(
+            self.KEY,
+            "dev.localhost",
+            sites={"dev.localhost": {"host_name": "http://dev.localhost:31337"}},
+        )
+        assert a.url is None
+
     def test_a_localhost_host_name_without_a_port_gets_the_webs_published_port(self):
         a = self._address(
             {**self.NO_KEY, "restart_supervisor_on_update": 1},

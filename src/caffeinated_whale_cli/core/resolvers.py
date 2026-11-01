@@ -769,7 +769,9 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
     published port, because that is the only way the host reaches it: its port (a
     CONTAINER port) is mapped to the HOST port Docker publishes for it, and an
     address with no port gets the published port of the bench's web server (a
-    ``--port 21000`` instance publishes container 8001 as 21001). No binding is
+    ``--port 21000`` instance publishes container 8001 as 21001). A port that is
+    not a container port but is already one of the instance's published host ports
+    (``host_name: http://dev.localhost:21001``) is kept as written. Any other port is
     ``url=None`` - never the container port itself.
     """
     bench = bench_path.rstrip("/")
@@ -819,7 +821,7 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
         container_port = None
     host_port = published_host_port(container, container_port) if container_port else None
     if host_port is None:
-        return address(None)
+        return address(url if _is_published_host_port(container, container_port) else None)
     netloc = parts.netloc.rsplit(":", 1)[0] if parts.port else parts.netloc
     return address(urlunsplit(parts._replace(netloc=f"{netloc}:{host_port}")))
 
@@ -838,6 +840,16 @@ def resolve_host_ports(container, bench_path: str) -> tuple[int, int] | None:
         return None
     web, socketio = (published_host_port(container, port) for port in assigned)
     return (web, socketio) if web and socketio else None
+
+
+def _is_published_host_port(container, port: int | None) -> bool:
+    """Whether ``port`` is a HOST port one of the container's live bindings publishes."""
+    bindings = getattr(container, "ports", None) or {}
+    return port is not None and any(
+        str((entry or {}).get("HostPort")) == str(port)
+        for entries in bindings.values()
+        for entry in entries or []
+    )
 
 
 def published_host_port(container, container_port: int) -> int | None:
