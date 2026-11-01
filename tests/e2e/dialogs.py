@@ -83,12 +83,12 @@ _SEED = (
     const ws = getComputedStyle(el).whiteSpace
     if (ws.startsWith('nowrap') || ws.startsWith('pre')) continue
     seeded.push([node, node.textContent])
-    node.textContent = node.textContent + ' ' + _DAEMON_TOKEN__
+    node.textContent = node.textContent + ' ' + __TOKEN__
   }
   return seeded.length
 })()
 """.replace(
-        "_DAEMON_TOKEN__", json.dumps(TOKEN)
+        "__TOKEN__", json.dumps(TOKEN)
     )
 )
 _RESTORE = (
