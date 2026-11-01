@@ -11,6 +11,7 @@ The module takes the router and the document as parameters, so fakes drive it he
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -159,3 +160,19 @@ log.push(shouldTransition({ to: page('/a'), from: page('/b'), motion: true, supp
 """
     )
     assert got["log"] == [True, False, False, False, False]
+
+
+def test_a_cross_fade_sets_the_group_duration_too():
+    """The browser delivers no pointer event to the page while a view transition runs, so
+    a transition's length is an input lock's length. The group pseudo-element has its own
+    250 ms default animation: a fade shortened on old/new alone still ran (and locked the
+    page) for 250 ms, which is what let a slow runner's next press land inside it."""
+    css = MODULE.with_name("premium.css").read_text()
+    fades = re.findall(
+        r"^((?:\[data-vt='\w+'\]::view-transition-[\w()-]+,? ?)+)\{[^}]*animation-duration:",
+        css,
+        re.M,
+    )
+    assert fades, "no cross-fade rule found"
+    for selectors in fades:
+        assert "::view-transition-group(root)" in selectors, selectors

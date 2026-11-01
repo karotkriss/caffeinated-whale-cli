@@ -294,10 +294,15 @@ def run_proof(
     if reduced_motion:
         assert chrome.eval("matchMedia('(prefers-reduced-motion: reduce)').matches") is True
 
-    def navigate(selector: str, arrives: str, desc: str) -> None:
+    def navigate(selector: str, located: str, ready: str | None, desc: str) -> None:
         chrome.eval("(() => { __nav.frames = 0; __nav.bad = []; __nav.on = true })()")
         chrome.click(selector)
-        chrome.wait(arrives, desc=desc)
+        # The press's own effect first: the router changes the location as soon as the
+        # route is resolved, before any data read, so a dropped or mis-aimed press fails
+        # here as that, never as a slow first read of the page's data (which is `ready`).
+        chrome.wait(located, desc=f"{desc}: the press to change the location")
+        if ready:
+            chrome.wait(ready, desc=f"{desc}: the page's data")
         time.sleep(0.5)  # past the page's first data read
         # Wall time alone does not cover the cross-fade or enough frames on a slow runner,
         # and a click while a view transition still runs is dropped by the browser (the next
@@ -315,32 +320,36 @@ def run_proof(
 
     at = lambda path: f"location.pathname === {json.dumps(path)}"  # noqa: E731
     bench_href = f"{instance_href}/benches/0"
+    tabs = "document.querySelectorAll('[role=tab]').length >= 4"
     steps = [
+        # (press target, the location the press lands on, the page's data if it reads any)
+        # An instance or bench page is ready once the inspect report is in and the tabs
+        # (Benches, Sites, Apps, Performance) have rendered; the sampler watches until then.
+        (f"a[href={json.dumps(instance_href)}]", at(instance_href), tabs, "instance overview"),
         (
-            # Arrived once the inspect report is in and the tabs (Benches, Sites, Apps,
-            # Performance) have rendered; the sampler keeps watching until then.
+            "[role=tab]:nth-of-type(4)",
+            "location.search === '?tab=performance'",
+            None,
+            "performance tab",
+        ),
+        ("[role=tab]:nth-of-type(1)", "location.search === ''", None, "benches tab again"),
+        (f"a[href^={json.dumps(bench_href)}]", at(bench_href), tabs, "bench page"),
+        ('a[href="/apps"]', at("/apps"), None, "apps"),
+        ('a[href="/sites"]', at("/sites"), None, "sites"),
+        ('a[href="/jobs"]', at("/jobs"), None, "jobs"),
+        ('a[href="/backups"]', at("/backups"), None, "backups"),
+        ('a[href="/schedules"]', at("/schedules"), None, "schedules"),
+        ('a[href="/advisories"]', at("/advisories"), None, "advisories"),
+        ('a[href="/instances"]', at("/instances"), None, "back to instances"),
+        (
             f"a[href={json.dumps(instance_href)}]",
-            at(instance_href) + " && document.querySelectorAll('[role=tab]').length >= 4",
-            "instance overview",
+            at(instance_href),
+            None,
+            "instance again, from cache",
         ),
-        ("[role=tab]:nth-of-type(4)", "location.search === '?tab=performance'", "performance tab"),
-        ("[role=tab]:nth-of-type(1)", "location.search === ''", "benches tab again"),
-        (
-            f"a[href^={json.dumps(bench_href)}]",
-            at(bench_href) + " && document.querySelectorAll('[role=tab]').length >= 4",
-            "bench page",
-        ),
-        ('a[href="/apps"]', at("/apps"), "apps"),
-        ('a[href="/sites"]', at("/sites"), "sites"),
-        ('a[href="/jobs"]', at("/jobs"), "jobs"),
-        ('a[href="/backups"]', at("/backups"), "backups"),
-        ('a[href="/schedules"]', at("/schedules"), "schedules"),
-        ('a[href="/advisories"]', at("/advisories"), "advisories"),
-        ('a[href="/instances"]', at("/instances"), "back to instances"),
-        (f"a[href={json.dumps(instance_href)}]", at(instance_href), "instance again, from cache"),
     ]
-    for selector, arrives, desc in steps:
-        navigate(selector, arrives, desc)
+    for selector, located, ready, desc in steps:
+        navigate(selector, located, ready, desc)
 
 
 # Function-scoped like `running_instance` it depends on (a module scope here is a pytest
