@@ -298,11 +298,17 @@ def run_proof(
         chrome.eval("(() => { __nav.frames = 0; __nav.bad = []; __nav.on = true })()")
         chrome.click(selector)
         chrome.wait(arrives, desc=desc)
-        time.sleep(0.5)  # past any cross-fade (160 ms) and the page's first data read
+        time.sleep(0.5)  # past the page's first data read
+        # Wall time alone does not cover the cross-fade or enough frames on a slow runner,
+        # and a click while a view transition still runs is dropped by the browser (the next
+        # step's click then never arrives), so wait for both conditions themselves.
+        chrome.wait(
+            "!document.activeViewTransition && __nav.frames >= 10",
+            desc=f"{desc}: the cross-fade to end and 10 frames sampled",
+        )
         got = chrome.eval(
             "(() => { __nav.on = false; return { frames: __nav.frames, bad: __nav.bad } })()"
         )
-        assert got["frames"] >= 10, f"{desc}: too few frames sampled ({got['frames']})"
         assert (
             got["bad"] == []
         ), f"{desc}: frames {got['bad']} of {got['frames']} had no visible page"
