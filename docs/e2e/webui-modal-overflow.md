@@ -23,6 +23,7 @@ At 390 px the dialog's box ran from 16 to 374 px and the tab root alone was 390 
 Three rules in `webui/src/style.css` apply to every dialog: a tab panel inside a dialog takes `min-width: 0`; dialog text may break anywhere when a word alone would overflow (`overflow-wrap: anywhere`, which leaves prose and truncated text as they were); a bare dialog's root is capped at the dialog's width.
 Two local wrappers carry the phone layout for the Settings modal: `SettingsRow` stacks each row's control under its text below `sm`, and `SettingsHeader` lets a pane's actions wrap under its title when the row is too narrow for both.
 The Integrations cards, which mirror a settings row, stack the same way, and the two "Add" forms (search paths, app sources) may shrink below their fixed input width.
+The Settings pane's horizontal padding drops to 1rem below the `sm` breakpoint, because frappe-ui keeps 70 px on each side at every width and that left a 217 px column on a phone.
 
 | Width | After |
 | --- | --- |
