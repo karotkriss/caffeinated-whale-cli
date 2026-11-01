@@ -47,9 +47,11 @@ def test_instance_dialogs_fit_the_dialog(chrome, ui_with_instance, width, height
     chrome.viewport(width, height)
     failures: list[str] = []
 
-    def opened(route: str, opener: tuple, title: str, *, tab: str | None = None) -> None:
+    def opened(route: str | None, opener: tuple, title: str, *, tab: str | None = None) -> None:
+        """Open ``opener``'s dialog on ``route`` (None: the page already loaded), measure it."""
         what = f"{width}px {title!r} dialog"
-        page(chrome, base, route, opener[1] if tab is None else tab)
+        if route:
+            page(chrome, base, route, opener[1] if tab is None else tab)
         if tab:
             press(chrome, "[role=tab]", tab)
             chrome.wait(
@@ -67,7 +69,9 @@ def test_instance_dialogs_fit_the_dialog(chrome, ui_with_instance, width, height
     opened(instance, ("button", "Stop"), "Stop")
     bench = f"{instance}/benches/0"
     opened(bench, ("button", "New site"), "New site", tab="Sites")
-    opened(bench, ("button", "Clone or move sites"), "Clone", tab="Sites")
+    # The same Sites tab, without a second full reload of the page (one reload fewer to
+    # wait on; this case measures dialogs, not page loads).
+    opened(None, ("button", "Clone or move sites"), "Clone", tab="Sites")
     # A cached project is what makes "Clear everything" live, and inspect caches it.
     inspected = harness.run_cwcli("inspect", project)
     assert inspected.returncode == 0, inspected.stderr
