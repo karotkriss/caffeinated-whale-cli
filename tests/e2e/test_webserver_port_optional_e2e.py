@@ -11,7 +11,7 @@ These tests remove the key the way an administrator does (bench's own ``config
 remove-common-config``, through ``cwcli run``) on the shared session instance, and
 put the bench's original config back in a ``finally`` - the shared-group rule.
 The warning for a hostname address that still carries the port is unit-tested
-(``tests/test_core_url.py``, ``tests/test_webui_port_warning.py``): proving it here
+(``tests/test_core_url.py``, ``tests/test_webui_start_gate.py``): proving it here
 would need a second, non-localhost site on the shared bench.
 """
 

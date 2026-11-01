@@ -1034,11 +1034,7 @@ def post_checks(plan: RestorePlan, *, on_event: OnEvent = _noop) -> list[dict]:
     )
     port: int | None
     try:
-        ports = resolvers.resolve_assigned_ports(
-            frappe_container, [plan.bench_path], fill_defaults=False
-        )
-        assigned = ports.get(plan.bench_path)
-        port = int(assigned[0]) if assigned else None
+        port = resolvers.resolve_web_ports(frappe_container, [plan.bench_path]).get(plan.bench_path)
     except Exception:
         port = None
     if port:
