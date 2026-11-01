@@ -6,7 +6,8 @@ What must never regress: the hold-then-release handshake (the route changes only
 transition's update callback, and the callback's promise resolves only after the new page is
 in the DOM); the fallbacks (no API, motion off, the first navigation, a query-only change
 such as a tab switch) start no transition and let the swap happen atomically; a failed
-navigation and a transition skipped by a newer one release without an unhandled rejection.
+navigation and a transition skipped by a newer one release without an unhandled rejection;
+a press during the cross-fade ends it and reaches the new page.
 The module takes the router and the document as parameters, so fakes drive it here.
 """
 
@@ -35,13 +36,41 @@ const router = {
   onError: (fn) => hooks.onError.push(fn),
 }
 const ends = []
-const doc = { documentElement: { dataset: {} } }
+// The window's capture listeners see a press first; `pressDown()` is a native press during the
+// transition, and the element under the pointer records what is handed to it.
+const capture = []
+const win = {
+  addEventListener: (type, fn) => capture.push({ type, fn }),
+  removeEventListener: (type, fn) => capture.splice(capture.findIndex((l) => l.type === type && l.fn === fn), 1),
+  requestAnimationFrame: (fn) => fn(),
+}
+class Ev {
+  constructor(type, init = {}) { Object.assign(this, init, { type, isTrusted: false }) }
+  stopImmediatePropagation() { this.stopped = true }
+  preventDefault() {}
+}
+const pressDown = () => {
+  const e = new Ev('pointerdown', { button: 0, clientX: 1, clientY: 2 })
+  e.isTrusted = true
+  capture.filter((l) => l.type === 'pointerdown').forEach((l) => l.fn(e))
+  if (!e.stopped) log.push('page-saw-press')
+}
+const doc = {
+  defaultView: win,
+  documentElement: { dataset: {} },
+  elementFromPoint: () => ({ dispatchEvent: (e) => log.push(`handed-${e.type}`) }),
+}
 if (SUPPORTED) doc.startViewTransition = (update) => {
   log.push('snapshot-old')
   const updateDone = Promise.resolve().then(update).then(() => log.push('snapshot-new'))
   const finished = new Promise((resolve) => ends.push(resolve))
   if (SKIPPED) ends[ends.length - 1]()
-  return { ready: SKIPPED ? Promise.reject(new Error('AbortError: skipped')) : updateDone, finished, updateCallbackDone: updateDone }
+  return {
+    ready: SKIPPED ? Promise.reject(new Error('AbortError: skipped')) : updateDone,
+    finished,
+    updateCallbackDone: updateDone,
+    skipTransition: () => log.push('skipped'),
+  }
 }
 let flush = null
 const settle = () => { log.push('settle-requested'); return new Promise((r) => (flush = r)) }
@@ -159,3 +188,22 @@ log.push(shouldTransition({ to: page('/a'), from: page('/b'), motion: true, supp
 """
     )
     assert got["log"] == [True, False, False, False, False]
+
+
+def test_a_press_during_the_cross_fade_reaches_the_new_page():
+    got = _node(
+        """
+const held = hooks.beforeResolve[0](page('/apps'), page('/instances'))
+await held
+pressDown()
+hooks.afterEach.forEach((fn) => fn(page('/apps'), page('/instances'), null))
+await tick()
+render()
+await tick(); await tick()
+"""
+    )
+    # The press skips the transition and waits for the new page; the page never sees it.
+    assert "page-saw-press" not in got["log"]
+    assert got["log"].index("skipped") < got["log"].index("rendered")
+    assert got["log"][-1] == "handed-pointerdown"
+    assert got["log"].index("snapshot-new") < got["log"].index("handed-pointerdown")

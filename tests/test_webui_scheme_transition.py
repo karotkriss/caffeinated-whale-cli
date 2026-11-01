@@ -5,8 +5,10 @@ the swap inside it. The paths that must never regress are the fallbacks and the 
 guard: reduced motion (and effects off, and an OS-driven change) must play the plain
 200 ms cross-fade, never the wipe; a browser without ``document.startViewTransition``
 must swap instantly as the page always did; and a press during a blend, which lands on
-``<html>``, must never reach an open dialog that would close on it. The module takes the
-document as a parameter, so a fake one drives it here with no browser.
+``<html>``, must never reach an open dialog that would close on it, but ends the blend and
+reaches the control under the pointer (``press-through.js``, decided in full in
+``tests/test_webui_press_through.py``). The module takes the document as a parameter, so a
+fake one drives it here with no browser.
 """
 
 import json
@@ -25,29 +27,37 @@ OS_CHANGE = {**PRESS, "pressed": False}
 
 # A document with (or without) the View Transitions API that records what the module does. A skipped
 # transition rejects `ready`, as the browser does when a newer transition replaces it before it animates.
-# `end(i)` finishes the i-th transition. `press(type)` dispatches a press on <html> (where every press
-# lands while a blend runs) the DOM's way: the document's capture listeners, then, unless one of them
-# stopped propagation, its bubble listeners.
+# `end(i)` finishes the i-th transition. `press(type)` dispatches a native press the DOM's way: the
+# window's capture listeners first, then, unless one of them stopped it, the document's listeners. The
+# element under the pointer (the scheme control) records what is handed to it.
 FAKE_DOC = """
-const calls = { applied: 0, started: 0, unhandled: [] }
+const calls = { applied: 0, started: 0, skipped: 0, handed: [], unhandled: [] }
 process.on('unhandledRejection', (reason) => calls.unhandled.push(String(reason)))
 const tick = () => new Promise((r) => setTimeout(r, 0))
-const listeners = []
-const key = (type, fn, options) => ({ type, fn, capture: typeof options === 'object' ? !!options?.capture : !!options })
-const at = (l) => listeners.findIndex((m) => m.type === l.type && m.fn === l.fn && m.capture === l.capture)
+const registry = (list) => ({
+  addEventListener: (type, fn) => list.push({ type, fn }),
+  removeEventListener: (type, fn) => { const i = list.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) list.splice(i, 1) },
+})
+const windowListeners = []
+const docListeners = []
+const win = { ...registry(windowListeners), requestAnimationFrame: (fn) => fn() }
+class Ev {
+  constructor(type, init = {}) { Object.assign(this, init, { type, isTrusted: false }) }
+  stopImmediatePropagation() { this.stopped = true }
+  preventDefault() {}
+}
+const control = { dispatchEvent: (e) => calls.handed.push(e.type) }
 const doc = {
+  ...registry(docListeners),
+  defaultView: win,
   documentElement: { dataset: {} },
-  addEventListener: (...args) => { const l = key(...args); if (at(l) < 0) listeners.push(l) },
-  removeEventListener: (...args) => { const i = at(key(...args)); if (i >= 0) listeners.splice(i, 1) },
+  elementFromPoint: () => control,
 }
 const press = (type) => {
-  const event = {
-    type, target: doc.documentElement, stopped: false, defaultPrevented: false,
-    stopPropagation() { this.stopped = true }, preventDefault() { this.defaultPrevented = true },
-  }
-  const run = (capture) => listeners.filter((l) => l.type === type && l.capture === capture).forEach((l) => l.fn(event))
-  run(true)
-  if (!event.stopped) run(false)
+  const event = new Ev(type, { button: 0, clientX: 5, clientY: 5 })
+  event.isTrusted = true
+  windowListeners.filter((l) => l.type === type).forEach((l) => { if (!event.stopped) l.fn(event) })
+  if (!event.stopped) docListeners.filter((l) => l.type === type).forEach((l) => l.fn(event))
   return event
 }
 const ends = []
@@ -57,7 +67,12 @@ if (SUPPORTED) doc.startViewTransition = (cb) => {
   cb()
   const finished = new Promise((resolve) => ends.push(resolve))
   if (SKIPPED) end(ends.length - 1)
-  return { ready: SKIPPED ? Promise.reject(new Error('AbortError: Transition was skipped')) : Promise.resolve(), finished }
+  return {
+    ready: SKIPPED ? Promise.reject(new Error('AbortError: Transition was skipped')) : Promise.resolve(),
+    finished,
+    updateCallbackDone: Promise.resolve(),
+    skipTransition: () => { calls.skipped += 1 },
+  }
 }
 """
 
@@ -116,39 +131,40 @@ def test_a_skipped_transition_leaves_no_unhandled_rejection(choice):
 
 
 # An open frappe-ui dialog: reka-ui's DismissableLayer closes it on a pointerdown that reaches the
-# document's bubble listeners from outside the dialog, as a press on <html> does.
+# document's listeners from outside the dialog, as a press on <html> does.
 DIALOG = """
 const dialog = { open: true }
 doc.addEventListener('pointerdown', () => { dialog.open = false })
-const swallowed = (type) => { const event = press(type); return event.stopped && event.defaultPrevented }
+const GESTURE = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']
 """
 
 
 @pytest.mark.parametrize(
     "choice", [pytest.param(PRESS, id="wipe"), pytest.param(OS_CHANGE, id="fade")]
 )
-def test_an_open_dialog_stays_open_when_pressed_during_the_blend(choice):
+def test_a_press_during_the_blend_reaches_the_control_and_leaves_the_dialog_open(choice):
     got = _node(
         DIALOG
         + f"transitionScheme(() => {{}}, {json.dumps(choice)}, doc)\n"
         + """
-const during = ['pointerdown', 'mousedown', 'click'].map(swallowed)
+GESTURE.forEach(press)
+await tick()
 const openDuring = dialog.open
 end(0)
 await tick()
-const after = swallowed('pointerdown')
-console.log(JSON.stringify({ during, openDuring, after, openAfter: dialog.open }))
+press('pointerdown')
+console.log(JSON.stringify({ openDuring, skipped: calls.skipped, handed: calls.handed, openAfter: dialog.open }))
 """
     )
     assert got == {
-        "during": [True, True, True],
         "openDuring": True,
-        "after": False,
+        "skipped": 1,
+        "handed": ["pointerdown", "mousedown", "pointerup", "mouseup", "click"],
         "openAfter": False,
     }
 
 
-def test_a_blend_that_replaces_another_keeps_presses_swallowed_until_it_ends():
+def test_a_blend_that_replaces_another_still_hands_presses_over_until_it_ends():
     got = _node(
         DIALOG
         + """
@@ -156,15 +172,16 @@ transitionScheme(() => {}, PRESS, doc)
 transitionScheme(() => {}, OS_CHANGE, doc)
 end(0) // the browser skips the first blend when the second starts
 await tick()
-press('pointerdown')
+GESTURE.forEach(press)
+await tick()
 const openDuringSecond = dialog.open
 end(1)
 await tick()
 press('pointerdown')
-console.log(JSON.stringify({ openDuringSecond, openAfter: dialog.open }))
+console.log(JSON.stringify({ openDuringSecond, handed: calls.handed.length, openAfter: dialog.open }))
 """
     )
-    assert got == {"openDuringSecond": True, "openAfter": False}
+    assert got == {"openDuringSecond": True, "handed": 5, "openAfter": False}
 
 
 def test_without_view_transitions_the_swap_is_instant():
