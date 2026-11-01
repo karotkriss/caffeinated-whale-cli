@@ -195,6 +195,29 @@ class TestUnreadableRoutingData:
         assert result.data.reachable is False
         assert "has no live host binding" in result.warnings[-1].text
         assert "run 'cwcli axi scale proj'" in result.warnings[-1].text
+        assert result.data.reason == result.warnings[-1].text
+
+    def test_a_host_name_naming_an_unpublished_port_says_so_not_a_missing_binding(
+        self, monkeypatch, wire
+    ):
+        # The bench's own port IS published; only the site's declared port is not.
+        _site_cache(monkeypatch, default="dev.localhost", sites=["dev.localhost"])
+        c = UrlFakeContainer(
+            configs={BENCH_0: {"webserver_port": 8000, "socketio_port": 9000}},
+            site_configs={"dev.localhost": {"host_name": "http://dev.localhost:31337"}},
+            ports=_default_ports(),
+        )
+        wire(c, benches=[{"path": BENCH_0}])
+
+        result = core_url.probe_url("proj")
+
+        assert result.data.url is None
+        warning = next(w for w in result.warnings if w.code == "url.port_unpublished")
+        assert "http://dev.localhost:31337" in warning.text
+        assert "set-config host_name" in warning.text
+        assert "scale" not in warning.text and "host binding" not in warning.text
+        assert not any(w.code == "url.unresolved" for w in result.warnings)
+        assert result.data.reason == warning.text
 
 
 class TestExplicitMultiBenchSelection:

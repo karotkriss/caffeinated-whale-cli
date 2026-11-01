@@ -138,7 +138,7 @@ const heroFacts = computed(() => [
         <div class="mt-1 text-xs text-ink-gray-5">
           <template v-if="!running">the instance is stopped</template>
           <template v-else-if="probe.data && probe.data.url">{{ probe.data.reachable ? `answers HTTP ${probe.data.http_code}` : 'resolved, but did not answer' }}{{ probe.data.source === 'host_name' ? ' · its host_name' : '' }}{{ probe.data.internal_port ? " · includes the bench's port" : '' }}{{ host ? ` · an address on ${hostName(host)}` : '' }}</template>
-          <template v-else-if="probe.data">no published port resolves for this bench</template>
+          <template v-else-if="probe.data">{{ probe.data.reason || 'no address resolves for this site' }}</template>
           <template v-else-if="probe.error">{{ probe.error.message }}</template>
           <template v-else>resolved on request, the way Frappe builds it</template>
         </div>

@@ -68,6 +68,10 @@ class UrlProbe:
 
     ``reachable`` is ``http_code not in (None, "000")`` - the same "up" definition
     ``core.status`` uses: a bound port answering ANY code is up, unreachable is not.
+
+    ``reason`` is the text of the ``url.*`` warning that explains a ``url`` of None,
+    so a caller that reads only this record can still say why; None when ``url`` is
+    set.
     """
 
     project: str
@@ -80,6 +84,7 @@ class UrlProbe:
     internal_port: bool
     webserver_port_in: list[str]
     fix: list[FixStep]
+    reason: str | None = None
 
 
 def probe_url(
@@ -125,26 +130,34 @@ def probe_url(
 
     address = resolvers.resolve_site_address(container, resolved_bench_path, site=resolved_site)
     web_port = address.web_port
+    reason: Message | None = None
     if web_port is None:
-        warnings.append(
-            Message(
-                "url.unresolved",
-                f"Could not determine the web port of bench {resolved_bench_path} from its "
-                "sites/common_site_config.json (webserver_port) or its Procfile (the web "
-                "line), so the bench was not probed. Check that both files are readable, "
-                "then retry.",
-            )
+        reason = Message(
+            "url.unresolved",
+            f"Could not determine the web port of bench {resolved_bench_path} from its "
+            "sites/common_site_config.json (webserver_port) or its Procfile (the web "
+            "line), so the bench was not probed. Check that both files are readable, "
+            "then retry.",
+        )
+    elif address.url is None and resolvers.published_host_port(container, web_port) is None:
+        reason = Message(
+            "url.unresolved",
+            f"Container port {web_port} for bench {resolved_bench_path} has no "
+            "live host binding. If the bench is outside the instance's published "
+            f"range, run 'cwcli axi scale {project_name}'; otherwise repair the "
+            "Docker port binding, then retry.",
         )
     elif address.url is None:
-        warnings.append(
-            Message(
-                "url.unresolved",
-                f"Container port {web_port} for bench {resolved_bench_path} has no "
-                "live host binding. If the bench is outside the instance's published "
-                f"range, run 'cwcli axi scale {project_name}'; otherwise repair the "
-                "Docker port binding, then retry.",
-            )
+        reason = Message(
+            "url.port_unpublished",
+            f"The site's address {address.declared} names a port this instance does not "
+            "publish, so cwcli cannot tell where it opens. Correct the site's host_name "
+            f"(cwcli run {project_name} --site {resolved_site} set-config host_name "
+            "<address>), or open that address directly if something else on this "
+            "machine serves it.",
         )
+    if reason is not None:
+        warnings.append(reason)
 
     fix: list[FixStep] = []
     if address.internal_port and resolved_site is not None:
@@ -179,6 +192,7 @@ def probe_url(
             internal_port=address.internal_port,
             webserver_port_in=address.webserver_port_in,
             fix=fix,
+            reason=reason.text if reason is not None else None,
         ),
         warnings=warnings,
     )

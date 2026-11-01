@@ -208,7 +208,7 @@ def test_open_site_opens_only_an_http_address(run, url):
     )
     assert out["probe"] is None
     assert not [c for c in out["calls"] if "open" in c]
-    assert [t["title"] for t in out["toasts"]] == ["b.localhost is not serving"]
+    assert [t["title"] for t in out["toasts"]] == ["b.localhost has no address to open"]
 
 
 def test_a_tab_the_browser_would_block_after_the_start_is_offered_on_a_button(run):
@@ -594,3 +594,14 @@ def test_a_host_name_with_the_appended_port_asks_before_opening(run):
 
     assert out["asked"] is True
     assert _opened(out) == ["https://site.example.com:8000"]
+
+
+def test_a_site_with_no_address_shows_the_probes_own_reason(run):
+    reason = (
+        "The site's address http://dev.localhost:31337 names a port this instance does not publish."
+    )
+    out = _open(run, {"url": None, "reachable": False, "reason": reason}, answer=True)
+
+    assert out["probe"] is None
+    assert _opened(out) == []
+    assert [t["options"]["description"] for t in out["toasts"]] == [reason]

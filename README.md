@@ -3162,6 +3162,7 @@ The probe is a fresh `curl` run **every invocation**, inside the container again
 Like other single-bench verbs such as `cwcli axi logs`, a stopped project is a usage error naming `cwcli start` (exit 2, no `--yes`) and an ambiguous multi-bench project with no `--bench` is a usage error naming it.
 `--site` sends that site as the `Host` header (Frappe routes by `Host`); omitted, it falls back to the bench's own representative site (its default, else its only/first cached site), reported so the observation stays attributable, and a bench with no site at all is probed host-less rather than guessing one.
 A bench whose web port cannot be determined is `url: null` / `reachable: false` with a warning that names the two files to repair; a missing live host binding names `cwcli axi scale` when the bench lies beyond the published range.
+A localhost `host_name` that names a port this instance does not publish is also `url: null`, with a `url.port_unpublished` warning naming that address and how to correct the site's `host_name`; `reason` carries the warning's text in every `url: null` case.
 Neither case guesses `:8000`.
 `http_code` is whatever code curl saw, verbatim: a 404 or 500 still counts as `reachable: true`, exactly as `cwcli axi status` already treats "any code is serving".
 There is no human `cwcli url` yet.

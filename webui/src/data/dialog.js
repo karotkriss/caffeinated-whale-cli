@@ -137,7 +137,7 @@ async function openSite(ctx) {
   try {
     const probe = await getJsonUrl(ctx.project, query, ctx.host)
     if (!/^https?:\/\/[^/]/i.test(probe.url || '')) {
-      toast.warning(`${ctx.site} is not serving`, { description: 'No published port resolves for this bench; nothing was guessed.' })
+      toast.warning(`${ctx.site} has no address to open`, { description: probe.reason || 'cwcli could not resolve an address for this site; nothing was guessed.' })
       return null
     }
     const open = () => window.open(probe.url, '_blank', 'noopener')

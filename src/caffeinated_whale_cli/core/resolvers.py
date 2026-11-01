@@ -717,8 +717,11 @@ def _is_localhost(host: str) -> bool:
 class SiteAddress:
     """The address a person opens to reach a site, and where it came from.
 
-    ``url`` is None only when a localhost address needs a host port and no host
-    binding publishes it. ``source`` is ``host_name`` (the site's own declared address)
+    ``url`` is None only for a localhost address no host port resolves for: either
+    the bench's web port has no host binding, or the address names a port that is
+    neither the bench's web port nor one of the instance's published host ports.
+    ``declared`` is the address as Frappe builds it, before any host-port mapping,
+    so a caller can name it when ``url`` is None. ``source`` is ``host_name`` (the site's own declared address)
     or ``site`` (the site's name). ``internal_port`` is True when Frappe appended the
     bench's ``webserver_port`` to an address whose name is not a localhost one - what
     Frappe reports, but an address that fails when the site is served by its hostname
@@ -729,6 +732,7 @@ class SiteAddress:
     """
 
     url: str | None
+    declared: str
     source: str
     internal_port: bool
     webserver_port_in: list[str]
@@ -805,10 +809,12 @@ def resolve_site_address(container, bench_path: str, *, site: str | None) -> Sit
         appended = conf.get("http_port") or conf.get("webserver_port")
         if appended:
             url = f"{url}:{appended}"
+    declared = url
 
     def address(url: str | None, internal_port: bool = False) -> SiteAddress:
         return SiteAddress(
             url=url,
+            declared=declared,
             source=source,
             internal_port=internal_port,
             webserver_port_in=set_in,
