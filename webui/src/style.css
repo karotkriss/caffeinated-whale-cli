@@ -55,3 +55,11 @@ html { background: var(--surface-base); }
 .dialog-content { overflow-wrap: anywhere; }
 .dialog-content > * { max-width: 100%; }
 .dialog-content [role='tabpanel'] { min-width: 0; }
+
+/* frappe-ui's SettingsHeader and SettingsBody keep px-[4.4rem] (70 px each side) at
+   every width, which left a 217 px content column inside a 358 px phone dialog. The
+   panel's first child is the header; the scroll viewport is the body. */
+@media (max-width: 639.98px) {
+  .dialog-content [role='tabpanel'] > :first-child,
+  .dialog-content [role='tabpanel'] [data-reka-scroll-area-viewport] { padding-left: 1rem; padding-right: 1rem; }
+}
