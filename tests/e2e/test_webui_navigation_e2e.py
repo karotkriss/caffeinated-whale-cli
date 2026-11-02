@@ -24,32 +24,17 @@ open Appearance dialog mid scheme wipe.
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
-import threading
 import time
-import urllib.request
-from pathlib import Path
 
 import pytest
 
 from . import harness
+from .browser import Chrome, open_signed_in
 
 pytestmark = [pytest.mark.e2e]
 
 _TOKEN = "cwe2e-webui-nav-token"
 _PASSWORD = "cwe2e-webui-nav-password"
-_CHROME = os.environ.get("CWE2E_CHROME") or next(
-    (
-        p
-        for p in map(
-            shutil.which, ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
-        )
-        if p
-    ),
-    None,
-)
 
 # Sampled on every animation frame: the first text in the content column and the opacity
 # it is painted at (its own and every ancestor's up to the column). A frame with no text,
@@ -95,214 +80,12 @@ _SAMPLER = """
 """
 
 
-class Chrome:
-    """Headless Chrome driven over ``--remote-debugging-pipe`` (fd 3 in, fd 4 out)."""
-
-    def __init__(self, user_data_dir: Path):
-        chrome_in_r, self._w = os.pipe()
-        self._r, chrome_out_w = os.pipe()
-
-        def _wire():  # runs in the child before exec: the pipes become fds 3 and 4
-            a, b = os.dup(chrome_in_r), os.dup(chrome_out_w)
-            os.dup2(a, 3)
-            os.dup2(b, 4)
-
-        self.proc = subprocess.Popen(
-            [
-                _CHROME,
-                "--headless=new",
-                "--remote-debugging-pipe",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-                f"--user-data-dir={user_data_dir}",
-                "--window-size=1280,800",
-                "about:blank",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=False,
-            preexec_fn=_wire,
-        )
-        os.close(chrome_in_r)
-        os.close(chrome_out_w)
-        self._id = 0
-        self._replies: dict[int, dict] = {}
-        self._cv = threading.Condition()
-        threading.Thread(target=self._read, daemon=True).start()
-        target = next(
-            t for t in self.send("Target.getTargets")["targetInfos"] if t["type"] == "page"
-        )
-        self.session = self.send(
-            "Target.attachToTarget", {"targetId": target["targetId"], "flatten": True}
-        )["sessionId"]
-
-    def _read(self) -> None:
-        buf = b""
-        while True:
-            chunk = os.read(self._r, 65536)
-            if not chunk:
-                return
-            buf += chunk
-            while b"\0" in buf:
-                raw, buf = buf.split(b"\0", 1)
-                msg = json.loads(raw)
-                if "id" in msg:
-                    with self._cv:
-                        self._replies[msg["id"]] = msg
-                        self._cv.notify_all()
-
-    def send(
-        self, method: str, params: dict | None = None, *, page: bool = False, timeout: float = 30
-    ) -> dict:
-        self._id += 1
-        msg: dict = {"id": self._id, "method": method, "params": params or {}}
-        if page:
-            msg["sessionId"] = self.session
-        os.write(self._w, json.dumps(msg).encode() + b"\0")
-        deadline = time.monotonic() + timeout
-        with self._cv:
-            while self._id not in self._replies:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise TimeoutError(f"no reply to {method} within {timeout}s")
-                self._cv.wait(left)
-            reply = self._replies.pop(self._id)
-        if "error" in reply:
-            raise RuntimeError(f"{method}: {reply['error']}")
-        return reply.get("result", {})
-
-    def eval(self, expression: str, *, timeout: float = 30):
-        result = self.send(
-            "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True, "awaitPromise": True},
-            page=True,
-            timeout=timeout,
-        )
-        if "exceptionDetails" in result:
-            raise RuntimeError(result["exceptionDetails"].get("text", "evaluate failed"))
-        return result["result"].get("value")
-
-    def wait(self, expression: str, *, timeout: float = 30, desc: str = "page condition"):
-        # Each poll's evaluate is bounded on its own: a reply lost around a page load (seen
-        # once right after the first navigation) is retried within the wait instead of
-        # consuming it whole.
-        def poll():
-            try:
-                return self.eval(expression, timeout=5)
-            except TimeoutError:
-                return False
-
-        return harness.wait_until(poll, timeout=int(timeout), interval=0.1, desc=desc)
-
-    def stable_point(self, selector: str) -> dict:
-        """The element's centre once it stays put: its box unchanged across two consecutive
-        animation frames, and no view transition running. A press aimed at a box that is
-        still moving, or at a page still being cross-faded, would measure the test's timing
-        instead of the page."""
-        got = self.eval(
-            f"""(async () => {{
-  const el = document.querySelector({json.dumps(selector)})
-  if (!el) return {{ error: 'nothing matches' }}
-  el.scrollIntoView({{ block: 'center' }})
-  const frame = () => new Promise((r) => requestAnimationFrame(r))
-  const until = performance.now() + 10000
-  let last = null
-  while (performance.now() < until) {{
-    await frame()
-    const r = el.getBoundingClientRect()
-    const box = [r.left, r.top, r.width, r.height].join()
-    if (box === last && el.isConnected && !document.activeViewTransition)
-      return {{ x: r.left + r.width / 2, y: r.top + r.height / 2 }}
-    last = box
-  }}
-  return {{ error: 'not still within 10 s', box: last, transition: !!document.activeViewTransition }}
-}})()"""
-        )
-        assert "error" not in got, f"{selector!r}: {got}"
-        return got
-
-    def press_at(self, point: dict) -> None:
-        """A real mouse press and release at ``point`` (reka-ui tabs switch on pointerdown,
-        which a synthetic ``click()`` never produces)."""
-        for kind in ("mousePressed", "mouseReleased"):
-            self.send(
-                "Input.dispatchMouseEvent",
-                {"type": kind, "x": point["x"], "y": point["y"], "button": "left", "clickCount": 1},
-                page=True,
-            )
-
-    def click(self, selector: str) -> None:
-        self.press_at(self.stable_point(selector))
-
-    def close(self) -> None:
-        try:
-            self.send("Browser.close", timeout=5)
-        except Exception:  # noqa: BLE001 - best effort, the kill below is the guarantee
-            pass
-        try:
-            self.proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-
-
-@pytest.fixture(scope="module")
-def chrome(tmp_path_factory):
-    if _CHROME is None:
-        if os.environ.get("GITHUB_ACTIONS"):
-            pytest.fail(
-                "no Chrome binary on this runner; the navigation proof needs a real browser"
-            )
-        pytest.skip("no Chrome binary found (set CWE2E_CHROME)")
-    browser = Chrome(tmp_path_factory.mktemp("cwe2e-chrome"))
-    try:
-        yield browser
-    finally:
-        browser.close()
-
-
-def _browser_session(base: str) -> tuple[str, str]:
-    """Sign in the way the page does and return the session cookie (name, value).
-
-    The account is reset to the default password first, because the session's
-    ``CWCLI_HOME`` is shared and an earlier sign-in may have changed it.
-    """
-    reset = harness.run_cwcli("admin", "reset-password")
-    assert reset.returncode == 0, reset.stderr
-    req = urllib.request.Request(
-        base + "/api/v1/session",
-        data=json.dumps({"username": "admin", "password": "admin", "remember": False}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback
-        name, value = resp.headers["Set-Cookie"].split(";", 1)[0].split("=", 1)
-    req = urllib.request.Request(
-        base + "/api/v1/session/password",
-        data=json.dumps({"new": _PASSWORD, "current": "admin"}).encode(),
-        headers={"Content-Type": "application/json", "Cookie": f"{name}={value}"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback
-        assert resp.status == 200
-    return name, value
-
-
 def _open_instances(
     chrome: Chrome, base: str, project: str, *, width: int, height: int, reduced_motion: bool
 ) -> str:
     """Sign in, size the page, open the Instances page and return the instance's href."""
-    chrome.send("Network.enable", page=True)
-    name, value = _browser_session(base)
-    chrome.send("Network.setCookie", {"name": name, "value": value, "url": base}, page=True)
-    chrome.send(
-        "Emulation.setDeviceMetricsOverride",
-        {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 640},
-        page=True,
-    )
+    open_signed_in(chrome, base, _PASSWORD)
+    chrome.viewport(width, height)
     chrome.send(
         "Emulation.setEmulatedMedia",
         {
@@ -315,7 +98,7 @@ def _open_instances(
         },
         page=True,
     )
-    chrome.send("Page.navigate", {"url": base + "/instances"}, page=True)
+    chrome.navigate(base + "/instances")
     instance_href = f"/instances/{project}"
     chrome.wait(
         f"!!document.querySelector('a[href={json.dumps(instance_href)}]')",

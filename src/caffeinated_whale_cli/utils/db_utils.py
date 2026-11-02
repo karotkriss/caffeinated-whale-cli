@@ -483,7 +483,7 @@ def clear_all_cache():
     add reuse a caller's stored reference for a different bench.
     """
     initialize_database()
-    with db.atomic():
+    with db.atomic("IMMEDIATE"):
         for project in list(Project.select()):
             project.delete_instance(recursive=True)
 
@@ -492,8 +492,11 @@ def cache_project_data(project_name: str, bench_instances_data: list[dict]) -> d
     initialize_database()
     # Clear + rewrite in ONE transaction so a crash mid-write rolls back to the
     # prior consistent cache instead of leaving a partial one that later reads
-    # would serve as truth.
-    with db.atomic():
+    # would serve as truth. IMMEDIATE takes the write lock up front: this transaction
+    # reads the identities before it writes, and two DEFERRED writers overlapping (the
+    # web UI serves its detail reads on threads) deadlock on that upgrade, which SQLite
+    # breaks by failing one with "database is locked" instead of letting it wait.
+    with db.atomic("IMMEDIATE"):
         return _cache_project_data(project_name, bench_instances_data)
 
 
