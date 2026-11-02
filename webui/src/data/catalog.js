@@ -68,7 +68,7 @@ function upsertSource(source) {
   const rows = catalog.data.sources || (catalog.data.sources = [])
   const i = rows.findIndex((s) => s.host === source.host)
   if (i < 0) rows.push(source)
-  else rows.splice(i, 1, { ...rows[i], ...source, progress: rows[i].progress ?? source.progress })
+  else rows[i].signed_in = true
 }
 
 export const apps = computed(() => catalog.data?.apps || [])
@@ -112,6 +112,14 @@ export function namespaceOf(app) {
   return i > 0 ? path.slice(0, i) : ''
 }
 export const hostLabel = (host) => (host === 'github.com' ? 'GitHub' : host === 'marketplace' ? 'Marketplace' : host)
+// The forges in the grid's source filter: every signed-in source, plus any host the
+// apps came from. A host nobody is signed in to (installed apps that point at GitHub
+// on an install with no gh sign-in) is named as such, so picking it is never a surprise.
+export const hostFilterOptions = computed(() => {
+  const signedIn = new Set(sources.value.filter((s) => s.signed_in && s.kind !== 'marketplace').map((s) => s.host))
+  const hosts = [...new Set([...apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean), ...signedIn])].sort()
+  return hosts.map((h) => ({ label: signedIn.has(h) ? hostLabel(h) : `${hostLabel(h)} (not signed in)`, value: h }))
+})
 // "100 of 442" while a source's scan runs, else null.
 export const progressText = (s) => (s?.progress ? `${s.progress.done} of ${s.progress.total}` : null)
 // Every category the registry names, for the grid's filter.

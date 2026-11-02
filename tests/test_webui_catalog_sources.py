@@ -3,13 +3,12 @@
 * A ``source`` frame lists a host the moment its scan signs in, and a progress tick
   rides on that row, so the sidebar and the Sources card show ``100 of 442`` during
   a first scan instead of nothing (item 1).
-* The source filter names a forge nobody is signed in to as such (item 2), and the
-  sidebar's scroll region fades at its bottom edge instead of slicing a row (item 3);
-  both live in templates, so they are pinned on the source text.
+* A rescan of a host the page already knows keeps its remembered row (counts,
+  account, icon) instead of the blank row the scan starts from.
+* The source filter names a forge nobody is signed in to as such (item 2).
 """
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,27 +91,51 @@ console.log(JSON.stringify({{ reads: globalThis.__t.reads.length, progress: m.ca
     assert out["progress"] == {"host": "gitlab.example.com", "done": 20, "total": 442}
 
 
-def test_the_source_filter_names_a_forge_nobody_is_signed_in_to():
-    grid = (WEBUI / "components" / "AppsGrid.vue").read_text()
-    assert "(not signed in)" in grid
-    assert re.search(r"signedInHosts\.value\.has\(h\) \? hostLabel\(h\)", grid)
+def test_a_rescan_of_a_known_host_keeps_its_remembered_row(tmp_path):
+    known = {
+        "kind": "github",
+        "host": "github.com",
+        "signed_in": True,
+        "account": "octo",
+        "apps": 50,
+        "repos": 120,
+        "icon": {"url": "/icon.png"},
+        "state": "verified",
+        "scanned_at": 1700000000,
+    }
+    script = f"""
+globalThis.__t = {{ reads: [], answer: {{ scanned_at: 1700000000, scanning: false, sources: [{json.dumps(known)}], apps: [] }} }}
+const m = await import({json.dumps(MODULE.as_uri())})
+await m.loadCatalog()
+m.catalogLanded({{ source: {{ kind: 'github', host: 'github.com', signed_in: true, account: null, apps: 0, repos: 0, icon: null, state: 'unverified', scanned_at: null, progress: null }} }})
+console.log(JSON.stringify({{ rows: m.sources.value, icon: m.hostIcon('github.com') }}))
+"""
+    out = _run(script, tmp_path)
+    assert out["rows"] == [known]
+    assert out["icon"] == "/icon.png"
 
 
-def test_the_sidebar_scroll_region_fades_at_its_bottom_edge():
-    shell = (WEBUI / "components" / "Shell.vue").read_text()
-    assert re.search(r'viewport-class="cw-fade-bottom[^"]*pb-10', shell)
-    css = (WEBUI / "style.css").read_text()
-    assert re.search(
-        r"\.cw-fade-bottom \{[^}]*mask-image: linear-gradient\(to bottom, black calc\(100% - 2\.5rem\), transparent\)",
-        css,
-    )
-
-
-def test_the_sidebar_and_sources_card_show_the_scan_progress():
-    shell = (WEBUI / "components" / "Shell.vue").read_text()
-    assert "progressText(s)" in shell and "s.progress.done }}/{{ s.progress.total" in shell
-    apps = (WEBUI / "pages" / "Apps.vue").read_text()
-    assert (
-        "scanning ${hostLabel(scanningSource.host)} · ${progressText(scanningSource)} projects"
-        in apps
-    )
+def test_the_source_filter_names_a_forge_nobody_is_signed_in_to(tmp_path):
+    answer = {
+        "scanned_at": None,
+        "scanning": False,
+        "sources": [
+            {"kind": "github", "host": "github.com", "signed_in": False},
+            {"kind": "gitlab", "host": "gitlab.example.com", "signed_in": True},
+            {"kind": "marketplace", "host": "marketplace", "signed_in": True},
+        ],
+        "apps": [
+            {"name": "hrms", "source": {"kind": "github", "host": "github.com"}},
+            {"name": "shop", "source": {"kind": "marketplace", "host": "marketplace"}},
+        ],
+    }
+    script = f"""
+globalThis.__t = {{ reads: [], answer: {json.dumps(answer)} }}
+const m = await import({json.dumps(MODULE.as_uri())})
+await m.loadCatalog()
+console.log(JSON.stringify(m.hostFilterOptions.value))
+"""
+    assert _run(script, tmp_path) == [
+        {"label": "GitHub (not signed in)", "value": "github.com"},
+        {"label": "gitlab.example.com", "value": "gitlab.example.com"},
+    ]

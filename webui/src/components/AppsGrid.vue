@@ -7,7 +7,7 @@ import { Button, ErrorMessage, Select, TabButtons, TextInput, Tooltip, toast } f
 import AppTile from './AppTile.vue'
 import EmptyState from './EmptyState.vue'
 import HostIcon from './HostIcon.vue'
-import { ago, apps, catalog, categories, filterApps, hostLabel, loadCatalog, progressText, scanCatalog, sources } from '../data/catalog'
+import { ago, apps, catalog, categories, filterApps, hostFilterOptions, hostLabel, loadCatalog, progressText, scanCatalog, sources } from '../data/catalog'
 import { localInstances } from '../data/fleet'
 import { openApp } from '../data/app-panel'
 import { loadUpdates, updatesForApp } from '../data/updates'
@@ -44,15 +44,10 @@ const updateKeys = computed(() => new Set(apps.value.filter((a) => updatesForApp
 const updatesCount = computed(() => updateKeys.value.size)
 const categoryOptions = computed(() => [{ label: 'Any category', value: 'all' }, ...categories.value.map((c) => ({ label: c, value: c }))])
 
-// The forges in the filter: every signed-in source, plus any host the apps came
-// from. A host nobody is signed in to (installed apps that point at GitHub on an
-// install with no gh sign-in) is named as such, so picking it is never a surprise.
-const signedInHosts = computed(() => new Set(sources.value.filter((s) => s.signed_in && s.kind !== 'marketplace').map((s) => s.host)))
-const hosts = computed(() => [...new Set([...apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean), ...signedInHosts.value])].sort())
 const sourceOptions = computed(() => [
   { label: 'All sources', value: 'all' },
   { label: 'Installed anywhere', value: 'installed' },
-  ...hosts.value.map((h) => ({ label: signedInHosts.value.has(h) ? hostLabel(h) : `${hostLabel(h)} (not signed in)`, value: h })),
+  ...hostFilterOptions.value,
   { label: 'Marketplace (public index)', value: 'marketplace' },
   { label: 'Local only', value: 'local' },
 ])
