@@ -77,6 +77,26 @@ console.log(JSON.stringify({{ before, listed, text: m.progressText(row), scannin
     assert out["reads"] == 1, "no re-read was needed: the frames carried the row"
 
 
+def test_a_frame_for_the_next_host_ends_the_previous_hosts_progress(tmp_path):
+    script = f"""
+globalThis.__t = {{ reads: [], answer: {{ scanned_at: null, scanning: true, sources: [{{ kind: 'gitlab', host: 'a.example.com', signed_in: true }}, {{ kind: 'gitlab', host: 'b.example.com', signed_in: true }}], apps: [] }} }}
+const m = await import({json.dumps(MODULE.as_uri())})
+await m.loadCatalog()
+const text = (h) => m.progressText(m.sources.value.find((s) => s.host === h))
+m.catalogLanded({{ progress: {{ host: 'a.example.com', done: 442, total: 442 }} }})
+const before = text('a.example.com')
+m.catalogLanded({{ progress: {{ host: 'b.example.com', done: 1, total: 10 }} }})
+const afterTick = [text('a.example.com'), text('b.example.com')]
+m.catalogLanded({{ source: {{ kind: 'marketplace', host: 'marketplace', signed_in: true }} }})
+console.log(JSON.stringify({{ before, afterTick, afterSource: text('b.example.com') }}))
+"""
+    assert _run(script, tmp_path) == {
+        "before": "442 of 442",
+        "afterTick": [None, "1 of 10"],
+        "afterSource": None,
+    }
+
+
 def test_a_tick_for_a_host_the_page_has_not_seen_re_reads_the_catalog(tmp_path):
     script = f"""
 globalThis.__t = {{ reads: [], answer: {{ scanned_at: null, scanning: true, sources: [], apps: [] }} }}

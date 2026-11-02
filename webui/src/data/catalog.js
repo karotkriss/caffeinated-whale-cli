@@ -44,7 +44,11 @@ export async function scanCatalog() {
 // answer, a progress tick, or the landing. A source is listed the moment it
 // answers (a first scan has no row on disk yet), and the tick rides on its row,
 // so the sidebar and the Sources card show "100 of 442" while the scan runs.
+// Hosts are scanned one after another, so a frame for one host ends every other
+// row's progress.
 export function catalogLanded(frame = {}) {
+  const host = frame.source?.host || frame.progress?.host
+  if (host) for (const s of sources.value) if (s.host !== host) s.progress = null
   if (frame.source) {
     catalog.scanning = true
     upsertSource(frame.source)

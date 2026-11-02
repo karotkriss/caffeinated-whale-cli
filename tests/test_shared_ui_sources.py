@@ -250,15 +250,33 @@ def test_the_branch_list_git_asks_the_shared_credential_first(
     assert machine_bridge.asked_by_member == []
 
 
-def test_the_dependency_read_git_is_given_the_same_helper(tmp_path, monkeypatch):
+def _resolved_helpers(tmp_path) -> list[str]:
+    """The credential helper real git resolves for a GitHub and a GitLab URL, through
+    the dependency read's own git call (``app_deps._git``, which uses ``_git_env``)."""
     from caffeinated_whale_cli.core import app_deps
 
-    monkeypatch.setattr(git_refs, "gitlab_hosts", lambda: ["gitlab.example.com"])
+    out = []
     for url in ("https://github.com/acme/app", "https://gitlab.example.com/acme/app"):
-        code, out, _err = app_deps._git(
+        code, text, _err = app_deps._git(
             ["config", "--get-urlmatch", "credential.helper", url], str(tmp_path)
         )
-        assert code == 0 and out.strip().splitlines()[-1] == git_refs.credential_helper()
+        assert code == 0
+        out.append(text.strip().splitlines()[-1])
+    return out
+
+
+def test_the_dependency_read_git_is_given_the_same_helper(shared_mode, tmp_path, monkeypatch):
+    monkeypatch.setattr(git_refs, "gitlab_hosts", lambda: ["gitlab.example.com"])
+    assert _resolved_helpers(tmp_path) == [git_refs.credential_helper()] * 2
+
+
+def test_per_user_git_keeps_asking_gh_and_glab_directly(tmp_path, monkeypatch):
+    """Outside shared mode the host git's helpers are the account's own tools, as
+    before: no Python helper process (a frozen standalone exe has no ``-m``)."""
+    monkeypatch.setenv("CWCLI_SHARED_MARKER", str(tmp_path / "absent.toml"))
+    monkeypatch.setattr(git_refs.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(git_refs, "gitlab_hosts", lambda: ["gitlab.example.com"])
+    assert _resolved_helpers(tmp_path) == ["!gh auth git-credential", "!glab auth git-credential"]
 
 
 def test_a_scan_lists_no_allowlist_only_host_nothing_can_sign_in_to(tmp_path, monkeypatch):
@@ -285,11 +303,52 @@ def test_a_scan_lists_no_allowlist_only_host_nothing_can_sign_in_to(tmp_path, mo
             {},
         ),
     )
+    store._remote_state["gitlab.com"] = "verified"
     store._scanning = True
     store._scan(None)
     hosts = {s.host: s for s in store.sources()}
     assert "gitlab.com" not in hosts
     assert hosts["gitlab.example.com"].signed_in is False
+    assert store._remote_state["gitlab.com"] == "unverified", "remembered apps served as verified"
+
+
+def test_a_finished_hosts_progress_ends_when_the_next_host_scans(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(cat, "gitlab_hosts", lambda: ["a.example.com", "b.example.com"])
+    monkeypatch.setattr(cat, "extra_sources", lambda: [])
+    seen: dict[str, object] = {}
+
+    def gl(host, previous, extra_groups=None, progress=None, *, started=None):
+        src = cat.SourceState(kind="gitlab", host=host, signed_in=True)
+        started(src)
+        if host == "b.example.com":
+            progress(1, 10)
+            rows = {s.host: s for s in store.sources()}
+            seen["a"], seen["b"] = rows["a.example.com"].progress, rows["b.example.com"].progress
+        else:
+            progress(442, 442)
+        return src, {}
+
+    monkeypatch.setattr(cat, "scan_gitlab", gl)
+    monkeypatch.setattr(
+        cat,
+        "scan_github",
+        lambda previous, extra, *, started=None: (
+            cat.SourceState(kind="github", host="github.com", error="gh is not signed in"),
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        cat,
+        "scan_marketplace",
+        lambda previous, *, started=None: (
+            cat.SourceState(kind="marketplace", host="marketplace", signed_in=True),
+            {},
+        ),
+    )
+    store._scanning = True
+    store._scan(None)
+    assert seen == {"a": None, "b": {"done": 1, "total": 10}}
 
 
 # ------------------------------------------------- item 1: listed while scanning

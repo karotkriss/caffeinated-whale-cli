@@ -1761,7 +1761,11 @@ class CatalogStore:
                 gl_source, gl_apps = scan_gitlab(
                     host, previous, groups, progress=_progress, started=_started
                 )
+                self._progress.pop(host, None)
                 if not gl_source.signed_in and host not in glab_config_hosts():
+                    with self._lock:
+                        if host in self._remote_state:
+                            self._remote_state[host] = "unverified"
                     continue
                 sources.append(gl_source)
                 if gl_source.error is None:
