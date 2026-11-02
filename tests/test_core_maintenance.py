@@ -447,6 +447,17 @@ class TestClear:
         assert out.ok and out.cleared_sites == ["a.localhost"]
         assert bench.commands == ["bench --site a.localhost set-maintenance-mode off"]
 
+    def test_an_unreadable_config_is_never_reported_clean(self, wire):
+        bench = wire(_Bench({}, {"a.localhost": {}}, unserved=True))
+        bench.common = maintenance_fakes.UNREADABLE
+
+        result = m.clear("proj", consent=True)
+
+        assert result.data.ok is False
+        assert bench.commands == []
+        (warning,) = [w for w in result.warnings if w.code == "maintenance.unknown"]
+        assert "a.localhost" in warning.text
+
     def test_a_site_scope_never_clears_the_bench_wide_flag(self, wire):
         bench = wire(
             _Bench(

@@ -570,6 +570,19 @@ class TestMaintenanceQuestion:
         assert exc.value.exit_code == 2
         assert "does not combine with --watch" in capsys.readouterr().err
 
+    def test_the_flag_refuses_a_site_whose_config_could_not_be_read(self, monkeypatch, capsys):
+        unknown = core_maintenance.BenchMaintenance(
+            bench_path="/w/b0",
+            bench_flags=[],
+            sites=[core_maintenance.SiteMaintenance(site="site.example.com", on=None)],
+            down=[],
+        )
+        code, out, _, cleared = _maintenance_run(monkeypatch, capsys, unknown, tty=False, flag=True)
+
+        assert cleared == [] and code == 1
+        assert "could not read maintenance mode on site.example.com" in harness_collapse(out.err)
+        assert "No site is in maintenance mode" not in out.err
+
     def test_the_flag_refuses_a_stopped_instance(self, monkeypatch, capsys):
         code, out, _, cleared = _maintenance_run(
             monkeypatch, capsys, None, tty=False, flag=True, report=_report("offline")
