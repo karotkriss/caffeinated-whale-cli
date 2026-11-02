@@ -163,7 +163,7 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
     """Ask (or, with ``--clear-maintenance``, just do) the clear for each stuck bench.
 
     Returns the exit code: 1 when ``--clear-maintenance`` was refused (something that
-    sets maintenance mode still runs, or a bench's maintenance state could not be
+    sets maintenance mode still runs, or a bench's or site's maintenance state could not be
     read) or a clear left a site down, else 0. A declined question is not a failure.
     """
     stuck = [b for b in report.benches if b.maintenance and b.maintenance.needs_clearing]
