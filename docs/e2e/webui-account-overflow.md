@@ -16,6 +16,7 @@ The panel is a flex-row item of the dialog, so its minimum width became the widt
 
 The panel and the `SettingsContent` row that holds it both take `min-w-0`, because each is a flex-row item, so the column keeps the width the dialog gives it and a long row truncates inside it.
 Each row still shows the stored user agent, now truncated with an ellipsis, and the row's `title` carries the full text so it stays reachable on hover; below the `sm` breakpoint the account rows stack their control under the text instead of squeezing it.
+The panel's `min-w-0` and the phone stacking have since moved into the shared dialog rules and the `SettingsRow` wrapper; see [webui-modal-overflow.md](webui-modal-overflow.md).
 
 | Width | After |
 | --- | --- |
