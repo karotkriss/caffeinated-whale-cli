@@ -400,8 +400,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
           </SettingsBody>
         </SettingsPanel>
 
-        <!-- min-w-0: as on the account panel; the grant command (one long key token) must wrap, not widen the column. -->
-        <SettingsPanel value="integrations" class="min-w-0">
+        <SettingsPanel value="integrations">
           <SettingsHeader title="Integrations" :description="integrations.host ? `${machine}'s own integrations, set up and tested from this hub through its link. Each starts off; turning one on tests it on ${machine} first and turns it on only when the test passes. Secrets are stored encrypted on ${machine} and never leave it: this hub relays only the setup form and the test result.` : 'Connect cwcli to systems outside it. Each starts off; turning one on tests it first and turns it on only when the test passes. Secrets are stored encrypted on this machine and never shown again.'">
             <!-- The picker sits beside the heading, except on a phone, where it would squeeze the text to a word a line: there it goes below. -->
             <template v-if="hasHosts" #actions><Select v-model="integrationsHost" :options="machineOptions" class="w-56 max-sm:hidden" aria-label="Machine whose integrations to set up" /></template>
