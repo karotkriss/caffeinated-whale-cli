@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-11-02
+
+### Added
+
+- **Set up each remote host's own integrations from the hub** - the hub's Settings > Integrations gains a machine picker: with a remote host picked, the panel lists that host's own Cloudflare DNS and Nginx Proxy Manager setup and runs Test, Detect and Save on that host, whose secrets stay sealed there.
+  - When the remote host granted the hub less than the Admin cap, the panel says so and names the exact `cwcli remote allow ... --max-role admin` command to run on that host.
+  - Publishing follows the instance: New site, the Sites list, the site page and a publish job on a remote instance use, and name, that host's own integration settings.
+- **`status` finds sites stuck in maintenance mode and offers to take them out** - it reads every site of the bench, including the bench-wide `maintenance_mode` flag that makes every site answer 503, and names who turned it on when cwcli did.
+  - On a terminal `status` asks; `--clear-maintenance` takes them out without asking (`--site` limits it to one site's own flag) and exits 1 when it is refused or a site still answers 503. It refuses while a migrate, update or restore still runs or a migrate lock is held.
+  - The web UI's instance, bench, site and Sites pages show the fault and offer a clear-maintenance job; publishing names maintenance mode as the cause, and the update preflight's maintenance finding points at the fix.
+
+### Fixed
+
+- **Dialogs no longer overflow sideways** - Settings and every other web UI dialog keep long values (keys, commands, paths, addresses) inside the dialog at every width, and Settings stacks its rows on a phone.
+- **Presses made during a page transition reach the page** - a click or tap during the web UI's page cross-fade is no longer dropped; it lands on the new page, and the cross-fade ends sooner.
+- **App sources on a shared install** - the web UI Apps page:
+  - lists a source while its first scan runs, with its progress;
+  - names a forge nobody is signed in to as not signed in, and lists every signed-in forge;
+  - uses the machine's shared credential first on a shared install, so members see the shared app sources;
+  - runs `gh` and `glab` from a neutral folder, so a GitLab scan no longer fails when the web UI was started inside a repository the account cannot read.
+- **The web UI sidebar scrolls cleanly** - its last instance fades out above the footer instead of being cut off.
+
 ## [3.6.1] - 2026-11-01
 
 ### Added
