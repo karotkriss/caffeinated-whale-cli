@@ -26,6 +26,7 @@ sibling tests on the shared instance are undisturbed.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import warnings
 
@@ -58,6 +59,30 @@ def _set_bench_flags(inst, value: int) -> None:
             inst.name, f"cd {inst.bench} && bench set-config --global --parse {flag} {value}"
         )
         assert code == 0, out
+
+
+def _site_override(inst, value: int | None) -> int | None:
+    """Set, or with None remove, the session site's own ``maintenance_mode``; return the old.
+
+    Earlier tests on the shared instance migrate this site, and ``bench --site X
+    set-maintenance-mode off`` leaves ``maintenance_mode: 0`` in its own
+    site_config.json. A site's own key wins over the bench-wide one, so it must be
+    gone for the site to inherit the bench-wide flag the way the incident's site did.
+    """
+    script = (
+        "import json, sys; p = sys.argv[1]; c = json.load(open(p)); "
+        "old = c.pop('maintenance_mode', None); v = sys.argv[2]; "
+        "c.update({} if v == '-' else {'maintenance_mode': int(v)}); "
+        "json.dump(c, open(p, 'w'), indent=1); print('-' if old is None else old)"
+    )
+    path = f"{inst.bench}/sites/{inst.site}/site_config.json"
+    arg = "-" if value is None else str(value)
+    code, out = harness.exec_in_frappe(
+        inst.name, f"python3 -c {shlex.quote(script)} {shlex.quote(path)} {arg}"
+    )
+    assert code == 0, out
+    old = out.strip().splitlines()[-1]
+    return None if old == "-" else int(old)
 
 
 def _ping(inst, port: int) -> tuple[str, bool]:
@@ -118,6 +143,7 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
     _ensure_serving(inst.name)
     port = int(_common(inst).get("webserver_port") or 8000)
     cid = harness.frappe_container_id(inst.name)
+    own = _site_override(inst, None)
     try:
         _create_site(inst, MIGRATE_SITE)
         _set_bench_flags(inst, 1)
@@ -198,4 +224,8 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
             _set_bench_flags(inst, 0)
         except AssertionError as e:  # pragma: no cover - defensive teardown
             warnings.warn(f"could not reset the bench-wide flags: {e}", stacklevel=2)
+        try:
+            _site_override(inst, own)
+        except AssertionError as e:  # pragma: no cover - defensive teardown
+            warnings.warn(f"could not restore the site's own flag: {e}", stacklevel=2)
         _drop_site(inst, MIGRATE_SITE)

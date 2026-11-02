@@ -553,6 +553,10 @@ class TestMaintenanceQuestion:
         assert "No site is in maintenance mode" not in out.err
 
     def test_the_flag_with_watch_is_a_usage_error(self, monkeypatch, capsys):
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(
+            docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+        )
         monkeypatch.setattr(
             status_mod.core_status, "status", lambda *a, **k: pytest.fail("must not read status")
         )
