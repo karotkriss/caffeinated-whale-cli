@@ -69,6 +69,12 @@ UNKNOWN = "unknown"
 # :meth:`Fleet.set_focus`).
 WEB_PROBE_WINDOW_S = 30.0
 
+# How often an instance NOBODY has open still gets its maintenance-mode read (one
+# exec per bench, no HTTP request), so the Sites list can show and offer to clear a
+# site stuck at 503 on an instance no page is focused on. Between reads the last
+# answer is carried forward rather than dropped to "unknown".
+MAINTENANCE_REFRESH_S = 30.0
+
 # The lifecycle actions worth reacting to. Deliberately NOT ``exec_*``: this
 # daemon's own probes emit three exec events per cycle and would wake themselves.
 EVENT_ACTIONS = ["start", "stop", "die", "kill", "restart", "destroy"]
@@ -163,12 +169,43 @@ def health_key(state: InstanceState) -> tuple:
                 b.web_http_code,
                 b.web_listening,
                 b.maintenance_mode,
+                _maintenance_key(b.maintenance),
                 b.not_cwcli_supervised,
                 b.bench_present,
                 tuple((p.label, p.up, p.pid, p.state) for p in b.processes),
             )
             for b in state.benches
         ),
+    )
+
+
+def _carry_maintenance(benches: list[BenchStatus], previous: list[BenchStatus]) -> list:
+    """``benches`` with each bench's last maintenance answer where this cycle read none."""
+    before = {b.bench_path: b for b in previous}
+    out = []
+    for bench in benches:
+        old = before.get(bench.bench_path)
+        if bench.maintenance is None and old is not None and old.maintenance is not None:
+            bench = replace(
+                bench,
+                maintenance=old.maintenance,
+                maintenance_mode=old.maintenance_mode,
+                web_site=bench.web_site or old.web_site,
+            )
+        out.append(bench)
+    return out
+
+
+def _maintenance_key(report) -> tuple | None:
+    """A bench's maintenance state as a stable tuple: every field the pages render."""
+    if report is None:
+        return None
+    return (
+        tuple(report.bench_flags),
+        tuple((s.site, s.on, s.cause, s.served_as) for s in report.sites),
+        report.served_as,
+        tuple((o.site, o.verb, o.job_id, o.running) for o in report.owners),
+        tuple(report.busy),
     )
 
 
@@ -195,6 +232,7 @@ class Fleet:
         self._generations: dict[str, int] = {}
         self._focus: set[str] = set()
         self._web_until: dict[str, float] = {}
+        self._maintenance_due: dict[str, float] = {}
         self._window = web_probe_window_s
         self._publish = publish or (lambda tier, project, state, cause: None)
         self._publish_docker = lambda docker_state: None
@@ -376,10 +414,15 @@ class Fleet:
             generation = self._generations.get(project, 0)
             focused = project in self._focus
             probe_web = focused or time.monotonic() < self._web_until.get(project, 0.0)
+            read_maintenance = probe_web or time.monotonic() >= self._maintenance_due.get(
+                project, 0.0
+            )
 
         started = time.monotonic()
         try:
-            report = core_status.status(project, probe_web=probe_web, fused=True).data
+            report = core_status.status(
+                project, probe_web=probe_web, fused=True, read_maintenance=read_maintenance
+            ).data
         except (CwcliError, DockerException, OSError) as e:
             if isinstance(e, CwcliError) and e.kind is ErrorKind.NOT_FOUND:
                 # The project is gone. The health tier cannot express that (it
@@ -413,10 +456,16 @@ class Fleet:
                 # that follows is then correctly suppressed as no change.
                 self.bootstrap()
                 return
+            benches = report.benches
+            if read_maintenance:
+                with self._lock:
+                    self._maintenance_due[project] = time.monotonic() + MAINTENANCE_REFRESH_S
+            else:
+                benches = _carry_maintenance(benches, state.benches)
             new = replace(
                 state,
                 overall=report.overall,
-                benches=report.benches,
+                benches=benches,
                 web_probed=probe_web,
                 probe_error=None,
                 probed_at=time.time(),

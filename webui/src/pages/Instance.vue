@@ -5,6 +5,7 @@ import { Button, Dropdown, Alert, TextInput, Tabs, TabList, TabTrigger, TabPanel
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import StatusBadge from '../components/StatusBadge.vue'
 import PageHero from '../components/PageHero.vue'
+import MaintenanceAlert from '../components/MaintenanceAlert.vue'
 import PerformancePanel from '../components/PerformancePanel.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import UpdatePill from '../components/UpdatePill.vue'
@@ -113,6 +114,15 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
     <Alert v-if="host && link && !link.actions_allowed" :theme="link.readable ? 'gray' : 'amber'" :title="`${hostName(host)} is ${link.state.replaceAll('_', ' ')}`" :description="linkAdvice(link)" />
     <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on ${machine}`" description="It may have been removed or live on another Docker daemon. Search (Ctrl+K) finds the benches and sites cwcli remembers for it." />
     <Alert v-else-if="inst && !running" theme="gray" :title="`${project} is stopped`" description="Benches, sites and apps below are remembered from the cwcli cache. Process health and logs need the container running." />
+    <template v-if="running">
+      <MaintenanceAlert
+        v-for="b in inst.benches || []"
+        :key="b.index"
+        :maintenance="b.maintenance"
+        :ctx="{ project, host, bench: String(b.index), benchName: benchName(b) }"
+        :where="(inst.benches || []).length > 1 ? ` on ${benchName(b)}` : ''"
+      />
+    </template>
 
     <LoadingText v-if="detail.loading && !detail.data" text="Reading the cache..." />
     <div v-else-if="detail.error && gone" class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">

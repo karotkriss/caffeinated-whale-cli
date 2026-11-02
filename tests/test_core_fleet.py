@@ -422,6 +422,90 @@ class TestHonestUnknown:
         assert bench["web_listening"] is True and bench["web_http_code"] is None
 
 
+def _maint(down=("a.localhost",)):
+    from caffeinated_whale_cli.core import maintenance as core_maintenance
+
+    return core_maintenance.BenchMaintenance(
+        bench_path="/workspace/frappe-bench",
+        bench_flags=["maintenance_mode"],
+        sites=[core_maintenance.SiteMaintenance(site=s, on=True, cause="bench") for s in down],
+        down=list(down),
+    )
+
+
+class TestMaintenanceCadence:
+    """Maintenance mode reaches the Sites list for instances no page has open: read
+    on a slow cadence and carried forward between reads, never dropped to unknown."""
+
+    def test_an_unfocused_instance_still_gets_its_maintenance_read_then_waits(
+        self, listing, probing, monkeypatch
+    ):
+        clock = {"now": 100.0}
+        monkeypatch.setattr(core_fleet.time, "monotonic", lambda: clock["now"])
+        listing(("p", "running", ["8000"]))
+        probing(
+            lambda project, **kw: _report(
+                benches=[_bench(maintenance=_maint() if kw["read_maintenance"] else None)]
+            )
+        )
+        f = core_fleet.Fleet()
+        f.bootstrap()
+
+        f.probe("p")
+        assert probing.calls[-1][1]["read_maintenance"] is True
+        assert probing.calls[-1][1]["probe_web"] is False  # still no web check
+
+        clock["now"] += 5
+        f.probe("p")
+        assert probing.calls[-1][1]["read_maintenance"] is False
+        # Carried forward: the Sites list keeps showing the stuck site.
+        assert f.get("p").benches[0].maintenance.down == ["a.localhost"]
+
+        clock["now"] += core_fleet.MAINTENANCE_REFRESH_S
+        f.probe("p")
+        assert probing.calls[-1][1]["read_maintenance"] is True
+
+    def test_a_cycle_that_skips_the_read_publishes_no_change(self, listing, probing, monkeypatch):
+        clock = {"now": 100.0}
+        monkeypatch.setattr(core_fleet.time, "monotonic", lambda: clock["now"])
+        listing(("p", "running", ["8000"]))
+        probing(
+            lambda project, **kw: _report(
+                benches=[
+                    (
+                        _bench(maintenance=_maint(), maintenance_mode=True)
+                        if kw["read_maintenance"]
+                        else _bench(web_site=None)
+                    )
+                ]
+            )
+        )
+        f = core_fleet.Fleet()
+        f.bootstrap()
+
+        f.probe("p")
+        read = core_fleet.health_key(f.get("p"))
+        clock["now"] += 5
+        f.probe("p")
+
+        assert core_fleet.health_key(f.get("p")) == read
+
+    def test_a_focused_instance_reads_it_every_probe(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        f.set_focus({"p"})
+        f.probe("p")
+        f.probe("p")
+        assert [c[1]["read_maintenance"] for c in probing.calls[-2:]] == [True, True]
+
+    def test_a_maintenance_change_is_published(self):
+        assert core_fleet.health_key(_state()) != core_fleet.health_key(
+            _state(benches=[_bench(maintenance=_maint())])
+        )
+
+
 class TestWebProbeCadence:
     """Decision B: process health on the normal cadence, the web check only when
     a client is looking or a lifecycle event just landed."""

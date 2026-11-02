@@ -381,7 +381,9 @@ def _set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> 
     lifecycle drift until one stops disabling, and a site stuck in maintenance mode
     is a site that is down.
     """
-    return bench_ops.set_maintenance(container, bench_path, site, enable=enable)
+    return bench_ops.set_maintenance(
+        container, bench_path, site, enable=enable, owner="apps update" if enable else None
+    )
 
 
 def _restore_pre_maintenance_on_abort(

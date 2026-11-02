@@ -20,6 +20,7 @@ import pytest
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests import maintenance_fakes
 
 BENCH = "/workspace/frappe-bench"
 _CFG = supervision._config_path(BENCH)
@@ -94,7 +95,20 @@ class FakeContainer:
         markers=None,
         absent_paths=(),
         presence_probe_fails=False,
+        site_configs=None,
+        maintenance_owners=None,
+        maintenance_procs=None,
+        ping_answers=None,
     ):
+        # ``core.maintenance``'s one-exec read: each site's own config keyed
+        # ``(bench, site)`` (the bench's common config is ``configs[bench]``), its
+        # cwcli maintenance records keyed the same way, and the processes whose
+        # working directory is inside the bench (pid -> argv). ``ping_answers`` is the
+        # live probe's site -> (http_code, session_stopped); unnamed sites answer 200.
+        self.site_configs = site_configs or {}
+        self.maintenance_owners = maintenance_owners or {}
+        self.maintenance_procs = maintenance_procs or {}
+        self.ping_answers = ping_answers or {}
         # The shared bench-existence probe (`resolvers.present_bench_paths`):
         # every path asked about exists unless named in ``absent_paths``, and
         # ``presence_probe_fails`` drives the honest "could not ask" branch.
@@ -164,6 +178,21 @@ class FakeContainer:
 
     def _exec_list(self, cmd, detach):
         head = cmd[0]
+        if maintenance_fakes.is_read(cmd):
+            bench = cmd[4]
+            common = self.configs.get(bench)
+            return (
+                0,
+                maintenance_fakes.read_output(
+                    common=maintenance_fakes.UNREADABLE if common is None else common,
+                    sites={s: c for (b, s), c in self.site_configs.items() if b == bench},
+                    procfile=self.procfile or "",
+                    owners={s: o for (b, s), o in self.maintenance_owners.items() if b == bench},
+                    procs=self.maintenance_procs,
+                ),
+            )
+        if maintenance_fakes.is_probe(cmd):
+            return (0, maintenance_fakes.probe_output(cmd, self.ping_answers))
         if head == "id":
             # `id -u/-g frappe` probe: report the resolved alignment target (not the
             # raw host ids, which differ on a root host) so core.start's host-uid

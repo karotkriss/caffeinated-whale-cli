@@ -2106,9 +2106,11 @@ cwcli status [OPTIONS] [PROJECT_NAME]
 | Option | Description |
 |--------|-------------|
 | `--bench` | Report ONE bench: its numeric index or label. Omit it to report every bench |
+| `-p`, `--path` | Report ONE bench by its directory (lower-level alternative to `--bench`) |
 | `-v`, `--verbose` | Show the per-process detail and the web HTTP probe on stderr |
 | `-w`, `--watch` | Live, continuously-refreshing per-process view (Ctrl-C to exit) |
 | `--interval` | Seconds between `--watch` refreshes (default 2, floored at 1s) |
+| `--clear-maintenance` | Take every site found in maintenance mode out of it without asking (see below); exits 1 if it is refused, the maintenance state of a bench or a site could not be read (for example, the instance is stopped or a site config is not valid JSON), or a site still answers 503; not combined with `--watch` (exit 2) |
 
 **Aggregate values** (printed on stdout, one token, exit 0). Each bench carries its
 own; the stdout token is the **instance** fold over them (see below):
@@ -2171,12 +2173,20 @@ hint to run `cwcli start` to bring it under cwcli's supervisor. In this mode the
 per-process supervisord `state` is unavailable (there is no supervisord to ask);
 `up` comes straight from `ps`. `status` only reads - it never launches supervisord.
 
-**Maintenance mode is called out plainly.**
-A site stuck in maintenance mode answers HTTP 503 to every user with no other signal - the state a `migrate` / `apps update` killed mid-run (a closed terminal, a `kill`, a service stop) leaves behind.
-When a bench's site is in maintenance mode, `status` prints `MAINTENANCE MODE ON` for that site (even without `-v`, since it is a fault, not detail) and names the way out (`cwcli run <project> --site <site> set-maintenance-mode off`); `cwcli axi status` carries it as `maintenance_mode` plus a `status.maintenance_mode` warning.
-It is read live the way Frappe reads it, not inferred from the 503: the bench's `sites/common_site_config.json` first, with the site's own `site_config.json` overriding it.
-A failed `bench update` (the `cwcli apps update <project> frappe` path) leaves `maintenance_mode` and `pause_scheduler` set in that bench-wide file, which holds down every site on the bench that does not override them.
-`status` reports each one it finds there (`status.maintenance_mode` and `status.scheduler_paused`) with the bench-wide way out, `cwcli run <project> set-config --global --parse maintenance_mode 0` (and the same for `pause_scheduler`); `set-maintenance-mode off` would bring back only the one site.
+**Maintenance mode is called out plainly, and `status` offers to take sites out of it.**
+A site stuck in maintenance mode answers HTTP 503 (`SessionStopped`) to every user with no other signal - the state a `migrate` / `apps update` killed mid-run (a closed terminal, a `kill`, an OOM kill, a reboot) or a failed `bench update` leaves behind.
+`status` reads maintenance mode for every site of every bench it reports, the way Frappe answers it, not from one file:
+the bench's `sites/common_site_config.json` first, with each site's own `site_config.json` overriding it;
+and, when the web server is `bench serve` with a default site (`bench use`), every request is answered as that default site, so a site whose own file says `maintenance_mode: 0` still answers 503 while the default site inherits a bench-wide 1.
+When something is in maintenance, `status` also asks each site over HTTP (`/api/method/ping` with its `Host`), because Frappe can keep answering from its config cache for up to a minute after a file changes.
+It prints one `MAINTENANCE MODE` fault per bench (even without `-v`) naming the affected sites, the write that holds them (the bench-wide `maintenance_mode`, with `pause_scheduler` when `bench update` set both, or a site's own flag), and who set it: cwcli records the maintenance mode it turns on, so a flag left by an interrupted cwcli `migrate` or `apps update` names that operation and its job, while a flag with no record is reported as possibly set on purpose.
+On an interactive terminal `status` then asks whether to take the sites out of maintenance mode.
+`--clear-maintenance` does it without asking (the way for scripts and agents; a non-TTY is never asked and the fault names this flag).
+Taking them out clears the bench-wide flags with `bench set-config --global --parse <flag> 0` (resuming a scheduler paused with them) and each site's own flag with `set-maintenance-mode off`, then waits until no site answers Frappe's ping with 503 (SessionStopped) any more; `--clear-maintenance` exits 1 if a site still does.
+A site that does not answer at all, because its web server is not running, is not waited for: cwcli reports that it could not check that site.
+It is never offered, and `--clear-maintenance` refuses with exit 1, while anything that sets maintenance mode still runs on the bench: the cwcli operation that turned it on, an in-container `bench migrate`/`update`/`restore`, or a held migrate lock.
+`cwcli axi status` carries the per-bench report as `maintenance` (with `down`, `bench_flags`, `owners` and `busy`) beside `maintenance_mode`, plus the `status.maintenance_mode` and `status.scheduler_paused` warnings.
+The web UI shows the same fault on the instance, bench and site pages and the Sites list, with a button that runs the same clear as a tracked job.
 These reads are skipped in the `--watch` loop (which makes no web probe).
 
 **Per-bench, per-process detail (stderr):** one sub-block per bench, headed by its
@@ -2262,7 +2272,7 @@ While the daemon runs it polls process health for every running instance; the we
 That check is a bare TCP connect to the bench's web port, not an HTTP request, so polling writes nothing to the bench's web access log; the Bench page shows its verdict as `Listening` or `Not listening` next to the web port, or `unknown` while the latest health probe has failed and the page is showing the last successful probe's readings.
 It refuses any request whose `Host` is not this machine, so another site in your browser cannot read or drive it.
 
-**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range (the same core confirmation `cwcli scale` asks for, typed back as the instance name), and check out an app ref without `--reset`.
+**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take sites out of maintenance mode, widen the port range (the same core confirmation `cwcli scale` asks for, typed back as the instance name), and check out an app ref without `--reset`.
 These lifecycle changes run as jobs too, so their steps and outcome remain visible after navigation.
 When an action needs a stopped instance running, the page offers to start it first: an action on a bench, site or app starts that bench (`cwcli start <project> --bench <n>`), so a multi-bench instance never asks which bench, and an instance-level action starts only the containers, never a bench.
 Remove bench on a stopped instance starts only its containers, and stops them again if the removal does not complete.
