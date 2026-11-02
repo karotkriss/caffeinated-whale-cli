@@ -74,7 +74,6 @@ import secrets
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -83,7 +82,6 @@ from pathlib import Path
 from typing import Any
 
 from ..utils import shared_home
-from ..utils.config_utils import cwcli_home
 from .errors import CwcliError, ErrorKind
 
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
@@ -307,11 +305,15 @@ def neutral_cwd() -> str:
     a shared install) failed EVERY glab call with ``failed to read configuration:
     open .git/glab-cli/config.yml: permission denied`` and the GitLab app source
     silently vanished. None of cwcli's own calls concern the caller's repository,
-    so they run from the cwcli home - cwcli's own directory, never a repository,
-    always readable by the account running cwcli - else the temp dir.
+    so they run from the filesystem root: never a repository, readable by every
+    account, and writable by none but root. It is never the cwcli home or the
+    temp dir, because the shared home is group-writable (and the service
+    account's own home) and the temp dir is world-writable, while the shared-mode
+    git credential helper is ``python -m``, which puts its working directory first
+    on ``sys.path`` - so a directory another account can write would let it plant
+    a module that runs as the account serving the request.
     """
-    home = cwcli_home()
-    return str(home) if home.is_dir() else tempfile.gettempdir()
+    return os.path.abspath(os.sep)
 
 
 def run_host_tool(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:

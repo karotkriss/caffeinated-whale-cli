@@ -90,14 +90,19 @@ def test_bridge_host_credential_does_not_depend_on_the_callers_cwd(unreadable_re
     assert b"password=tok-from-glab" in out
 
 
-def test_neutral_cwd_is_the_cwcli_home_else_the_temp_dir(tmp_path, monkeypatch):
+def test_neutral_cwd_is_a_directory_no_other_account_can_write(tmp_path, monkeypatch):
+    """The shared-mode helper is ``python -m``, which puts its cwd first on sys.path, so
+    the cwd must never be the group-writable shared home or the world-writable temp dir."""
+    import tempfile
+
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("CWCLI_HOME", str(home))
-    assert credbridge.neutral_cwd() == str(home)
-    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "not-yet-created"))
-    assert Path(credbridge.neutral_cwd()).is_dir()
-    assert credbridge.neutral_cwd() != str(tmp_path / "not-yet-created")
+    cwd = credbridge.neutral_cwd()
+    assert cwd == os.path.abspath(os.sep)
+    assert cwd not in (str(home), tempfile.gettempdir())
+    st = os.stat(cwd)
+    assert st.st_uid == 0 and not st.st_mode & 0o022
 
 
 def test_every_host_tool_caller_runs_from_the_neutral_cwd(monkeypatch, tmp_path):
