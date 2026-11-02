@@ -5,6 +5,9 @@
 // browser snapshots the whole page before and after the swap and blends the two
 // images on the compositor. Kept free of Vue and the DOM module graph so
 // tests/test_webui_scheme_transition.py can drive it under node with a fake document.
+// A press during the blend ends it and reaches the control under the pointer, never an
+// open dialog's outside-press handler (see press-through.js).
+import { passPressesThrough } from './press-through.js'
 
 // Which blend plays: the wipe only when a control was pressed, effects are on and the
 // OS does not ask for less motion; otherwise the 200 ms cross-fade (reduced motion,
@@ -12,11 +15,6 @@
 export function pickDirection({ reduced, enabled, pressed }) {
   return reduced || !enabled || !pressed ? 'fade' : 'wipe'
 }
-
-// While a blend runs the page is a snapshot, so every press lands on <html>, and an open
-// dialog takes that for a press outside it and closes. Until the blend ends or is
-// skipped, presses are swallowed at the document before anything else sees them.
-const SWALLOWED = ['pointerdown', 'mousedown', 'click']
 
 // Run `apply` (the scheme swap) inside a view transition and return which blend played.
 // Without the API the swap is instant, as before. `data-vt` on <html> selects the
@@ -31,9 +29,6 @@ export function transitionScheme(apply, choice, doc = document) {
   doc.documentElement.dataset.vt = dir
   const vt = doc.startViewTransition(apply)
   vt.ready.catch(() => {}) // a transition skipped by a newer one rejects `ready`; nothing to undo
-  const swallow = (event) => { event.stopPropagation(); event.preventDefault() }
-  const release = () => SWALLOWED.forEach((type) => doc.removeEventListener(type, swallow, true))
-  SWALLOWED.forEach((type) => doc.addEventListener(type, swallow, true))
-  vt.finished.then(release, release)
+  passPressesThrough(vt, doc)
   return dir
 }

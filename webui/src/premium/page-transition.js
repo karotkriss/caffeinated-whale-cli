@@ -8,6 +8,8 @@
 // under reduced motion there is no transition and the swap is atomic: Vue removes the old
 // page and inserts the new one in one flush. Kept free of Vue and the DOM module graph so
 // tests/test_webui_page_transition.py can drive it under node with a fake router/document.
+// A press during the cross-fade ends it and reaches the new page (see press-through.js).
+import { passPressesThrough } from './press-through.js'
 
 // A transition plays only between two real pages at different paths: not on the first
 // navigation (nothing to fade from), and not on a query-only change (a tab switch keeps
@@ -40,6 +42,7 @@ export function installPageTransition(router, { motion, settle, doc = document }
       })
       vt.ready.catch(() => {}) // skipped by a newer transition: nothing to undo
       vt.finished.catch(() => {})
+      passPressesThrough(vt, doc)
     })
   })
   // The route has changed (or the navigation failed): let the snapshot be taken once the

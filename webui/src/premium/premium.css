@@ -14,8 +14,11 @@
 
 /* Page-to-page cross-fade (tens-of-times-a-day tier, so barely there): a View Transition started by the router
    (premium/page-transition.js), so the browser holds the old page until the next one has rendered and blends the two
-   snapshots; the sidebar is identical in both and so stays still. Reduced motion and effects off start no transition. */
-[data-vt='page']::view-transition-old(root), [data-vt='page']::view-transition-new(root) { animation-duration: 160ms; animation-timing-function: var(--ease-out); }
+   snapshots; the sidebar is identical in both and so stays still. Reduced motion and effects off start no transition.
+   The group pseudo-element is set too: it has its own default 250 ms animation, and the transition lasts as long as
+   its longest animation, so a fade shortened on old/new alone ran 250 ms (measured: 350 ms with the frames around it)
+   instead of 160. A press during a transition ends it and is handed to the live page (premium/press-through.js). */
+[data-vt='page']::view-transition-group(root), [data-vt='page']::view-transition-old(root), [data-vt='page']::view-transition-new(root) { animation-duration: 160ms; animation-timing-function: var(--ease-out); }
 
 /* Hero surfaces (the Instances hero and the detail header cards): the card IS the gradient; the scrim keeps ink text
    readable over it, a surface-coloured wash heaviest on the text side. */
@@ -34,10 +37,11 @@
    OS-driven change); `wipe` holds the old snapshot still and sweeps the new one in under a 105deg gradient mask with a
    20 percent feathered edge, its position animated over --cw-wipe-duration on --ease-out. The mask is 2.5 viewport
    widths plus 45vh wide: the 15deg tilt needs the extra 45vh for the feathered edge to start and end wholly off screen
-   at any aspect ratio. The mask names no colour: black and transparent are alpha only. */
+   at any aspect ratio. The mask names no colour: black and transparent are alpha only. The fade's group is set for
+   the same reason as the page fade's above; the wipe outlasts the group's default on its own. */
 :root { --cw-wipe-duration: 560ms; }
 @keyframes cw-wipe { from { -webkit-mask-position: 100% 0; mask-position: 100% 0; } to { -webkit-mask-position: 0 0; mask-position: 0 0; } }
-[data-vt='fade']::view-transition-old(root), [data-vt='fade']::view-transition-new(root) { animation-duration: 200ms; animation-timing-function: var(--ease-out); }
+[data-vt='fade']::view-transition-group(root), [data-vt='fade']::view-transition-old(root), [data-vt='fade']::view-transition-new(root) { animation-duration: 200ms; animation-timing-function: var(--ease-out); }
 [data-vt='wipe']::view-transition-old(root) { animation: none; }
 [data-vt='wipe']::view-transition-new(root) { animation: cw-wipe var(--cw-wipe-duration) var(--ease-out); mix-blend-mode: normal; -webkit-mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); mask-image: linear-gradient(105deg, black 0 40%, transparent 60% 100%); -webkit-mask-size: calc(250% + 45vh) 100%; mask-size: calc(250% + 45vh) 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; }
 [data-vt='wipe']::view-transition-image-pair(root) { isolation: auto; }
