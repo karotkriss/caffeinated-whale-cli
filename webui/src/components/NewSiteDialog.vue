@@ -80,12 +80,13 @@ watch(() => newSiteDialog.open, (open) => {
   address.value = ''
   proxied.value = false
   accessList.value = '0'
-  loadPublications()
   const first = newSiteDialog.project ? findInstance(newSiteDialog.project, newSiteDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
   const before = ikey(host.value, project.value)
+  const hostBefore = host.value
   project.value = first?.project || newSiteDialog.project || null
   host.value = first?.host || newSiteDialog.host || null
   bench.value = newSiteDialog.bench
+  if (host.value === hostBefore) loadPublications(host.value)
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
   if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
   const retry = newSiteDialog.retry
@@ -101,7 +102,7 @@ watch(() => newSiteDialog.open, (open) => {
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // A remote instance publishes with its host's own integrations: read that host's store
 // (its DNS and proxy, if on); its options and preflight are that host's too.
-watch(host, (h) => { if (h) loadPublications(h); options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
+watch(host, (h) => { loadPublications(h); options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
 const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
@@ -158,7 +159,12 @@ watch(publishing, async (on) => {
     return
   }
   if (!options.value) {
-    try { options.value = await publishOptions(host.value) } catch (e) { optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
+    const h = host.value
+    try {
+      const o = await publishOptions(h)
+      if (host.value !== h) return
+      options.value = o
+    } catch (e) { if (host.value === h) optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
   }
   proxied.value = !!(options.value.proxied_allowed && options.value.dns?.proxied_default)
   const typed = site.value.trim()
@@ -174,11 +180,11 @@ const deep = computed(() => proxied.value && zoned.value && label.value.includes
 const publishSays = computed(() => publishPlan(options.value, machine.value))
 let preflightTimer = null
 let preflightSeq = 0
-watch([publishing, fullName, project, bench, recordAddress, proxied], () => {
+watch([publishing, fullName, project, host, bench, recordAddress, proxied], () => {
   clearTimeout(preflightTimer)
   rows.value = null
-  if (!publishing.value || !fullName.value || !project.value || bench.value == null) return
   const seq = ++preflightSeq
+  if (!publishing.value || !fullName.value || !project.value || bench.value == null) return
   preflightTimer = setTimeout(async () => {
     try {
       const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value }, host.value)

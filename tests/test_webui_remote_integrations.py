@@ -185,13 +185,17 @@ class TestARemotesIntegrationsGoThroughItsForward:
         assert calls["localList"] == ["local"] and calls["cleared"] == 0
         assert calls["remoteList"] == ["npm"] and calls["host"] is None
         remote = "/api/v1/hosts/remote/integrations"
+        # Turning one on or off reads that host's publications again, so Publish follows it.
+        pubs = "/api/v1/hosts/remote/publications"
         assert [c[:2] for c in calls["calls"]] == [
             ["GET", "/api/v1/integrations"],
             ["GET", remote],
             ["POST", remote],
             ["POST", remote],
+            ["GET", pubs],
             ["POST", remote],
             ["POST", remote],
+            ["GET", pubs],
             ["POST", "/api/v1/integrations"],
             ["POST", "/api/v1/integrations"],
             ["GET", "/api/v1/integrations"],
@@ -206,7 +210,7 @@ class TestARemotesIntegrationsGoThroughItsForward:
             "community_update",
         ]
         # Detect is an action, so it runs on the picked host: its container discovery, not the hub's.
-        assert calls["calls"][4][2] == {
+        assert calls["calls"][5][2] == {
             "op": "action",
             "id": "npm",
             "action": "detect",

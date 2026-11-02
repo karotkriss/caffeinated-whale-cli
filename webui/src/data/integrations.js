@@ -8,6 +8,7 @@
 // sealed there and never pass through this machine's store; Detect runs there too.
 import { reactive } from 'vue'
 import { apiBase, getJson, postJson } from './api'
+import { loadPublications } from './publish'
 
 export const integrations = reactive({ list: [], loading: false, error: null, host: null })
 
@@ -37,8 +38,10 @@ export async function loadIntegrations() {
 const post = (payload) => postJson(`${apiBase(integrations.host)}/integrations`, payload)
 export const testIntegration = (id, settings, secrets) => post({ op: 'test', id, settings, secrets })
 // takeOver: the Admin chose to switch a hook point another integration serves (409 integration.hook_taken otherwise).
-export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => post({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
-export const disableIntegration = (id) => post({ op: 'disable', id })
+// Turning one on or off changes whether that machine can publish: read its publications again.
+const change = async (payload) => { const host = integrations.host; const out = await post(payload); await loadPublications(host); return out }
+export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => change({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
+export const disableIntegration = (id) => change({ op: 'disable', id })
 export const integrationAction = (id, action, args, settings, secrets) => post({ op: 'action', id, action, args, settings, secrets })
 
 // Community integrations (core/community.py): every install and update names the

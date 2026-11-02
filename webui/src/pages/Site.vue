@@ -21,7 +21,7 @@ import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
 import { can } from '../data/session'
 import { hostName } from '../data/hosts'
-import { loadPublications, publicationAt, publicationsFor } from '../data/publish'
+import { loadPublications, publicationAt, publicationsFor, settingsOwner } from '../data/publish'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
@@ -94,7 +94,7 @@ const maintenance = computed(() => (health.value?.web_site === siteName ? health
 const pub = computed(() => (bench.value ? publicationAt(siteName, project, bench.value.path, publicationsFor(host) || {}) : null))
 const heroFacts = computed(() => [
   ...(host ? [{ label: 'Machine', value: hostName(host) }] : []),
-  ...(pub.value ? [{ label: 'Public address', value: `${pub.value.url || 'publishing'} · ${host ? `${hostName(host)}'s own` : "this machine's"} integrations` }] : []),
+  ...(pub.value ? [{ label: 'Public address', value: `${pub.value.url || 'publishing'} · ${settingsOwner(host, hostName)} integrations` }] : []),
   { label: 'Instance', value: project },
   { label: 'Bench', value: bench.value ? `${benchName(bench.value)} (--bench ${bench.value.index})` : `#${index}` },
   { label: 'Installed apps', value: String(apps.value.length) },

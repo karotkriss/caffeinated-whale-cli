@@ -7,6 +7,7 @@ import { VERBS as SCHEDULE_VERBS } from '../data/schedules'
 const SCHEDULABLE = new Set(SCHEDULE_VERBS.map((v) => v.value))
 import { ACTIVE_STATES, continueJob, createJob, detachJob, elapsed, interruptJob, jobAccount, jobLabel, jobPath, jobRecord, jobTarget, jobs, loadJob, retryJob } from '../data/jobs'
 import { hostName } from '../data/hosts'
+import { settingsOwner } from '../data/publish'
 import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { jobDialog, openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
@@ -314,7 +315,7 @@ async function continueChoice(value) {
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Events</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ record.event_count }}</div></div>
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Started by</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ jobAccount(record) }}</div></div>
         <div v-if="host" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Machine</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ hostName(host) }}</div></div>
-        <div v-if="publishJob" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Integration settings</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ host ? `${hostName(host)}'s own` : "this machine's" }}</div></div>
+        <div v-if="publishJob" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Integration settings</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ settingsOwner(host, hostName) }}</div></div>
       </div>
 
       <div v-if="progress" class="rounded-6 border border-outline-gray-1 bg-surface-elevation-1 px-4 py-3">
