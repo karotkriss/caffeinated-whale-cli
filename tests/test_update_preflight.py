@@ -662,9 +662,12 @@ def test_leftover_bench_wide_flags_are_notices(bench):
     bench.write_conf(maintenance_mode=1, pause_scheduler=1)
 
     findings = bench.findings()
+    # The same fix status offers: it clears both flags, the scheduler with them.
     assert by_code(findings, "bench.maintenance_mode_on").remedy == (
-        "cwcli run proj set-config --global --parse maintenance_mode 0"
+        "take the bench's sites out of maintenance mode (it also resumes a scheduler "
+        "paused with it): cwcli status proj --clear-maintenance"
     )
+    assert "this update does not clear it" in by_code(findings, "bench.maintenance_mode_on").message
     assert by_code(findings, "bench.scheduler_paused").severity == up.NOTICE
 
 

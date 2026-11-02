@@ -1178,7 +1178,7 @@ class TestTierAActions:
         assert e.value.code == 500
         body = json.loads(e.value.read())
         assert body["errors"][0]["title"] == "maintenance.still_on"
-        assert "set-maintenance-mode off" in body["errors"][0]["hint"]
+        assert "cwcli status p --clear-maintenance --site a.localhost" in body["errors"][0]["hint"]
         assert body["errors"][0]["outcome"]["maintenance_off"] is False
 
     def test_clear_maintenance_on_a_stopped_instance_is_a_409_not_an_auto_start(

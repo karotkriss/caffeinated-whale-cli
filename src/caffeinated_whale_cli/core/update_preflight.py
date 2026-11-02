@@ -623,14 +623,17 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     ),
     "bench.maintenance_mode_on": (
         NOTICE,
-        "maintenance_mode is already 1 bench-wide (a previous update may have failed); "
-        "bench clears it only when this update succeeds",
-        "cwcli run {q_project}{selector_flag} set-config --global --parse maintenance_mode 0",
+        "maintenance_mode is already 1 bench-wide (a previous update may have been "
+        "interrupted), so every site that does not override it answers 503; this update "
+        "does not clear it",
+        "take the bench's sites out of maintenance mode (it also resumes a scheduler paused "
+        "with it): cwcli status {q_project}{selector_flag} --clear-maintenance",
     ),
     "bench.scheduler_paused": (
         NOTICE,
-        "pause_scheduler is already 1 bench-wide (a previous update may have failed); "
-        "bench clears it only when this update succeeds",
+        "pause_scheduler is already 1 bench-wide (a previous update may have been "
+        "interrupted), so no site that does not override it runs scheduled jobs; this "
+        "update does not resume it",
         "cwcli run {q_project}{selector_flag} set-config --global --parse pause_scheduler 0",
     ),
     "bench.not_writable": (

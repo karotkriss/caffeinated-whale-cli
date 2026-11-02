@@ -12,10 +12,12 @@ import json
 
 import pytest
 
+from caffeinated_whale_cli.core import maintenance as core_maintenance
 from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import status as core_status
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests import maintenance_fakes
 from tests.test_core_supervision import (
     _CTL_SINGLE,
     _PROCFILE,
@@ -773,67 +775,120 @@ class TestFusedFastPath:
         assert report.overall == "running"  # no web signal must not degrade it
 
 
-class TestMaintenanceMode:
-    """``status`` says PLAINLY when a site is stuck in maintenance mode and names the
-    way out (BUG-11: a SIGTERM/SIGHUP-killed migrate leaves a site 503 forever with
-    no other signal)."""
+def _maint_warnings(result):
+    return [w for w in result.warnings if w.code == "status.maintenance_mode"]
 
-    def test_reports_a_site_stuck_in_maintenance_and_names_the_way_out(self, wire, monkeypatch):
+
+class TestMaintenanceMode:
+    """``status`` says PLAINLY when sites are in maintenance mode, across EVERY site of
+    the bench, and names the one command that takes them out (BUG-11: a killed migrate
+    leaves a site 503 forever with no other signal)."""
+
+    @pytest.fixture(autouse=True)
+    def _site(self, monkeypatch):
         monkeypatch.setattr(
             core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
         )
-        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: True)
-        wire(FakeContainer(marker=_MARKER, web_code="503"), benches=[{"path": BENCH}])
+
+    def test_reports_a_site_in_its_own_maintenance_and_names_the_way_out(self, wire):
+        c = FakeContainer(
+            marker=_MARKER,
+            web_code="503",
+            site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
+            ping_answers={"dev.localhost": ("503", True)},
+        )
+        wire(c, benches=[{"path": BENCH}])
 
         result = core_status.status("proj")
 
-        assert _bench(result.data).maintenance_mode is True
-        w = next(w for w in result.warnings if w.code == "status.maintenance_mode")
+        bench = _bench(result.data)
+        assert bench.maintenance_mode is True
+        assert bench.maintenance.down == ["dev.localhost"]
+        assert bench.maintenance.sites[0].cause == "site"
+        (w,) = _maint_warnings(result)
         assert "dev.localhost" in w.text
-        assert "set-maintenance-mode off" in w.text
+        assert "own site_config.json" in w.text
+        assert w.text.endswith("Take it out with: cwcli status proj --clear-maintenance")
+        assert w.detail == {"bench_path": BENCH}
 
-    def test_no_warning_when_not_in_maintenance(self, wire, monkeypatch):
-        monkeypatch.setattr(
-            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+    def test_every_site_of_the_bench_is_read_not_only_the_probed_one(self, wire):
+        c = FakeContainer(
+            marker=_MARKER,
+            site_configs={
+                (BENCH, "dev.localhost"): {},
+                (BENCH, "other.localhost"): {"maintenance_mode": 1},
+            },
+            ping_answers={"other.localhost": ("503", True)},
         )
-        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: False)
-        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        wire(c, benches=[{"path": BENCH}])
+
+        bench = _bench(core_status.status("proj").data)
+
+        assert bench.maintenance_mode is False  # the probed site serves
+        assert bench.maintenance.down == ["other.localhost"]
+
+    def test_no_warning_and_no_probe_when_nothing_is_in_maintenance(self, wire):
+        c = FakeContainer(marker=_MARKER, site_configs={(BENCH, "dev.localhost"): {}})
+        wire(c, benches=[{"path": BENCH}])
 
         result = core_status.status("proj")
 
         assert _bench(result.data).maintenance_mode is False
-        assert not any(w.code == "status.maintenance_mode" for w in result.warnings)
+        assert _bench(result.data).maintenance.down == []
+        assert not _maint_warnings(result)
+        # The healthy case costs the one read: no per-site HTTP probe.
+        assert not any(maintenance_fakes.is_probe(cmd) for cmd in c.calls)
 
-    def test_the_fused_tier_reports_it_too(self, wire, monkeypatch):
-        # `cwcli ui`'s FAST tier polls fused=True; its Site page shows this field.
-        monkeypatch.setattr(
-            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+    def test_a_site_still_answering_session_stopped_is_reported_whatever_the_files_say(self, wire):
+        # Frappe v16 answers from a 60-second config cache, so a flag cleared seconds
+        # ago is still answered. What the site ANSWERS is the truth.
+        c = FakeContainer(
+            marker=_MARKER,
+            configs={BENCH: {**_PORTS, "maintenance_mode": 1}},
+            site_configs={(BENCH, "dev.localhost"): {}, (BENCH, "b.localhost"): {}},
+            ping_answers={"dev.localhost": ("503", True), "b.localhost": ("503", True)},
         )
-        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: True)
-        wire(FakeContainer(marker=_MARKER, web_code="503"), benches=[{"path": BENCH}])
+        wire(c, benches=[{"path": BENCH}])
+        c.site_configs[(BENCH, "b.localhost")] = {"maintenance_mode": 0}
+
+        bench = _bench(core_status.status("proj").data)
+
+        b = next(s for s in bench.maintenance.sites if s.site == "b.localhost")
+        assert (b.on, b.cause, b.session_stopped) == (True, "cached", True)
+        assert bench.maintenance.probed is True
+
+    def test_the_fused_tier_reports_it_too_without_any_http_request(self, wire):
+        # `cwcli ui`'s FAST tier polls fused=True; its pages show and offer this.
+        c = FakeContainer(
+            marker=_MARKER,
+            web_code="503",
+            site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
+        )
+        wire(c, benches=[{"path": BENCH}])
 
         bench = _bench(core_status.status("proj", fused=True).data)
 
         assert bench.supervisor_up is True  # the fused path itself, not the delegation
         assert bench.maintenance_mode is True
+        assert bench.maintenance.down == ["dev.localhost"]
         assert bench.web_site == "dev.localhost"
+        assert not any(maintenance_fakes.is_probe(cmd) for cmd in c.calls)
 
-    def test_watch_mode_skips_the_maintenance_read(self, wire, monkeypatch):
-        calls: list = []
-        monkeypatch.setattr(
-            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+    def test_watch_mode_skips_the_maintenance_read(self, wire):
+        c = FakeContainer(
+            marker=_MARKER, site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}}
         )
-        monkeypatch.setattr(
-            core_status.supervision,
-            "maintenance_mode_on",
-            lambda *a, **k: calls.append(1) or True,
-        )
-        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        wire(c, benches=[{"path": BENCH}])
 
         result = core_status.status("proj", probe_web=False)
 
-        assert calls == []  # the quiet --watch loop leaves the site untouched
+        # The quiet --watch loop leaves the bench untouched.
+        assert not any(maintenance_fakes.is_read(cmd) for cmd in c.calls)
         assert _bench(result.data).maintenance_mode is None
+        assert _bench(result.data).maintenance is None
+
+
+_PORTS = {"webserver_port": 8000, "socketio_port": 9000}
 
 
 class _BenchConfigContainer(FakeContainer):
@@ -845,8 +900,7 @@ class _BenchConfigContainer(FakeContainer):
     """
 
     def __init__(self, *, site_configs=None, **kwargs):
-        super().__init__(**kwargs)
-        self.site_configs = site_configs or {}
+        super().__init__(site_configs=site_configs, **kwargs)
 
     def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
         if isinstance(cmd, str) and cmd.startswith("cat sites/"):
@@ -870,10 +924,10 @@ _FAILED_UPDATE_FLAGS = {
 
 
 class TestBenchWideFlags:
-    """A failed ``bench update`` leaves ``maintenance_mode``/``pause_scheduler`` set in
-    the bench's COMMON config: every site that does not override them answers 503 and
-    runs no scheduled job. ``status`` read only the site's own file, so it reported
-    such a bench as fine. It now says so and names the command that clears it."""
+    """A failed or killed ``bench update`` leaves ``maintenance_mode``/``pause_scheduler``
+    set in the bench's COMMON config: every site that does not override them answers
+    503 and runs no scheduled job. ``status`` says so, and the one command it names
+    clears the bench-wide flags and resumes the scheduler with them."""
 
     @pytest.fixture(autouse=True)
     def _site(self, monkeypatch):
@@ -887,25 +941,29 @@ class TestBenchWideFlags:
             web_code="503",
             configs={BENCH: _FAILED_UPDATE_FLAGS},
             site_configs={(BENCH, "dev.localhost"): {"db_name": "x"}},
+            ping_answers={"dev.localhost": ("503", True)},
         )
         wire(c, benches=[{"path": BENCH}])
 
         result = core_status.status("proj")
 
-        assert _bench(result.data).maintenance_mode is True  # the merged view
-        maintenance = next(w for w in result.warnings if w.code == "status.maintenance_mode")
-        assert "MAINTENANCE MODE ON bench-wide" in maintenance.text
-        assert "cwcli run proj set-config --global --parse maintenance_mode 0" in maintenance.text
-        # The per-site remedy would bring back only this site and leave the rest down.
+        bench = _bench(result.data)
+        assert bench.maintenance_mode is True  # the merged view
+        assert bench.maintenance.bench_flags == ["maintenance_mode", "pause_scheduler"]
+        (maintenance,) = _maint_warnings(result)
+        assert "maintenance_mode is set bench-wide" in maintenance.text
+        assert "pause_scheduler" in maintenance.text
+        assert "cwcli status proj --clear-maintenance" in maintenance.text
+        # The per-site remedy would bring back only one site and leave the rest down.
         assert "set-maintenance-mode off" not in maintenance.text
         assert maintenance.detail == {"bench_path": BENCH}
         scheduler = next(w for w in result.warnings if w.code == "status.scheduler_paused")
-        assert "cwcli run proj set-config --global --parse pause_scheduler 0" in scheduler.text
+        assert "resumes it in the same step" in scheduler.text
         assert scheduler.detail == {"bench_path": BENCH}
 
-    def test_the_bench_wide_flag_is_reported_even_when_the_probed_site_overrides_it(self, wire):
+    def test_the_bench_wide_flag_is_reported_even_when_every_site_overrides_it(self, wire):
         # `cwcli migrate --site s` ends with `set-maintenance-mode off`, which writes an
-        # explicit 0 into s alone: s serves again while every other site stays down.
+        # explicit 0 into s alone: s serves, but the next new site would inherit the 1.
         c = _BenchConfigContainer(
             marker=_MARKER,
             configs={BENCH: _FAILED_UPDATE_FLAGS},
@@ -916,14 +974,38 @@ class TestBenchWideFlags:
         result = core_status.status("proj")
 
         assert _bench(result.data).maintenance_mode is False
-        assert any(
-            w.code == "status.maintenance_mode" and "bench-wide" in w.text for w in result.warnings
+        (w,) = _maint_warnings(result)
+        assert "a new site would inherit it" in w.text
+
+    def test_the_incident_a_site_whose_own_flag_is_0_is_down_when_served_as_the_default(self, wire):
+        # Reproduced on a real v16 bench: `bench serve` with a default site answers
+        # every Host as that site, so a site whose own file says 0 still answers
+        # SessionStopped when the default site inherits the bench-wide 1.
+        c = _BenchConfigContainer(
+            marker=_MARKER,
+            configs={BENCH: {**_FAILED_UPDATE_FLAGS, "default_site": "dev.localhost"}},
+            site_configs={
+                (BENCH, "dev.localhost"): {},
+                (BENCH, "new.localhost"): {"maintenance_mode": 0},
+            },
+            ping_answers={"dev.localhost": ("503", True), "new.localhost": ("503", True)},
         )
+        wire(c, benches=[{"path": BENCH}])
+
+        result = core_status.status("proj")
+
+        report = _bench(result.data).maintenance
+        assert report.served_as == "dev.localhost"
+        assert report.down == ["dev.localhost", "new.localhost"]
+        new = next(s for s in report.sites if s.site == "new.localhost")
+        assert (new.cause, new.served_as) == ("served_as", "dev.localhost")
+        (w,) = _maint_warnings(result)
+        assert "answers every site as the default site 'dev.localhost'" in w.text
 
     def test_a_paused_scheduler_alone_is_its_own_warning(self, wire):
         c = _BenchConfigContainer(
             marker=_MARKER,
-            configs={BENCH: {"webserver_port": 8000, "socketio_port": 9000, "pause_scheduler": 1}},
+            configs={BENCH: {**_PORTS, "pause_scheduler": 1}},
             site_configs={(BENCH, "dev.localhost"): {}},
         )
         wire(c, benches=[{"path": BENCH}])
@@ -931,53 +1013,34 @@ class TestBenchWideFlags:
         result = core_status.status("proj")
 
         assert _bench(result.data).maintenance_mode is False
-        assert [
-            w.code
+        scheduler = [
+            w
             for w in result.warnings
             if w.code in ("status.maintenance_mode", "status.scheduler_paused")
-        ] == ["status.scheduler_paused"]
+        ]
+        assert [w.code for w in scheduler] == ["status.scheduler_paused"]
+        assert "cwcli run proj set-config --global --parse pause_scheduler 0" in scheduler[0].text
 
-    def test_a_site_also_set_on_its_own_gets_both_remedies(self, wire):
-        # Clearing only the bench-wide flag would leave this site at 503.
+    def test_a_site_also_set_on_its_own_is_one_warning_naming_both_writes(self, wire):
+        # Clearing only the bench-wide flag would leave this site at 503; the one
+        # command clears both.
         c = _BenchConfigContainer(
             marker=_MARKER,
             configs={BENCH: _FAILED_UPDATE_FLAGS},
             site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
+            ping_answers={"dev.localhost": ("503", True)},
         )
         wire(c, benches=[{"path": BENCH}])
 
         result = core_status.status("proj")
 
-        texts = [w.text for w in result.warnings if w.code == "status.maintenance_mode"]
-        assert len(texts) == 2
-        assert "set-config --global --parse maintenance_mode 0" in texts[0]
-        assert "cwcli run proj --site dev.localhost set-maintenance-mode off" in texts[1]
-
-    def test_a_site_in_its_own_maintenance_keeps_the_per_site_remedy(self, wire):
-        c = _BenchConfigContainer(
-            marker=_MARKER,
-            configs={BENCH: {"webserver_port": 8000, "socketio_port": 9000, "maintenance_mode": 0}},
-            site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
-        )
-        wire(c, benches=[{"path": BENCH}])
-
-        result = core_status.status("proj")
-
-        maintenance = next(w for w in result.warnings if w.code == "status.maintenance_mode")
-        assert "cwcli run proj --site dev.localhost set-maintenance-mode off" in maintenance.text
-        assert maintenance.detail == {"bench_path": BENCH}
+        (w,) = _maint_warnings(result)
+        assert "set bench-wide" in w.text and "own site_config.json: dev.localhost" in w.text
 
     def test_a_clear_bench_warns_nothing(self, wire):
         c = _BenchConfigContainer(
             marker=_MARKER,
-            configs={
-                BENCH: {
-                    "webserver_port": 8000,
-                    "socketio_port": 9000,
-                    "maintenance_mode": 0,
-                    "pause_scheduler": 0,
-                }
-            },
+            configs={BENCH: {**_PORTS, "maintenance_mode": 0, "pause_scheduler": 0}},
             site_configs={(BENCH, "dev.localhost"): {}},
         )
         wire(c, benches=[{"path": BENCH}])
@@ -990,22 +1053,11 @@ class TestBenchWideFlags:
             for w in result.warnings
         )
 
-    def test_watch_mode_reads_no_config_file(self, wire):
-        c = _BenchConfigContainer(marker=_MARKER, configs={BENCH: _FAILED_UPDATE_FLAGS})
-        wire(c, benches=[{"path": BENCH}])
-
-        result = core_status.status("proj", probe_web=False)
-
-        assert not any(isinstance(cmd, str) and cmd.startswith("cat sites/") for cmd in c.calls)
-        assert not any(w.code == "status.scheduler_paused" for w in result.warnings)
-
     def test_on_a_multi_bench_instance_the_remedy_names_the_bench(self, wire):
-        # `cwcli run` on a multi-bench instance refuses without a selector, so a
-        # remedy without one is not copy-paste accurate.
         c = _BenchConfigContainer(
             marker=_MARKER,
             configs={
-                "/w/b0": {"webserver_port": 8000, "socketio_port": 9000},
+                "/w/b0": {**_PORTS},
                 "/w/b1": {
                     "webserver_port": 8001,
                     "socketio_port": 9001,
@@ -1025,7 +1077,8 @@ class TestBenchWideFlags:
             if w.code in ("status.maintenance_mode", "status.scheduler_paused")
         ]
         assert {w.detail["bench_path"] for w in flagged} == {"/w/b1"}
-        assert all("cwcli run proj --bench staging set-config" in w.text for w in flagged)
+        (w,) = _maint_warnings(result)
+        assert "cwcli status proj --bench staging --clear-maintenance" in w.text
 
     def test_an_uncached_bench_path_gets_a_path_remedy(self, wire):
         c = _BenchConfigContainer(
@@ -1037,23 +1090,121 @@ class TestBenchWideFlags:
 
         result = core_status.status("proj", bench_path="/w/other")
 
-        maintenance = next(w for w in result.warnings if w.code == "status.maintenance_mode")
-        assert (
-            "cwcli run proj --path /w/other set-config --global --parse maintenance_mode 0"
-            in maintenance.text
-        )
+        (w,) = _maint_warnings(result)
+        assert "cwcli status proj --path /w/other --clear-maintenance" in w.text
 
-    def test_the_common_config_is_read_once_per_bench(self, wire):
+    def test_every_config_is_read_in_one_exec(self, wire):
         c = _BenchConfigContainer(
             marker=_MARKER,
             configs={BENCH: _FAILED_UPDATE_FLAGS},
-            site_configs={(BENCH, "dev.localhost"): {}},
+            site_configs={(BENCH, "dev.localhost"): {}, (BENCH, "b.localhost"): {}},
         )
         wire(c, benches=[{"path": BENCH}])
 
         core_status.status("proj")
 
-        assert c.calls.count("cat sites/common_site_config.json") == 1
+        assert sum(1 for cmd in c.calls if maintenance_fakes.is_read(cmd)) == 1
+        assert not any(isinstance(cmd, str) and cmd.startswith("cat sites/") for cmd in c.calls)
+
+
+class TestMaintenanceOrigin:
+    """A flag cwcli set and could not clear names the interrupted operation; a flag
+    with no record is reported neutrally; a running operation is never offered a
+    clear."""
+
+    @pytest.fixture(autouse=True)
+    def _site(self, monkeypatch):
+        monkeypatch.setattr(
+            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+        )
+
+    def _container(self, **kwargs):
+        return FakeContainer(
+            marker=_MARKER,
+            site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
+            ping_answers={"dev.localhost": ("503", True)},
+            **kwargs,
+        )
+
+    def test_a_leftover_names_the_interrupted_job(self, wire, monkeypatch):
+        owner = {
+            "verb": "apps update",
+            "job_id": "20261101-abc",
+            "pid": 4242,
+            "process_started": "t0",
+            "host": "box",
+            "at": "2026-11-01T10:00:00Z",
+        }
+        monkeypatch.setattr(core_maintenance.socket, "gethostname", lambda: "box")
+        monkeypatch.setattr(core_maintenance.daemon_identity, "pid_alive", lambda pid: False)
+        wire(
+            self._container(maintenance_owners={(BENCH, "dev.localhost"): owner}),
+            benches=[{"path": BENCH}],
+        )
+
+        result = core_status.status("proj")
+
+        (w,) = _maint_warnings(result)
+        assert "cwcli turned it on for 'apps update' (job 20261101-abc)" in w.text
+        assert "no longer running" in w.text
+        assert "--clear-maintenance" in w.text
+        assert _bench(result.data).maintenance.owners[0].running is False
+
+    def test_a_flag_with_no_record_is_reported_neutrally(self, wire):
+        wire(self._container(), benches=[{"path": BENCH}])
+
+        (w,) = _maint_warnings(core_status.status("proj"))
+
+        assert "no record of setting it, so it may have been set on purpose" in w.text
+        assert "interrupted" not in w.text
+
+    def test_a_running_owner_is_busy_and_no_clear_is_offered(self, wire, monkeypatch):
+        owner = {"verb": "migrate", "pid": 4242, "process_started": "t0", "host": "box"}
+        monkeypatch.setattr(core_maintenance.socket, "gethostname", lambda: "box")
+        monkeypatch.setattr(core_maintenance.daemon_identity, "pid_alive", lambda pid: True)
+        monkeypatch.setattr(
+            core_maintenance.daemon_identity, "process_start_time", lambda pid: "t0"
+        )
+        wire(
+            self._container(maintenance_owners={(BENCH, "dev.localhost"): owner}),
+            benches=[{"path": BENCH}],
+        )
+
+        result = core_status.status("proj")
+
+        (w,) = _maint_warnings(result)
+        assert "Not cleared while it is still in use" in w.text
+        assert (
+            "the cwcli 'migrate' that turned it on for 'dev.localhost' is still running" in w.text
+        )
+        assert "--clear-maintenance" not in w.text
+
+    def test_an_in_container_migrate_is_busy(self, wire):
+        procs = {
+            5150: [
+                f"{BENCH}/env/bin/python",
+                "-m",
+                "frappe.utils.bench_helper",
+                "frappe",
+                "--site",
+                "dev.localhost",
+                "migrate",
+            ],
+            5151: [
+                f"{BENCH}/env/bin/python",
+                "-m",
+                "frappe.utils.bench_helper",
+                "frappe",
+                "serve",
+                "--port",
+                "8000",
+            ],
+        }
+        wire(self._container(maintenance_procs=procs), benches=[{"path": BENCH}])
+
+        report = _bench(core_status.status("proj").data).maintenance
+
+        assert report.busy == ["an in-container 'bench migrate' is still running (pid 5150)"]
 
 
 def wire_bench_left_down_by_bench_update(monkeypatch):
@@ -1067,6 +1218,7 @@ def wire_bench_left_down_by_bench_update(monkeypatch):
         web_code="503",
         configs={BENCH: _FAILED_UPDATE_FLAGS},
         site_configs={(BENCH, "dev.localhost"): {"db_name": "x"}},
+        ping_answers={"dev.localhost": ("503", True)},
     )
     monkeypatch.setattr(core_status, "get_project_containers", lambda name: [container])
     monkeypatch.setattr(

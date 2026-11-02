@@ -354,10 +354,11 @@ class TestAxiStatus:
 
         assert result.exit_code == 0
         assert "maintenance_mode: true" in result.stdout
-        assert "MAINTENANCE MODE ON bench-wide" in result.stdout
+        assert "maintenance_mode is set bench-wide" in result.stdout
         assert "SCHEDULER PAUSED bench-wide" in result.stdout
-        assert "set-config --global --parse maintenance_mode 0" in result.stdout
-        assert "set-config --global --parse pause_scheduler 0" in result.stdout
+        # The agent surface reads the per-bench report and the human verb that clears it.
+        assert "bench_flags[2]: maintenance_mode,pause_scheduler" in result.stdout
+        assert "cwcli status proj --clear-maintenance" in result.stdout
 
     def test_multi_bench_reports_every_bench_exit_0(self, monkeypatch):
         # REPLACES test_multi_bench_names_the_flag_exit_2 (this class's copy only -

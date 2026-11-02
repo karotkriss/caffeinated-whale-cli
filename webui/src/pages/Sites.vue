@@ -18,10 +18,12 @@ import AppIcon from '../components/AppIcon.vue'
 import SiteIcon from '../components/SiteIcon.vue'
 import StatusDot from '../components/StatusDot.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
+import MaintenanceAlert from '../components/MaintenanceAlert.vue'
 import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath } from '../data/fleet'
 import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import { openAction } from '../data/dialog'
+import { maintenanceSites } from '../data/actions'
 import { loadSiteIcons, refreshSiteIcons, siteIcons, siteIcon } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
 import { can } from '../data/session'
@@ -62,6 +64,7 @@ const rows = computed(() => {
           token,
           word: stale ? 'unknown' : QUIET[token] || token,
           isDefault: s.name === b.default_site,
+          maintenance: maintenanceSites(health?.maintenance).includes(s.name),
           devMode: detailOf(i.project, i.host)?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,
           pub: publicationAt(s.name, i.project, b.path, publicationsFor(i.host) || {}),
         })
@@ -70,6 +73,17 @@ const rows = computed(() => {
   }
   return out.sort((a, b) => a.site.name.localeCompare(b.site.name))
 })
+// Every bench with sites in maintenance mode (or the bench-wide flag set), each offered
+// its own clear: one write per bench takes all of its sites out together.
+const stuck = computed(() =>
+  instances.value.flatMap((i) =>
+    !i.container_running || staleInstance(i)
+      ? []
+      : (i.benches || [])
+          .filter((b) => b.maintenance && (maintenanceSites(b.maintenance).length || b.maintenance.bench_flags.includes('maintenance_mode')))
+          .map((b) => ({ key: `${i.key}/${b.index}`, inst: i, bench: b, name: benchName(b) })),
+  ),
+)
 // Ask for the icons once the rows are known (and again when an instance starts); each
 // remote host reads its own sites' favicons through the hub.
 const iconRequest = computed(() => rows.value.map((r) => ({ host: r.host, project: r.project, bench_path: r.bench.path, site: r.site.name, running: r.running })))
@@ -140,6 +154,13 @@ const hasMenu = (r) => !!r.pub || (canPublish(r.host) && isPublicName(r.site.nam
     <template #actions><Button v-if="can('operator')" variant="solid" icon-left="lucide-plus" label="New site" @click="openNewSite({ project: picked?.project || null, host: picked?.host || null })" /></template>
   </PageHead>
   <div class="space-y-4 px-3 pb-20 pt-5 sm:px-5">
+    <MaintenanceAlert
+      v-for="s in stuck"
+      :key="s.key"
+      :maintenance="s.bench.maintenance"
+      :ctx="{ project: s.inst.project, host: s.inst.host, bench: String(s.bench.index), benchName: s.name }"
+      :where="` on ${s.inst.project} / ${s.name}`"
+    />
     <div class="flex flex-wrap items-center gap-2">
       <TextInput v-model="query" class="w-72 max-w-full" type="search" placeholder="Search sites, instances, benches, apps">
         <template #prefix><span class="lucide-search size-3.5 text-ink-gray-5" aria-hidden="true" /></template>
@@ -179,6 +200,7 @@ const hasMenu = (r) => !!r.pub || (canPublish(r.host) && isPublicName(r.site.nam
                 <span class="truncate text-base-medium text-ink-gray-9">{{ item.site.name }}</span>
                 <Badge v-if="item.isDefault" size="sm" theme="gray" variant="subtle" label="default" />
                 <DevModeBadge :state="item.devMode" quiet-off />
+                <Tooltip v-if="item.maintenance" text="In maintenance mode (HTTP 503, or its scheduler stopped) until it is taken out of it"><span class="flex shrink-0"><Badge class="max-lg:hidden" size="sm" theme="red" variant="subtle" label="maintenance" /><span class="lucide-wrench size-3.5 text-ink-red-5 lg:hidden" role="img" aria-label="In maintenance mode" /></span></Tooltip>
                 <Tooltip v-if="item.pub" :text="`${item.pub.url} · ${pubWord(item.pub).text}`"><span class="lucide-globe size-3.5 shrink-0 lg:hidden" :class="pubWord(item.pub).cls" role="img" :aria-label="`Public address ${pubWord(item.pub).short}`" /></Tooltip>
               </span>
               <span class="flex items-center gap-1.5 text-xs text-ink-gray-5"><span v-if="item.host" class="lucide-server size-3 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate">{{ whereLine(item) }}</span><span class="flex shrink-0 items-center gap-1 lg:hidden"><StatusDot :token="item.token" />{{ item.word }}</span></span>

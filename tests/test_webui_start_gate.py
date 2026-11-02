@@ -236,7 +236,7 @@ def test_a_tab_the_browser_would_block_after_the_start_is_offered_on_a_button(ru
         ("site.unlock", SITE, {}),
         ("site.dev_mode_on", SITE, {}),
         ("site.dev_mode_off", SITE, {}),
-        ("site.maintenance_off", SITE, {}),
+        ("bench.maintenance_off", BENCH, {}),
         ("site.remove", SITE, {}),
         ("bench.restart", BENCH, {}),
         ("bench.label", BENCH, {"label": "v15-main"}),

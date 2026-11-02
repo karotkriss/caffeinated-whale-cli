@@ -25,6 +25,8 @@ from rich.padding import Padding
 from rich.status import Status as RichStatus
 from rich.table import Table
 
+from ..core import bench_ops as core_bench_ops
+from ..core import resolvers as core_resolvers
 from ..core import update as core_update
 from ..core import update as core_update_mod
 from ..core import update_preflight
@@ -651,12 +653,10 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             f"[bold red]✗ Could not disable maintenance mode for "
             f"{len(report.failed_maintenance_disable)} site(s):[/bold red]"
         )
+        bench_flag = core_resolvers.bench_cli_flag(report.project, report.bench_path)
         for site in report.failed_maintenance_disable:
-            console.print(
-                f"  • {site}: still in maintenance mode - run "
-                f"'cwcli run {shlex.quote(report.project)} --site {shlex.quote(site)} "
-                f"set-maintenance-mode off'"
-            )
+            command = core_bench_ops.clear_maintenance_command(report.project, bench_flag, site)
+            console.print(f"  • {site}: still in maintenance mode - run: {command}")
 
 
 def _report_bench_state(report: UpdateReport) -> None:

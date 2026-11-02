@@ -318,4 +318,4 @@ class TestUpdateMaintenanceDisableFailure:
         out = capsys.readouterr().out
         # The stuck site is named with the recovery command.
         assert "site1" in out
-        assert "set-maintenance-mode off" in out
+        assert "--clear-maintenance --site site1" in " ".join(out.split())

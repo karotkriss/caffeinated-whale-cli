@@ -48,6 +48,7 @@ from .core import failure_causes
 from .core import init as core_init
 from .core import integrations as core_integrations
 from .core import label as core_label
+from .core import maintenance as core_maintenance
 from .core import new_bench as core_new_bench
 from .core import new_site as core_new_site
 from .core import publish as core_publish
@@ -1001,25 +1002,25 @@ def check_start_port_conflicts(project: str) -> None:
     )
 
 
-def _clear_maintenance(target: dict[str, Any]) -> Result:
+def _clear_maintenance(target: dict[str, Any], emit: _Recorder) -> Result:
+    """Take a bench's sites (or the one ``target.site``) out of maintenance mode.
+
+    The same ``core.maintenance.clear`` ``cwcli status --clear-maintenance`` runs:
+    bench-wide flags and a scheduler paused with them, each site's own flag, then a
+    check that every site answers again, each as a recorded step. Starting the job is
+    the consent: the page asks first. The one-job-per-instance rule already refuses
+    it while another job changes the instance; the core refuses it while an
+    in-container migrate, update or restore runs or a migrate lock is held. A
+    ``target.site`` clear writes only that site's own flag, never the bench-wide
+    flags: a site held down by the bench fails, naming the bench-level clear.
+    """
     project = _project(target)
     site = _site(target)
-    if site is None:
-        raise CwcliError(ErrorKind.USAGE, "site.required", "This job requires a site.")
-    core_resolvers.validate_site_name(site)
-    resolved = core_resolvers.resolve_container_and_bench(project, _bench(target), None)
-    if isinstance(resolved, Result):
-        return resolved
-    container, bench_path, warnings = resolved
-    off = core_bench_ops.clear_maintenance(container, bench_path, site, recheck=False)
-    outcome = {
-        "project": project,
-        "bench_path": bench_path,
-        "site": site,
-        "maintenance_off": off,
-        "ok": off,
-    }
-    return Result(status=Status.OK if off else Status.WARNING, data=outcome, warnings=warnings)
+    if site is not None:
+        core_resolvers.validate_site_name(site)
+    return core_maintenance.clear(
+        project, bench=_bench(target), site=site, consent=True, on_event=emit
+    )
 
 
 def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder) -> Result:
@@ -1648,7 +1649,7 @@ def _dispatch(
             return Result(status=result.status, data=result.data, warnings=warnings)
         return result
     if verb == "clear-maintenance":
-        return _clear_maintenance(target)
+        return _clear_maintenance(target, emit)
     if verb == "scale":
         return core_scale.scale(
             project,
@@ -2051,6 +2052,9 @@ def _cause(*texts: Any) -> dict[str, str] | None:
 
 def run_job(job_id: str) -> int:
     signals.install_unwind_handlers()
+    # Names this job in any maintenance-mode record its core calls write, so a
+    # flag left behind by a killed job can be traced back to it.
+    os.environ[core_bench_ops.JOB_ID_ENV] = job_id
     spec = _read_json(_json_path(job_id, "spec.json"))
     secret_values = {name: os.environ.pop(env_name, "") for name, env_name in _SECRET_ENV.items()}
     scrub_values = [value for value in secret_values.values() if value]

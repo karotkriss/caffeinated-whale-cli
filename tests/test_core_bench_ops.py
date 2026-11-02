@@ -141,12 +141,28 @@ def test_a_failed_maintenance_enable_refuses_the_migrate_entirely(container):
 def test_maintenance_mode_is_enabled_before_the_migrate_and_disabled_after(container):
     bench_ops.migrate_site("proj", site=SITE)
 
-    ordered = [c for c in container.calls if "maintenance" in c or c.endswith("migrate")]
+    record = f"{BENCH}/logs/.cwcli-maintenance/{SITE}.json"
+
+    def step(c):
+        # The maintenance record cwcli keeps beside the flag (this fake joins argv).
+        if c.startswith("python3 -c") and f" {record} " in c:
+            return "record"
+        if c == f"rm -f {record}":
+            return "forget"
+        return c if "maintenance" in c or c.endswith("migrate") else None
+
+    ordered = [s for s in map(step, container.calls) if s]
+    # The record is written BEFORE the flag, so a process killed outright still
+    # names itself; it is removed once the site is out of maintenance.
     assert ordered == [
+        "record",
         f"bench --site {SITE} set-maintenance-mode on",
         f"bench --site {SITE} migrate",
         f"bench --site {SITE} set-maintenance-mode off",
+        "forget",
     ]
+    written = next(c for c in container.calls if step(c) == "record")
+    assert json.loads(written.split(f" {record} ", 1)[1])["verb"] == "migrate"
 
 
 def test_a_site_left_in_maintenance_is_reported_and_fails_the_operation(container):
@@ -160,7 +176,7 @@ def test_a_site_left_in_maintenance_is_reported_and_fails_the_operation(containe
     off = [r for r in result.data.results if r.action == "maintenance_off"][0]
     assert "STILL in maintenance mode" in off.message
     # The remedy is a runnable cwcli command, never a raw in-container one.
-    assert "cwcli run" in off.message
+    assert "cwcli status proj --clear-maintenance --site a.localhost" in off.message
 
 
 def test_maintenance_is_disabled_even_when_the_migrate_raises(monkeypatch, container, _no_sleep):
@@ -469,12 +485,16 @@ def test_set_maintenance_is_shared_with_core_update_not_copied(monkeypatch):
 
     seen: list[tuple] = []
     monkeypatch.setattr(
-        bench_ops, "set_maintenance", lambda c, p, s, *, enable: seen.append((s, enable)) or True
+        bench_ops,
+        "set_maintenance",
+        lambda c, p, s, *, enable, owner=None: seen.append((s, enable, owner)) or True,
     )
 
     core_update._set_maintenance(object(), BENCH, SITE, enable=True)
+    core_update._set_maintenance(object(), BENCH, SITE, enable=False)
 
-    assert seen == [(SITE, True)]
+    # The update names itself in the maintenance record it leaves until it clears it.
+    assert seen == [(SITE, True, "apps update"), (SITE, False, None)]
 
 
 # --------------------------------------- interrupt cleanup: end the orphan, clear last
@@ -656,7 +676,7 @@ def test_an_orphan_cwcli_cannot_kill_still_clears_maintenance_and_says_so(monkey
     msg = notices[0].message
     assert "may still be running" in msg
     assert "cwcli status proj" in msg
-    assert "set-maintenance-mode off" in msg
+    assert "cwcli status proj --clear-maintenance --site a.localhost" in msg
 
 
 def test_a_normal_migrate_does_not_touch_the_interrupt_cleanup(container, monkeypatch):

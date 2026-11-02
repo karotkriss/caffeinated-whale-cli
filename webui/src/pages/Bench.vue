@@ -11,6 +11,7 @@ import AppsTable from '../components/AppsTable.vue'
 import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
 import RemoteHostBadge from '../components/RemoteHostBadge.vue'
+import MaintenanceAlert from '../components/MaintenanceAlert.vue'
 import { instance as findInstance, loadDetail, benchName, setFocus, ago, instancePath, sitePath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
@@ -103,13 +104,7 @@ const heroFacts = computed(() => bench.value ? [
       :primary-action="{ label: `Restart ${down[0].label}`, onClick: () => openAction('process.restart', { ...ctx, process: down[0].label }) }"
       :secondary-action="{ label: 'Open its log', onClick: () => showLogs(down[0].label) }"
     />
-    <Alert
-      v-if="running && health?.maintenance_mode"
-      theme="amber"
-      :title="`${health.web_site || 'The probed site'} is in maintenance mode`"
-      description="It answers HTTP 503 until maintenance mode is turned off. An interrupted migrate leaves it this way."
-      :primary-action="{ label: 'Take it out of maintenance', onClick: () => openAction('site.maintenance_off', { ...ctx, site: health.web_site }) }"
-    />
+    <MaintenanceAlert v-if="running" :maintenance="health?.maintenance" :ctx="ctx" />
 
     <Tabs v-model="tab">
       <TabList>
@@ -130,7 +125,7 @@ const heroFacts = computed(() => bench.value ? [
       <TabPanel value="sites" class="pt-4">
         <!-- Clone and move are this machine's dialogs over its own backup store; a remote bench offers New site only. -->
         <div v-if="can('operator')" class="mb-3 flex justify-end gap-2"><Button v-if="!host" variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index, host })" /></div>
-        <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :route="(s) => sitePath(where, bench.index, s.name)" />
+        <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :maintenance="running ? health?.maintenance : null" :route="(s) => sitePath(where, bench.index, s.name)" />
       </TabPanel>
       <TabPanel value="apps" class="pt-4">
         <AppsTable :bench="bench" :project="project" :host="host" />

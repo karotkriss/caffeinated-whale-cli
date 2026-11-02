@@ -381,7 +381,9 @@ def _set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> 
     lifecycle drift until one stops disabling, and a site stuck in maintenance mode
     is a site that is down.
     """
-    return bench_ops.set_maintenance(container, bench_path, site, enable=enable)
+    return bench_ops.set_maintenance(
+        container, bench_path, site, enable=enable, owner="apps update" if enable else None
+    )
 
 
 def _restore_pre_maintenance_on_abort(
@@ -2051,7 +2053,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     phase="interrupt_cleanup",
                     status="unknown",
                     message=bench_ops.interrupt_recheck_hint(
-                        project_name, ", ".join(sites_to_migrate)
+                        project_name,
+                        list(sites_to_migrate),
+                        resolvers.bench_cli_flag(project_name, bench_path),
                     ),
                 )
             )

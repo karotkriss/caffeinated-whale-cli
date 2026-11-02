@@ -46,13 +46,17 @@ one of them stops disabling, and a site stuck in maintenance is a site that is d
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import shlex
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
+from ..utils import daemon_identity
 from . import resolvers, supervision
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -168,19 +172,81 @@ def _noop(_event: BenchOpEvent) -> None:
 # --------------------------------------------------------------------------- helpers
 
 
-def set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> bool:
+#: Where cwcli records the maintenance mode it turned on: one JSON file per site,
+#: relative to the bench. Written BEFORE the flag and removed once it is off, so a
+#: flag cwcli could not clear because it was killed outright (SIGKILL, an OOM kill,
+#: a host reboot, a container restart: no ``finally`` runs) still names the
+#: operation that set it. ``core.maintenance`` reads it; a flag with no record was
+#: set outside cwcli and is never presented as cwcli's leftover.
+MAINTENANCE_RECORD_DIR = "logs/.cwcli-maintenance"
+
+#: The environment variable a cwcli web-UI job runner exports with its job id, so a
+#: maintenance record written from inside that job names it.
+JOB_ID_ENV = "CWCLI_JOB_ID"
+
+
+def _maintenance_record_path(bench_path: str, site: str) -> str:
+    return f"{bench_path.rstrip('/')}/{MAINTENANCE_RECORD_DIR}/{site}.json"
+
+
+def record_maintenance_owner(container, bench_path: str, site: str, verb: str) -> None:
+    """Record that THIS process is about to put ``site`` into maintenance for ``verb``.
+
+    The pid, its creation-time token and the host name together identify the process
+    (``utils.daemon_identity``), so a later reader can tell "still running" from
+    "gone" even after the pid is reused. Best-effort: a record that cannot be written
+    must never stop the operation it describes.
+    """
+    pid = os.getpid()
+    payload = json.dumps(
+        {
+            "verb": verb,
+            "job_id": os.environ.get(JOB_ID_ENV) or None,
+            "pid": pid,
+            "process_started": daemon_identity.process_start_time(pid),
+            "host": socket.gethostname(),
+            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    try:
+        supervision.write_bench_file(container, _maintenance_record_path(bench_path, site), payload)
+    except Exception:  # noqa: BLE001 - a record must never block the maintenance write
+        pass
+
+
+def forget_maintenance_owner(container, bench_path: str, site: str) -> None:
+    """Drop ``site``'s maintenance record once the site is out of maintenance."""
+    try:
+        container.exec_run(["rm", "-f", _maintenance_record_path(bench_path, site)])
+    except Exception:  # noqa: BLE001 - best-effort, like the write
+        pass
+
+
+def set_maintenance(
+    container, bench_path: str, site: str, *, enable: bool, owner: str | None = None
+) -> bool:
     """Turn maintenance mode on/off for one site. True when bench accepted it.
 
     Promoted out of ``core/update.py``'s private ``_set_maintenance`` when this
     module became its second caller (openspec ``add-axi-bench-exec-verbs``). A MOVE,
-    not a rewrite: behaviour is byte-identical and ``core.update`` imports this one.
-    Two copies of this lifecycle drift until one stops disabling, and a site stuck
-    in maintenance mode is a site that is down.
+    not a rewrite: ``core.update`` imports this one. Two copies of this lifecycle
+    drift until one stops disabling, and a site stuck in maintenance mode is a site
+    that is down.
+
+    ``owner`` names the operation turning it on (``"migrate"``, ``"apps update"``);
+    it is recorded before the flag is written (:func:`record_maintenance_owner`), and
+    a successful disable removes the record whoever wrote it, and an enable bench
+    refused removes the record it just wrote.
     """
+    if enable and owner:
+        record_maintenance_owner(container, bench_path, site, owner)
     mode = "on" if enable else "off"
     cmd = f"bench --site {shlex.quote(site)} set-maintenance-mode {mode}"
     exit_code, _ = container.exec_run(cmd, workdir=bench_path)
-    return bool(exit_code == 0)
+    ok = bool(exit_code == 0)
+    if (ok and not enable) or (enable and owner and not ok):
+        forget_maintenance_owner(container, bench_path, site)
+    return ok
 
 
 def _run_step(
@@ -401,16 +467,23 @@ def clear_maintenance(container, bench_path: str, site: str, *, recheck: bool) -
     return not state
 
 
-def interrupt_recheck_hint(project: str, site: str, bench: str | None = None) -> str:
+def clear_maintenance_command(project: str, bench_flag: str = "", site: str | None = None) -> str:
+    """The cwcli line that takes a bench's sites (or the one ``site``) out of
+    maintenance mode, through the clear that also removes cwcli's record of it."""
+    command = f"cwcli status {shlex.quote(project)}{bench_flag} --clear-maintenance"
+    return command + (f" --site {shlex.quote(site)}" if site else "")
+
+
+def interrupt_recheck_hint(project: str, sites: list[str], bench_flag: str = "") -> str:
     """The plain-language warning when cwcli could not confirm the orphaned migrate
-    stopped: it may still be running, so name how to re-check and clear the site."""
-    bench_flag = f" --bench {bench}" if bench else ""
+    stopped: it may still be running, so name how to re-check and clear the sites."""
+    names = ", ".join(sites)
+    commands = "; ".join(clear_maintenance_command(project, bench_flag, s) for s in sites)
     return (
         f"cwcli was interrupted and could not confirm the in-container 'bench migrate' "
-        f"for '{site}' stopped; it may still be running. Re-check with "
-        f"'cwcli status {project}'. If '{site}' is left in maintenance mode (HTTP 503), "
-        f"clear it with: cwcli run {project} --site {site}{bench_flag} "
-        "set-maintenance-mode off"
+        f"for '{names}' stopped; it may still be running. Re-check with "
+        f"'cwcli status {project}{bench_flag}'. If '{names}' is left in maintenance mode "
+        f"(HTTP 503), clear it with: {commands}"
     )
 
 
@@ -562,7 +635,7 @@ def migrate_site(
             warnings=warnings,
         )
 
-    if not set_maintenance(container, path, target, enable=True):
+    if not set_maintenance(container, path, target, enable=True, owner="migrate"):
         # The gate. No migrate is issued at all - this is a REFUSAL, not a failure
         # partway through, and the report says so rather than leaving the agent to
         # infer it from a missing row.
@@ -614,7 +687,13 @@ def migrate_site(
         # otherwise re-assert maintenance behind us and strand the site at 503.
         interrupted = True
         if not end_migrate_on_interrupt(container, token):
-            emit(BenchOpNotice(message=interrupt_recheck_hint(project_name, target, bench)))
+            emit(
+                BenchOpNotice(
+                    message=interrupt_recheck_hint(
+                        project_name, [target], resolvers.bench_cli_flag(project_name, path)
+                    )
+                )
+            )
         raise
     finally:
         # Plain function, NOT a generator, precisely so this runs: an abandoned
@@ -633,8 +712,10 @@ def migrate_site(
                     ok=False,
                     message=(
                         f"Site '{target}' is STILL in maintenance mode and is not serving. "
-                        "Take it out with: cwcli run "
-                        f"{project_name} --site {target} set-maintenance-mode off"
+                        "Take it out with: "
+                        + clear_maintenance_command(
+                            project_name, resolvers.bench_cli_flag(project_name, path), target
+                        )
                     ),
                 )
             )

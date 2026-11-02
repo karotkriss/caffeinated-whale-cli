@@ -11,12 +11,14 @@ import SiteBackupsPane from '../components/SiteBackupsPane.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import RemoteHostBadge from '../components/RemoteHostBadge.vue'
+import MaintenanceAlert from '../components/MaintenanceAlert.vue'
 import { apiBase, getJson } from '../data/api'
 import { jobList } from '../data/jobs'
 import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl, instancePath, benchPath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
+import { maintenanceSites } from '../data/actions'
 import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
 import { can } from '../data/session'
@@ -47,7 +49,7 @@ const more = computed(() => [
   jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
   menuOption('site.unlock', ctx.value),
-  menuOption('site.maintenance_off', ctx.value),
+  menuOption('bench.maintenance_off', { ...ctx.value, maintenance: health.value?.maintenance }, health.value),
   dangerGroup(['site.remove'], ctx.value),
 ])
 
@@ -68,7 +70,6 @@ async function checkUrl() {
     probe.value.loading = false
   }
 }
-// This site's own maintenance flag is only known when it is the probed site.
 // Developer mode: the cache's answer at once (detail.dev_modes), then a live read
 // of the two config files; re-read when a dev-mode job for this site finishes.
 const devLive = ref(null)
@@ -88,7 +89,27 @@ watch(jobList, (list) => {
     }
   }
 })
-const maintenance = computed(() => (health.value?.web_site === siteName ? health.value.maintenance_mode : null))
+// This site's maintenance mode, from the bench's report (core.maintenance reads every
+// site): what Frappe answers it with, and the write that holds it there.
+const siteMaintenance = computed(() => health.value?.maintenance?.sites?.find((s) => s.site === siteName) || null)
+const maintenance = computed(() => {
+  if (!health.value?.maintenance) return health.value?.web_site === siteName ? health.value.maintenance_mode : null
+  if (siteMaintenance.value) return siteMaintenance.value.on
+  return maintenanceSites(health.value.maintenance).includes(siteName)
+})
+const MAINTENANCE_CAUSE = {
+  site: "set in the site's own site_config.json",
+  bench: 'inherited from sites/common_site_config.json, bench-wide',
+  cached: "Frappe is still answering from its config cache",
+}
+const maintenanceNote = computed(() => {
+  const s = siteMaintenance.value
+  if (maintenance.value == null) return 'read while the bench serves'
+  if (!s && maintenance.value && health.value?.maintenance) return `${MAINTENANCE_CAUSE.site}; the web server answers it as the default site, but its scheduler stays stopped`
+  if (!s?.on) return 'read live while the bench serves'
+  if (s.cause === 'served_as') return `answered as the default site ${s.served_as}, which is in maintenance mode`
+  return MAINTENANCE_CAUSE[s.cause] || 'answers HTTP 503'
+})
 // Its public address, from the store of the machine it is on: published with that
 // machine's own integrations, which the fact says.
 const pub = computed(() => (bench.value ? publicationAt(siteName, project, bench.value.path, publicationsFor(host) || {}) : null))
@@ -128,6 +149,7 @@ const heroFacts = computed(() => [
     <div class="mt-4 max-w-sm"><CommandLine :command="`cwcli inspect ${project} --update`" /></div>
   </div>
   <div v-else class="space-y-8 px-3 pb-20 pt-5 sm:px-5">
+    <MaintenanceAlert v-if="running" :maintenance="health?.maintenance" :ctx="ctx" :site="siteName" />
     <section class="grid gap-4 md:grid-cols-3">
       <div class="rounded-6 border border-outline-gray-1 p-4">
         <div class="flex items-center justify-between text-sm text-ink-gray-5">
@@ -151,7 +173,7 @@ const heroFacts = computed(() => [
       <div class="rounded-6 border border-outline-gray-1 p-4">
         <div class="text-sm text-ink-gray-5">Maintenance mode</div>
         <div class="mt-1.5 text-base text-ink-gray-8">{{ maintenance == null ? 'unknown' : maintenance ? 'on' : 'off' }}</div>
-        <div class="mt-1 text-xs text-ink-gray-5">{{ maintenance == null ? 'read live for the probed site while the bench serves' : 'read live while the bench serves' }}</div>
+        <div class="mt-1 text-xs text-ink-gray-5">{{ maintenanceNote }}</div>
       </div>
       <div class="rounded-6 border border-outline-gray-1 p-4">
         <div class="text-sm text-ink-gray-5">Bench</div>
@@ -159,8 +181,6 @@ const heroFacts = computed(() => [
         <div class="mt-1 truncate font-mono text-xs text-ink-gray-5">{{ bench.path }}</div>
       </div>
     </section>
-
-    <Alert v-if="maintenance" theme="amber" :title="`${siteName} is in maintenance mode`" description="It answers HTTP 503 until maintenance mode is turned off." :primary-action="{ label: 'Take it out of maintenance', onClick: () => openAction('site.maintenance_off', ctx) }" />
 
     <section>
       <div class="flex items-baseline gap-2">
