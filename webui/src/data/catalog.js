@@ -40,16 +40,42 @@ export async function scanCatalog() {
   }
 }
 
-// Called by the fleet stream on a `catalog` frame: a progress tick, or the landing.
+// Called by the fleet stream on a `catalog` frame: a source the scan found to
+// answer, a progress tick, or the landing. A source is listed the moment it
+// answers (a first scan has no row on disk yet), and the tick rides on its row,
+// so the sidebar and the Sources card show "100 of 442" while the scan runs.
+// Hosts are scanned one after another, so a frame for one host ends every other
+// row's progress.
 export function catalogLanded(frame = {}) {
+  const host = frame.source?.host || frame.progress?.host
+  if (host) {
+    for (const s of sources.value) if (s.host !== host) s.progress = null
+    if (catalog.progress?.host !== host) catalog.progress = null
+  }
+  if (frame.source) {
+    catalog.scanning = true
+    upsertSource(frame.source)
+    return
+  }
   if (frame.progress) {
     catalog.scanning = true
     catalog.progress = frame.progress
+    const row = sources.value.find((s) => s.host === frame.progress.host)
+    if (row) row.progress = { done: frame.progress.done, total: frame.progress.total }
+    else loadCatalog() // the row is on the daemon already; a page that missed the source frame re-reads
     return
   }
   catalog.scanning = false
   catalog.progress = null
   loadCatalog({ fresh: true })
+}
+
+function upsertSource(source) {
+  if (!catalog.data) return
+  const rows = catalog.data.sources || (catalog.data.sources = [])
+  const i = rows.findIndex((s) => s.host === source.host)
+  if (i < 0) rows.push(source)
+  else Object.assign(rows[i], { signed_in: true, error: source.error })
 }
 
 export const apps = computed(() => catalog.data?.apps || [])
@@ -93,6 +119,16 @@ export function namespaceOf(app) {
   return i > 0 ? path.slice(0, i) : ''
 }
 export const hostLabel = (host) => (host === 'github.com' ? 'GitHub' : host === 'marketplace' ? 'Marketplace' : host)
+// The forges in the grid's source filter: every host some app came from. A host
+// nobody is signed in to (installed apps that point at GitHub on an install with no
+// gh sign-in) is named as such, so picking it is never a surprise.
+export const hostFilterOptions = computed(() => {
+  const signedIn = new Set(sources.value.filter((s) => s.signed_in).map((s) => s.host))
+  const hosts = [...new Set(apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean))].sort()
+  return hosts.map((h) => ({ label: signedIn.has(h) ? hostLabel(h) : `${hostLabel(h)} (not signed in)`, value: h }))
+})
+// "100 of 442" while a source's scan runs, else null.
+export const progressText = (s) => (s?.progress ? `${s.progress.done} of ${s.progress.total}` : null)
 // Every category the registry names, for the grid's filter.
 export const categories = computed(() => [...new Set(apps.value.flatMap((a) => a.source?.categories || []))].sort())
 

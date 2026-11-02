@@ -51,7 +51,7 @@ import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
 import { openPalette } from '../data/palette'
 import { activeJobs, jobList } from '../data/jobs'
 import { notifications, unread, isRead, markRead, markAllRead } from '../data/notifications'
-import { apps, activeSources, loadCatalog, hostLabel } from '../data/catalog'
+import { apps, activeSources, loadCatalog, hostLabel, progressText } from '../data/catalog'
 import { settingsDialog, openSettings } from '../data/settings-dialog'
 
 const route = useRoute()
@@ -146,7 +146,8 @@ watch(() => route.name, (name) => {
               <span v-if="unread.length" class="rounded-full bg-surface-red-2 px-1.5 text-xs text-ink-red-6">{{ unread.length }}</span>
             </button>
           </div>
-          <ScrollArea class="min-h-0 flex-1" viewport-class="px-2 pt-1 pb-10">
+          <!-- cw-fade-bottom: a row crossing the bottom edge fades out instead of being sliced against the footer divider. -->
+          <ScrollArea class="min-h-0 flex-1" viewport-class="cw-fade-bottom px-2 pt-1 pb-10">
             <SidebarLabel>Workspace</SidebarLabel>
             <div class="space-y-0.5">
               <SidebarItem label="Instances" icon="lucide-boxes" route="/instances" :active="route.name === 'instances'">
@@ -171,7 +172,10 @@ watch(() => route.name, (name) => {
             <div class="space-y-0.5">
               <SidebarItem v-for="s in activeSources" :key="s.host" :label="hostLabel(s.host)" route="/apps" :active="false">
                 <template #prefix><HostIcon :host="s.host" size="size-4" /></template>
-                <template #suffix><span class="mr-1 text-xs" :class="s.signed_in ? (s.error ? 'text-ink-amber-6' : 'text-ink-gray-5') : 'text-ink-gray-4'">{{ s.signed_in ? (s.apps || (s.error ? '!' : '0')) : 'off' }}</span></template>
+                <template #suffix>
+                  <span v-if="progressText(s)" class="mr-1 flex items-center gap-1 text-xs tabular-nums text-ink-blue-6" :title="`scanning ${hostLabel(s.host)} · ${progressText(s)} projects`"><span class="lucide-loader-circle size-3 animate-spin" aria-hidden="true" />{{ s.progress.done }}/{{ s.progress.total }}</span>
+                  <span v-else class="mr-1 text-xs" :class="s.signed_in ? (s.error ? 'text-ink-amber-6' : 'text-ink-gray-5') : 'text-ink-gray-4'">{{ s.signed_in ? (s.apps || (s.error ? '!' : '0')) : 'off' }}</span>
+                </template>
               </SidebarItem>
             </div>
             <SidebarLabel class="mt-4">Insights</SidebarLabel>

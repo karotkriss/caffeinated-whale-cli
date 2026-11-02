@@ -49,6 +49,7 @@ from pathlib import Path
 
 from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
+from . import credbridge
 from . import list as core_list
 from . import version as core_version
 from .envelope import Result, Status
@@ -130,7 +131,9 @@ def _outcome(
 def _probe_version(cmd: list[str]) -> str | None:
     """Best-effort ``cmd``'s first output line, or None on any failure/timeout."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT)
+        proc = credbridge.run_host_tool(
+            cmd, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT
+        )
     except Exception:
         return None
     for stream in (proc.stdout, proc.stderr):
@@ -556,7 +559,7 @@ def _host_signed_in(tool: str, host: str) -> bool | None:
     """True/False from ``<tool> auth status --hostname <host>`` (a read-only status
     query that never triggers a login flow); None when it could not be run."""
     try:
-        proc = subprocess.run(
+        proc = credbridge.run_host_tool(
             [tool, "auth", "status", "--hostname", host],
             capture_output=True,
             text=True,

@@ -8,7 +8,7 @@ import PageHead from '../components/PageHead.vue'
 import AppsGrid from '../components/AppsGrid.vue'
 import HostIcon from '../components/HostIcon.vue'
 import { setFocus, localInstances } from '../data/fleet'
-import { apps, catalog, scanCatalog, activeSources, ago, hostLabel } from '../data/catalog'
+import { apps, catalog, scanCatalog, activeSources, ago, hostLabel, progressText } from '../data/catalog'
 import { can } from '../data/session'
 
 onMounted(() => setFocus(null))
@@ -19,6 +19,7 @@ const counts = computed(() => ({
   logos: apps.value.filter((a) => a.logo).length,
 }))
 const running = computed(() => localInstances.value.filter((i) => i.container_running).length)
+const scanningSource = computed(() => activeSources.value.find((s) => progressText(s)) || null)
 </script>
 
 <template>
@@ -48,10 +49,10 @@ const running = computed(() => localInstances.value.filter((i) => i.container_ru
         <div class="text-sm text-ink-gray-5">Sources</div>
         <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
           <span v-for="s in activeSources" :key="s.host" class="flex items-center gap-1 text-sm text-ink-gray-8">
-            <HostIcon :host="s.host" size="size-4" />{{ hostLabel(s.host) }}
+            <HostIcon :host="s.host" size="size-4" />{{ hostLabel(s.host) }}<span v-if="progressText(s)" class="text-xs tabular-nums text-ink-blue-6">· {{ progressText(s) }}</span>
           </span>
         </div>
-        <div class="mt-0.5 text-xs text-ink-gray-5">{{ catalog.data ? `scanned ${ago(catalog.data.scanned_at)}` : 'reading installed apps and the last scan' }}</div>
+        <div class="mt-0.5 text-xs text-ink-gray-5">{{ !catalog.data ? 'reading installed apps and the last scan' : scanningSource ? `scanning ${hostLabel(scanningSource.host)} · ${progressText(scanningSource)} projects` : catalog.scanning ? 'scanning' : `scanned ${ago(catalog.data.scanned_at)}` }}</div>
       </div>
     </div>
     <AppsGrid density="storefront" columns="grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4" />

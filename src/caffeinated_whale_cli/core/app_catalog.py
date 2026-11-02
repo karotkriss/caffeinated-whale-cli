@@ -51,8 +51,9 @@ from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import IO, Any
 
-from ..utils import config_utils, db_utils
+from ..utils import config_utils, db_utils, shared_home
 from ..utils.config_utils import cwcli_home
+from . import credbridge
 from . import docker as core_docker
 from . import editors as core_editors
 from . import inspect as core_inspect
@@ -338,31 +339,54 @@ def _parse_app_line(entry: str) -> dict[str, Any]:
 # ------------------------------------------------------------ credentials
 
 
-def credential(host: str) -> str | None:
-    """The host tool's token for ``host``, in memory only. None when not signed in."""
+def credential_answer(host: str) -> bytes:
+    """git's credential-protocol answer for ``host`` (``password=...`` and friends),
+    in memory only; empty when nothing is signed in.
+
+    The same answer a container's git gets from the credential bridge, in the same
+    order: on a shared install the machine's service-account credential first
+    (``cred_daemon.shared_credential``, the machine-wide bridge socket), then the
+    running account's own ``gh``/``glab`` - run from cwcli's neutral working
+    directory, never the daemon's (``credbridge.run_host_tool``). The catalog's REST
+    scan and every host ``git`` the Apps page runs (``git_refs.credential_helper``)
+    ask here, so they all see the same repositories.
+    """
     if host == "github.com":
         tool = "gh"
     elif host in gitlab_hosts():
         tool = "glab"
     else:
-        return None
+        return b""
+    from ..utils import cred_daemon
+
+    out = cred_daemon.shared_credential(host)
+    if out:
+        return out
     try:
-        out = subprocess.run(
-            [tool, "auth", "git-credential", "get"],
-            input=f"protocol=https\nhost={host}\n\n".encode(),
-            capture_output=True,
-            timeout=20,
-        ).stdout.decode("utf-8", "replace")
+        return bytes(
+            credbridge.run_host_tool(
+                [tool, "auth", "git-credential", "get"],
+                input=f"protocol=https\nhost={host}\n\n".encode(),
+                capture_output=True,
+                timeout=20,
+            ).stdout
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    for line in out.splitlines():
+        return b""
+
+
+def credential(host: str) -> str | None:
+    """The token for ``host`` (:func:`credential_answer`'s password). None when nothing
+    is signed in."""
+    for line in credential_answer(host).decode("utf-8", "replace").splitlines():
         if line.startswith("password="):
             return line[len("password=") :].strip() or None
     return None
 
 
-def gitlab_hosts() -> list[str]:
-    """Every host glab is configured for (names only; the token is never read here)."""
+def glab_config_hosts() -> list[str]:
+    """Every host the running account's glab is configured for (names only; the token
+    is never read here)."""
     path = (
         Path(os.environ.get("GLAB_CONFIG_DIR") or Path.home() / ".config" / "glab-cli")
         / "config.yml"
@@ -381,6 +405,22 @@ def gitlab_hosts() -> list[str]:
             continue
         if in_hosts and re.match(r"^ {2,4}[A-Za-z0-9.-]+:\s*$", line):
             hosts.append(line.strip()[:-1])
+    return hosts
+
+
+def gitlab_hosts() -> list[str]:
+    """Every GitLab host a credential may answer for (names only; no token is read
+    here): the running account's glab config, plus, on a shared install, the hosts
+    the machine-wide bridge is allowed to answer (``[cred_bridge] allowed_hosts``),
+    since the service account's glab config is not this account's to read. A host
+    only the allowlist names is listed as a source once its credential answers."""
+    hosts = glab_config_hosts()
+    if shared_home.shared_mode():
+        from ..utils import cred_daemon
+
+        hosts.extend(
+            h for h in sorted(cred_daemon.allowed_hosts()) if h != "github.com" and h not in hosts
+        )
     return hosts
 
 
@@ -604,8 +644,17 @@ def _module_for(repo_name: str, pyproject_text: str | None, dirs: set[str]) -> s
     return candidate if candidate in dirs else None
 
 
+# ``started`` (the store passes one) is called with the live SourceState the
+# moment a source is known to answer, so a page lists it with its progress from
+# the first second of a first scan instead of only once the scan has landed.
+SourceStarted = Callable[[SourceState], None]
+
+
 def scan_github(
-    previous: dict[str, Any], extra_orgs: list[str] | None = None
+    previous: dict[str, Any],
+    extra_orgs: list[str] | None = None,
+    *,
+    started: SourceStarted | None = None,
 ) -> tuple[SourceState, dict[str, dict[str, Any]]]:
     host = "github.com"
     source = SourceState(
@@ -619,9 +668,11 @@ def scan_github(
         source.error = "gh is not signed in"
         return source, {}
     source.signed_in = True
+    if started is not None:
+        started(source)
     source.icon = fetch_host_icon(host)
     http = _Http(token, "bearer")
-    started = time.monotonic()
+    began = time.monotonic()
     nodes: list[dict[str, Any]] = []
     after: str | None = None
     try:
@@ -763,7 +814,7 @@ def scan_github(
         }
     source.apps = len(apps)
     source.scanned_at = time.time()
-    source.duration_s = round(time.monotonic() - started, 2)
+    source.duration_s = round(time.monotonic() - began, 2)
     source.state = "verified"
     return source, apps
 
@@ -890,6 +941,8 @@ def scan_gitlab(
     previous: dict[str, Any],
     extra_groups: list[str] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    *,
+    started: SourceStarted | None = None,
 ) -> tuple[SourceState, dict[str, dict[str, Any]]]:
     everything = is_self_hosted(host)
     source = SourceState(
@@ -906,10 +959,12 @@ def scan_gitlab(
         source.error = f"glab has no credential for {host}"
         return source, {}
     source.signed_in = True
+    if started is not None:
+        started(source)
     source.icon = fetch_host_icon(host)
     base = f"https://{host}/api/v4"
     http = _Http(token, "bearer")
-    started = time.monotonic()
+    began = time.monotonic()
     projects: list[dict[str, Any]] = []
     try:
         try:
@@ -986,7 +1041,7 @@ def scan_gitlab(
             apps[key] = {**entry, "logo": logo}
     source.apps = len(apps)
     source.scanned_at = time.time()
-    source.duration_s = round(time.monotonic() - started, 2)
+    source.duration_s = round(time.monotonic() - began, 2)
     source.state = "verified"
     return source, apps
 
@@ -1000,7 +1055,9 @@ MARKETPLACE_HOST = "marketplace"
 _MARKETPLACE_URL = "https://raw.githubusercontent.com/frappe/marketplace/main/apps.json"
 
 
-def scan_marketplace(previous: dict[str, Any]) -> tuple[SourceState, dict[str, dict[str, Any]]]:
+def scan_marketplace(
+    previous: dict[str, Any], *, started: SourceStarted | None = None
+) -> tuple[SourceState, dict[str, dict[str, Any]]]:
     source = SourceState(
         kind="marketplace",
         host=MARKETPLACE_HOST,
@@ -1008,7 +1065,9 @@ def scan_marketplace(previous: dict[str, Any]) -> tuple[SourceState, dict[str, d
         signed_in=True,
         scope="Frappe's public app index",
     )
-    started = time.monotonic()
+    if started is not None:
+        started(source)
+    began = time.monotonic()
     try:
         raw = _fetch_public(_MARKETPLACE_URL)
         entries = json.loads((raw or b"[]").decode("utf-8"))
@@ -1071,7 +1130,7 @@ def scan_marketplace(previous: dict[str, Any]) -> tuple[SourceState, dict[str, d
     source.repos = len(entries)
     source.apps = len(apps)
     source.scanned_at = time.time()
-    source.duration_s = round(time.monotonic() - started, 2)
+    source.duration_s = round(time.monotonic() - began, 2)
     source.state = "verified"
     return source, apps
 
@@ -1586,6 +1645,10 @@ class CatalogStore:
         }
         self._scanning = False
         self._progress: dict[str, dict[str, int]] = {}
+        # Sources the running scan has found to answer, by host: listed by
+        # ``sources()`` from the moment the scanner signs in, so a FIRST scan's
+        # host (no disk row yet) is not invisible until the scan lands.
+        self._inflight: dict[str, SourceState] = {}
         self._installed: tuple[float, dict, list] | None = None
         self._installed_ttl = installed_ttl
         self._installed_inflight = False
@@ -1619,8 +1682,21 @@ class CatalogStore:
 
     def sources(self) -> list[SourceState]:
         rows = [SourceState(**s) for s in self._disk.get("sources") or []]
-        hosts = {s.host for s in rows}
-        for host in ["github.com", *gitlab_hosts()]:
+        by_host = {s.host: s for s in rows}
+        with self._lock:
+            inflight = list(self._inflight.values()) if self._scanning else []
+        for live in inflight:
+            # A host with a disk row keeps that row (its last counts) and only
+            # gains the live sign-in and progress; a host on its first scan gets
+            # a snapshot of the live row, so it is listed as signed in with its progress.
+            if live.host in by_host:
+                by_host[live.host].signed_in = live.signed_in
+                by_host[live.host].error = live.error
+            else:
+                by_host[live.host] = SourceState(**asdict(live))
+                rows.append(by_host[live.host])
+        hosts = set(by_host)
+        for host in ["github.com", *glab_config_hosts()]:
             if host not in hosts:
                 rows.append(
                     SourceState(
@@ -1656,7 +1732,17 @@ class CatalogStore:
             previous = self._disk
             extras = extra_sources()
             gh_orgs = [v.split(":", 1)[1] for v in extras if v.startswith("github:")]
-            gh_source, gh_apps = scan_github(previous, gh_orgs)
+
+            def _started(source: SourceState) -> None:
+                with self._lock:
+                    self._inflight[source.host] = source
+                if publish is not None:
+                    try:
+                        publish({"source": asdict(source)})
+                    except Exception:
+                        pass
+
+            gh_source, gh_apps = scan_github(previous, gh_orgs, started=_started)
             sources.append(gh_source)
             if gh_source.error is None:
                 remote = {k: v for k, v in remote.items() if not _scanned_by(k, v, "github.com")}
@@ -1672,12 +1758,20 @@ class CatalogStore:
                         except Exception:
                             pass
 
-                gl_source, gl_apps = scan_gitlab(host, previous, groups, progress=_progress)
+                gl_source, gl_apps = scan_gitlab(
+                    host, previous, groups, progress=_progress, started=_started
+                )
+                self._progress.pop(host, None)
+                if not gl_source.signed_in and host not in glab_config_hosts():
+                    with self._lock:
+                        if host in self._remote_state:
+                            self._remote_state[host] = "unverified"
+                    continue
                 sources.append(gl_source)
                 if gl_source.error is None:
                     remote = {k: v for k, v in remote.items() if not _scanned_by(k, v, host)}
                     remote.update(gl_apps)
-            mk_source, mk_apps = scan_marketplace(previous)
+            mk_source, mk_apps = scan_marketplace(previous, started=_started)
             sources.append(mk_source)
             if mk_source.error is None:
                 remote = {
@@ -1706,6 +1800,7 @@ class CatalogStore:
             with self._lock:
                 self._scanning = False
                 self._progress = {}
+                self._inflight = {}
             if publish is not None:
                 try:
                     publish({"scanned_at": self._disk.get("scanned_at")})

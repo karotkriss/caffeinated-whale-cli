@@ -37,3 +37,8 @@ html { background: var(--surface-base); }
   .jobcard-enter-from, .jobcard-leave-to { transform: none; }
   .jobcard-move { transition: none; }
 }
+
+/* The sidebar's scroll region fades out across its own bottom padding (pb-10), so a row
+   crossing the bottom edge fades instead of being sliced against the footer divider,
+   and at scroll end only padding sits in the band - no row is ever dimmed. */
+.cw-fade-bottom { -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 2.5rem), transparent); mask-image: linear-gradient(to bottom, black calc(100% - 2.5rem), transparent); }

@@ -7,7 +7,7 @@ import { Button, ErrorMessage, Select, TabButtons, TextInput, Tooltip, toast } f
 import AppTile from './AppTile.vue'
 import EmptyState from './EmptyState.vue'
 import HostIcon from './HostIcon.vue'
-import { ago, apps, catalog, categories, filterApps, hostLabel, loadCatalog, scanCatalog, sources } from '../data/catalog'
+import { ago, apps, catalog, categories, filterApps, hostFilterOptions, hostLabel, loadCatalog, progressText, scanCatalog, sources } from '../data/catalog'
 import { localInstances } from '../data/fleet'
 import { openApp } from '../data/app-panel'
 import { loadUpdates, updatesForApp } from '../data/updates'
@@ -44,11 +44,10 @@ const updateKeys = computed(() => new Set(apps.value.filter((a) => updatesForApp
 const updatesCount = computed(() => updateKeys.value.size)
 const categoryOptions = computed(() => [{ label: 'Any category', value: 'all' }, ...categories.value.map((c) => ({ label: c, value: c }))])
 
-const hosts = computed(() => [...new Set(apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean))].sort())
 const sourceOptions = computed(() => [
   { label: 'All sources', value: 'all' },
   { label: 'Installed anywhere', value: 'installed' },
-  ...hosts.value.map((h) => ({ label: hostLabel(h), value: h })),
+  ...hostFilterOptions.value,
   { label: 'Marketplace (public index)', value: 'marketplace' },
   { label: 'Local only', value: 'local' },
 ])
@@ -116,7 +115,8 @@ async function rescan() {
           <span class="flex items-center gap-1" :class="s.error ? 'text-ink-amber-6' : ''">
             <HostIcon :host="s.host" />
             {{ hostLabel(s.host) }} · {{ s.account || 'signed in' }}
-            <span v-if="s.repos" class="text-ink-gray-4">· {{ s.kind === 'marketplace' ? `${s.apps} apps` : `${s.apps} apps of ${s.repos} scanned` }}</span>
+            <span v-if="progressText(s)" class="text-ink-blue-6">· scanning {{ progressText(s) }}</span>
+            <span v-else-if="s.repos" class="text-ink-gray-4">· {{ s.kind === 'marketplace' ? `${s.apps} apps` : `${s.apps} apps of ${s.repos} scanned` }}</span>
             <span v-if="s.error" class="text-ink-amber-6">· {{ s.state }}</span>
           </span>
         </Tooltip>
