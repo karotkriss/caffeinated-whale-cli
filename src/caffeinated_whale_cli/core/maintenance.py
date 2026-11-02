@@ -602,8 +602,19 @@ def plan(report: BenchMaintenance, site: str | None = None) -> dict:
     in scope inherits it (or, at bench scope, whenever it is set), and
     ``pause_scheduler`` with it when it was paused alongside. ``sites``: sites whose
     OWN ``site_config.json`` sets maintenance mode (a pinned site's default site).
+
+    A ``site`` scope writes only that site's own flag, never the bench-wide flags or
+    another site's: ``held`` names it when the bench-wide flag or the default site it
+    is answered as is what keeps it down, which only a bench-scoped clear changes.
     """
     scope = [s for s in report.sites if s.on and (site is None or s.site == site)]
+    if site is not None:
+        return {
+            "bench_flags": [],
+            "sites": [s.site for s in scope if s.cause == "site"],
+            "scope": [s.site for s in scope],
+            "held": [s.site for s in scope if s.cause in ("bench", "served_as")],
+        }
     own: set[str] = set()
     bench_wide = site is None and "maintenance_mode" in report.bench_flags
     for entry in scope:
@@ -622,7 +633,12 @@ def plan(report: BenchMaintenance, site: str | None = None) -> dict:
         flags.append("maintenance_mode")
         if "pause_scheduler" in report.bench_flags:
             flags.append("pause_scheduler")
-    return {"bench_flags": flags, "sites": sorted(own), "scope": [s.site for s in scope]}
+    return {
+        "bench_flags": flags,
+        "sites": sorted(own),
+        "scope": [s.site for s in scope],
+        "held": [],
+    }
 
 
 def prompt_text(report: BenchMaintenance) -> str:
@@ -712,6 +728,32 @@ def clear(
             + ".",
             hint=f"Wait for it to finish, then check again with 'cwcli status {project}{bench_flag}'.",
             detail={"busy": report.busy, "bench_path": bench_path},
+        )
+    if steps["held"]:
+        held = next(e for e in report.sites if e.site == steps["held"][0])
+        text = (
+            f"{held.site} is in maintenance mode because "
+            + (
+                f"it is answered as the default site '{held.served_as}'"
+                if held.cause == "served_as"
+                else "the bench is: maintenance_mode is set in sites/common_site_config.json"
+            )
+            + f". Taking only this site out does not change that; take every site on the "
+            f"bench out with '{report.command}', or the bench's 'Take sites out of "
+            "maintenance' in the web UI."
+        )
+        emit(MaintenanceStepEnd(phase="check", status="failed", message=text))
+        return Result(
+            status=Status.OK,
+            data=MaintenanceClearReport(
+                ok=False,
+                project=project,
+                bench_path=bench_path,
+                sites=steps["scope"],
+                still_down=steps["held"],
+                owners=report.owners,
+            ),
+            warnings=[*warnings, Message("maintenance.bench_wide", text)],
         )
     found = ", ".join(steps["scope"]) or "the bench-wide flag"
     emit(

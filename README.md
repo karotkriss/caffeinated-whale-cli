@@ -2110,7 +2110,7 @@ cwcli status [OPTIONS] [PROJECT_NAME]
 | `-v`, `--verbose` | Show the per-process detail and the web HTTP probe on stderr |
 | `-w`, `--watch` | Live, continuously-refreshing per-process view (Ctrl-C to exit) |
 | `--interval` | Seconds between `--watch` refreshes (default 2, floored at 1s) |
-| `--clear-maintenance` | Take every site found in maintenance mode out of it without asking (see below); exits 1 if it is refused, a bench's maintenance state could not be read (for example, the instance is stopped), or a site still answers 503 |
+| `--clear-maintenance` | Take every site found in maintenance mode out of it without asking (see below); exits 1 if it is refused, a bench's maintenance state could not be read (for example, the instance is stopped), or a site still answers 503; not combined with `--watch` (exit 2) |
 
 **Aggregate values** (printed on stdout, one token, exit 0). Each bench carries its
 own; the stdout token is the **instance** fold over them (see below):

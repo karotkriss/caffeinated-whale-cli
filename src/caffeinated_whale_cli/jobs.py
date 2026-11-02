@@ -1010,7 +1010,9 @@ def _clear_maintenance(target: dict[str, Any], emit: _Recorder) -> Result:
     check that every site answers again, each as a recorded step. Starting the job is
     the consent: the page asks first. The one-job-per-instance rule already refuses
     it while another job changes the instance; the core refuses it while an
-    in-container migrate, update or restore runs or a migrate lock is held.
+    in-container migrate, update or restore runs or a migrate lock is held. A
+    ``target.site`` clear writes only that site's own flag, never the bench-wide
+    flags: a site held down by the bench fails, naming the bench-level clear.
     """
     project = _project(target)
     site = _site(target)

@@ -547,10 +547,28 @@ class TestMaintenanceQuestion:
     ):
         code, out, _, cleared = _maintenance_run(monkeypatch, capsys, None, tty=False, flag=True)
 
-        assert _maintenance_run.fetched[0]["read_maintenance"] is True
+        assert _maintenance_run.fetched[0]["probe_web"] is True
         assert cleared == [] and code == 1
         assert "could not read maintenance mode on /w/b0" in harness_collapse(out.err)
         assert "No site is in maintenance mode" not in out.err
+
+    def test_the_flag_with_watch_is_a_usage_error(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            status_mod.core_status, "status", lambda *a, **k: pytest.fail("must not read status")
+        )
+        with pytest.raises(typer.Exit) as exc:
+            status_mod.status(
+                project_name="proj",
+                bench=None,
+                path=None,
+                verbose=False,
+                watch=True,
+                interval=2.0,
+                clear_maintenance=True,
+            )
+
+        assert exc.value.exit_code == 2
+        assert "does not combine with --watch" in capsys.readouterr().err
 
     def test_the_flag_refuses_a_stopped_instance(self, monkeypatch, capsys):
         code, out, _, cleared = _maintenance_run(

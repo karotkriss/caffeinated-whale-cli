@@ -93,7 +93,7 @@ def status(
         help="Take every site found in maintenance mode out of it without asking: clears "
         "the bench-wide flag (and resumes a scheduler paused with it) or the site's own "
         "flag, then checks the sites answer again. Refused while a migrate, update or "
-        "restore still runs on the bench.",
+        "restore still runs on the bench. Not combined with --watch.",
     ),
 ):
     """
@@ -120,6 +120,13 @@ def status(
         render_instances_summary(verbose=verbose)
         raise typer.Exit(code=0)
 
+    if watch and clear_maintenance:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] --clear-maintenance does not combine with --watch; "
+            "run it without --watch."
+        )
+        raise typer.Exit(code=2)
+
     if watch and sys.stdout.isatty() and sys.stderr.isatty():
         # Live view: quiet (probe_web=False) so repeated ticks never hit :8000.
         _watch_loop(project_name, bench, path, verbose, max(_MIN_INTERVAL, interval))
@@ -127,9 +134,7 @@ def status(
 
     # One-shot. The plain command keeps its web probe; a non-TTY --watch degrades
     # to a single quiet snapshot (probe_web=False) to preserve watch semantics.
-    result = _fetch(
-        project_name, bench, path, probe_web=not watch, read_maintenance=clear_maintenance or None
-    )
+    result = _fetch(project_name, bench, path, probe_web=not watch)
     report = result.data
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
@@ -262,7 +267,6 @@ def _fetch(
     path: str | None = None,
     *,
     probe_web: bool,
-    read_maintenance: bool | None = None,
 ) -> Result[StatusReport]:
     """One snapshot. NON-PROMPTING on every path.
 
@@ -278,7 +282,6 @@ def _fetch(
             bench=bench,
             bench_path=path,
             probe_web=probe_web,
-            read_maintenance=read_maintenance,
         )
     except CwcliError as e:
         # A truly-nonexistent project (NOT_FOUND) or an unreachable Docker daemon
