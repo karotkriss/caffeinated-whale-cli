@@ -419,7 +419,16 @@ class _Asked:
 
 
 def _maintenance_run(
-    monkeypatch, capsys, maintenance, *, tty, answer=None, flag=False, clear_ok=True, report=None
+    monkeypatch,
+    capsys,
+    maintenance,
+    *,
+    tty,
+    answer=None,
+    flag=False,
+    clear_ok=True,
+    report=None,
+    unanswered=False,
 ):
     if report is None:
         report = _report("running", benches=[replace(_bench("running"), maintenance=maintenance)])
@@ -447,9 +456,9 @@ def _maintenance_run(
             project=project,
             bench_path="/w/b0",
             sites=["site.example.com"],
-            answering=["site.example.com"] if clear_ok else [],
+            answering=["site.example.com"] if clear_ok and not unanswered else [],
             still_down=[] if clear_ok else ["site.example.com"],
-            verified=True,
+            verified=not unanswered,
         )
         return Result(status=Status.OK, data=outcome)
 
@@ -515,6 +524,15 @@ class TestMaintenanceQuestion:
 
         assert asked == [] and cleared == [("proj", "/w/b0", True)]
         assert code == 0
+
+    def test_a_site_that_did_not_answer_is_not_called_out_of_maintenance(self, monkeypatch, capsys):
+        code, out, _, _ = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=False, flag=True, unanswered=True
+        )
+
+        assert code == 0
+        assert "Out of maintenance mode" not in out.err
+        assert "Flags cleared, not checked: site.example.com" in out.err
 
     def test_the_flag_exits_1_when_a_site_still_does_not_answer(self, monkeypatch, capsys):
         code, out, _, _ = _maintenance_run(

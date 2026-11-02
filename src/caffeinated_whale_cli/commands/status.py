@@ -236,8 +236,14 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
     if outcome is None:
         return 1
     if outcome.ok:
-        done = ", ".join(outcome.answering or outcome.sites) or "the bench"
-        stderr_console.print(f"[green]Out of maintenance mode:[/green] {done}")
+        unchecked = [s for s in outcome.sites if s not in outcome.answering]
+        if outcome.answering or not unchecked:
+            done = ", ".join(outcome.answering) or "the bench"
+            stderr_console.print(f"[green]Out of maintenance mode:[/green] {done}")
+        if unchecked:
+            stderr_console.print(
+                f"[yellow]Flags cleared, not checked:[/yellow] {', '.join(unchecked)}"
+            )
         return 0
     stderr_console.print(
         "[bold red]Still in maintenance mode:[/bold red] "
