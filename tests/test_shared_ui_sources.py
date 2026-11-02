@@ -339,6 +339,6 @@ def test_a_rescan_lists_a_host_whose_last_scan_saved_it_signed_out(tmp_path, mon
     )
     store._progress["gitlab.example.com"] = {"done": 100, "total": 442}
     row = {s.host: s for s in store.sources()}["gitlab.example.com"]
-    assert row.signed_in is True
+    assert row.signed_in is True and row.error is None
     assert row.progress == {"done": 100, "total": 442}
     assert row.scanned_at == 1.0

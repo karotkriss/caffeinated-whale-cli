@@ -102,12 +102,14 @@ def test_a_rescan_of_a_known_host_keeps_its_remembered_row(tmp_path):
         "icon": {"url": "/icon.png"},
         "state": "verified",
         "scanned_at": 1700000000,
+        "error": None,
     }
+    remembered = {**known, "signed_in": False, "error": "gh is not signed in"}
     script = f"""
-globalThis.__t = {{ reads: [], answer: {{ scanned_at: 1700000000, scanning: false, sources: [{json.dumps(known)}], apps: [] }} }}
+globalThis.__t = {{ reads: [], answer: {{ scanned_at: 1700000000, scanning: false, sources: [{json.dumps(remembered)}], apps: [] }} }}
 const m = await import({json.dumps(MODULE.as_uri())})
 await m.loadCatalog()
-m.catalogLanded({{ source: {{ kind: 'github', host: 'github.com', signed_in: true, account: null, apps: 0, repos: 0, icon: null, state: 'unverified', scanned_at: null, progress: null }} }})
+m.catalogLanded({{ source: {{ kind: 'github', host: 'github.com', signed_in: true, account: null, apps: 0, repos: 0, icon: null, state: 'unverified', scanned_at: null, error: null, progress: null }} }})
 console.log(JSON.stringify({{ rows: m.sources.value, icon: m.hostIcon('github.com') }}))
 """
     out = _run(script, tmp_path)

@@ -68,7 +68,7 @@ function upsertSource(source) {
   const rows = catalog.data.sources || (catalog.data.sources = [])
   const i = rows.findIndex((s) => s.host === source.host)
   if (i < 0) rows.push(source)
-  else rows[i].signed_in = true
+  else Object.assign(rows[i], { signed_in: true, error: source.error })
 }
 
 export const apps = computed(() => catalog.data?.apps || [])

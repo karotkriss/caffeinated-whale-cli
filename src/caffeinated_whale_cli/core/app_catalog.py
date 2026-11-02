@@ -1673,6 +1673,7 @@ class CatalogStore:
             # a snapshot of the live row, so it is listed as signed in with its progress.
             if live.host in by_host:
                 by_host[live.host].signed_in = live.signed_in
+                by_host[live.host].error = live.error
             else:
                 by_host[live.host] = SourceState(**asdict(live))
                 rows.append(by_host[live.host])
