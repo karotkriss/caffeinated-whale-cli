@@ -541,7 +541,7 @@ def inspect(
     if report is None or raw is None:
         return report
     _forget_stale_owners(container, raw, report)
-    if not (report.sites or report.bench_flags):
+    if not (report.sites or report.needs_clearing):
         return report
     if port is not None:
         all_sites = sorted((raw.get("sites") or {}).keys())
@@ -560,7 +560,9 @@ def _busy(container, raw: dict, report: BenchMaintenance) -> list[str]:
         if o.running
     ]
     reasons += _busy_processes(raw)
-    targets = sorted(set(report.down) | ({report.served_as} if report.served_as else set()))
+    targets = sorted(
+        set(report.down) | set(report.own_set) | ({report.served_as} if report.served_as else set())
+    )
     reasons += _lock_reasons(container, report.bench_path, targets)
     return reasons
 

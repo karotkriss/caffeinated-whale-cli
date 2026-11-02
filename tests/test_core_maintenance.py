@@ -565,6 +565,35 @@ class TestStaleOwnerRecord:
         assert bench.commands == ["bench --site x.localhost set-maintenance-mode off"]
         assert bench.common == {"default_site": "y.localhost"}
 
+    def test_a_live_migrate_on_a_site_served_as_the_default_blocks_the_clear(self, wire):
+        import os
+        import socket
+
+        from caffeinated_whale_cli.utils import daemon_identity
+
+        record = {
+            "verb": "migrate",
+            "pid": os.getpid(),
+            "process_started": daemon_identity.process_start_time(os.getpid()),
+            "host": socket.gethostname(),
+        }
+        bench = wire(
+            _Bench(
+                {"default_site": "y.localhost"},
+                {"y.localhost": {}, "x.localhost": {"maintenance_mode": 1}},
+                owners={"x.localhost": record},
+            )
+        )
+
+        report = m.inspect(bench, BENCH, project="proj")
+        assert report.busy and "migrate" in report.busy[0]
+        assert "x.localhost" in report.summary and report.question
+
+        with pytest.raises(CwcliError) as e:
+            m.clear("proj", site="x.localhost", consent=True)
+        assert e.value.code == "maintenance.busy"
+        assert bench.commands == []
+
     def test_a_record_for_a_site_still_in_maintenance_is_kept(self):
         import socket
 
