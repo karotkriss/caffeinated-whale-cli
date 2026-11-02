@@ -162,7 +162,11 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
     read) or a clear left a site down, else 0. A declined question is not a failure.
     """
     stuck = [b for b in report.benches if b.maintenance and b.maintenance.needs_clearing]
-    unread = [b.bench_path for b in report.benches if b.maintenance is None]
+    unread = [
+        b.bench_path
+        for b in report.benches
+        if b.maintenance is None and b.bench_present != resolvers.BENCH_ABSENT
+    ]
     code = 0
     if assume_yes and (unread or not report.container_running):
         where = ", ".join(unread) or project_name
@@ -173,7 +177,7 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
         )
         code = 1
     if not stuck:
-        if assume_yes and not unread:
+        if assume_yes and code == 0:
             stderr_console.print("[dim]No site is in maintenance mode.[/dim]")
         return code
     for bench in stuck:

@@ -561,6 +561,22 @@ class TestMaintenanceQuestion:
         assert "could not read maintenance mode on proj because the container is not running" in (
             harness_collapse(out.err)
         )
+        assert "No site is in maintenance mode" not in out.err
+
+    def test_the_flag_skips_a_cached_bench_whose_directory_is_gone(self, monkeypatch, capsys):
+        gone = replace(_bench("running"), bench_present="absent", maintenance=None)
+        code, out, _, cleared = _maintenance_run(
+            monkeypatch,
+            capsys,
+            None,
+            tty=False,
+            flag=True,
+            report=_report("running", benches=[gone]),
+        )
+
+        assert cleared == [] and code == 0
+        assert "could not read" not in out.err
+        assert "No site is in maintenance mode" in out.err
 
     def test_busy_is_never_offered_and_the_flag_is_refused(self, monkeypatch, capsys):
         busy = ["an in-container 'bench migrate' is still running (pid 5)"]
