@@ -1763,7 +1763,7 @@ def test_apps_update_interrupt_with_an_unkillable_orphan_still_clears_and_says_s
         e for e in events if isinstance(e, UpdateStepEnd) and e.phase == "interrupt_cleanup"
     )
     assert "may still be running" in notice.message
-    assert "set-maintenance-mode off" in notice.message
+    assert "cwcli status proj --clear-maintenance --site a.localhost" in notice.message
 
 
 # ------------------- review-1: --skip-maintenance abort restores the pre-migrate state

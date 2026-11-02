@@ -102,6 +102,7 @@ def _run(monkeypatch, capsys, report, *, container=_FakeContainer, warnings=()):
             watch=False,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     return capsys.readouterr()
@@ -180,6 +181,7 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
             watch=False,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 1
     captured = capsys.readouterr()
@@ -213,6 +215,7 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
             watch=False,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     assert calls == [{"verbose": False}]
@@ -369,6 +372,7 @@ def test_a_bench_left_down_by_bench_update_is_named_with_the_bench_wide_way_out(
                 watch=False,
                 interval=2.0,
                 clear_maintenance=False,
+                site=None,
             )
         err = harness_collapse(capsys.readouterr().err)
 
@@ -429,6 +433,7 @@ def _maintenance_run(
     clear_ok=True,
     report=None,
     unanswered=False,
+    site=None,
 ):
     if report is None:
         report = _report("running", benches=[replace(_bench("running"), maintenance=maintenance)])
@@ -448,8 +453,8 @@ def _maintenance_run(
     monkeypatch.setattr(status_mod.questionary, "confirm", asked)
     cleared: list = []
 
-    def clear(project, *, path=None, consent=False, on_event=None, **_):
-        cleared.append((project, path, consent))
+    def clear(project, *, path=None, consent=False, on_event=None, site=None, **_):
+        cleared.append((project, path, consent) if site is None else (project, site, consent))
         on_event(core_maintenance.MaintenanceStepEnd(phase="check", status="ok", message="x"))
         outcome = core_maintenance.MaintenanceClearReport(
             ok=clear_ok,
@@ -472,6 +477,7 @@ def _maintenance_run(
             watch=False,
             interval=2.0,
             clear_maintenance=flag,
+            site=site,
         )
     out = capsys.readouterr()
     _maintenance_run.fetched = fetched
@@ -552,6 +558,22 @@ class TestMaintenanceQuestion:
         assert "could not read maintenance mode on /w/b0" in harness_collapse(out.err)
         assert "No site is in maintenance mode" not in out.err
 
+    def test_site_clears_only_that_site_and_never_the_bench(self, monkeypatch, capsys):
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=True, flag=True, site="site.example.com"
+        )
+
+        assert asked == [] and cleared == [("proj", "site.example.com", True)]
+        assert code == 0
+
+    def test_site_without_the_flag_is_a_usage_error(self, monkeypatch, capsys):
+        code, out, _, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=False, site="site.example.com"
+        )
+
+        assert code == 2 and cleared == []
+        assert "--site needs --clear-maintenance" in out.err
+
     def test_the_flag_with_watch_is_a_usage_error(self, monkeypatch, capsys):
         monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
         monkeypatch.setattr(
@@ -569,6 +591,7 @@ class TestMaintenanceQuestion:
                 watch=True,
                 interval=2.0,
                 clear_maintenance=True,
+                site=None,
             )
 
         assert exc.value.exit_code == 2

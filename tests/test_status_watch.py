@@ -129,6 +129,7 @@ def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
             watch=True,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
@@ -154,6 +155,7 @@ def test_watch_non_tty_degrades_to_single_quiet_snapshot(monkeypatch, capsys):
             watch=True,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
@@ -179,6 +181,7 @@ def test_watch_redirected_stderr_degrades_to_single_quiet_snapshot(monkeypatch, 
             watch=True,
             interval=2.0,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
@@ -206,6 +209,7 @@ def test_watch_interval_floored_at_one_second(given, expected, monkeypatch):
             watch=True,
             interval=given,
             clear_maintenance=False,
+            site=None,
         )
     assert exc.value.exit_code == 0
     assert seen == [expected]

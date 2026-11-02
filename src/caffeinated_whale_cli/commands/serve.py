@@ -2024,7 +2024,10 @@ class _Handler(BaseHTTPRequestHandler):
                     "step_failed",
                     "maintenance.still_on",
                     f"bench refused to take '{site}' out of maintenance mode.",
-                    hint=f"Try: cwcli run {project} --site {site} set-maintenance-mode off",
+                    hint="Try: "
+                    + core_bench_ops.clear_maintenance_command(
+                        project, core_resolvers.bench_cli_flag(project, bench_path), site
+                    ),
                     outcome=_plain(outcome),
                     warnings=[_plain(w) for w in warnings],
                 ),

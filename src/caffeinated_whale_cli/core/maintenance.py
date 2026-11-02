@@ -514,10 +514,11 @@ def inspect(
     healthy case costs exactly one exec.
     """
     raw = read_bench(container, bench_path)
-    command = clear_command(project, bench_flag)
+    command = bench_ops.clear_maintenance_command(project, bench_flag)
     report = assess(raw, bench_path=bench_path, command=command)
     if report is None or raw is None:
         return report
+    _forget_stale_owners(container, raw, report)
     if not (report.sites or report.bench_flags):
         return report
     if port is not None:
@@ -542,9 +543,14 @@ def _busy(container, raw: dict, report: BenchMaintenance) -> list[str]:
     return reasons
 
 
-def clear_command(project: str, bench_flag: str = "") -> str:
-    """The one cwcli line that takes a bench's sites out of maintenance mode."""
-    return f"cwcli status {project}{bench_flag} --clear-maintenance"
+def _forget_stale_owners(container, raw: dict, report: BenchMaintenance) -> None:
+    """Drop cwcli's record for every site whose config reads maintenance OFF, so a
+    record left by a flag turned off another way never names a later, deliberate
+    maintenance window as cwcli's leftover."""
+    held = {s.site for s in report.sites} | ({report.served_as} if report.served_as else set())
+    for owner in _owners(raw, set((raw.get("sites") or {}).keys())):
+        if owner.site not in held and owner.running is not True:
+            bench_ops.forget_maintenance_owner(container, report.bench_path, owner.site)
 
 
 # ------------------------------------------------------------------- the words

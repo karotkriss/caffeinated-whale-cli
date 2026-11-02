@@ -2111,6 +2111,7 @@ cwcli status [OPTIONS] [PROJECT_NAME]
 | `-w`, `--watch` | Live, continuously-refreshing per-process view (Ctrl-C to exit) |
 | `--interval` | Seconds between `--watch` refreshes (default 2, floored at 1s) |
 | `--clear-maintenance` | Take every site found in maintenance mode out of it without asking (see below); exits 1 if it is refused, the maintenance state of a bench or a site could not be read (for example, the instance is stopped or a site config is not valid JSON), or a site still answers 503; not combined with `--watch` (exit 2) |
+| `--site` | With `--clear-maintenance`: take only this site out of maintenance mode by turning off its own flag; it never touches the bench-wide flags, and a site the bench holds in maintenance is reported and exits 1. Without `--clear-maintenance` it is a usage error (exit 2) |
 
 **Aggregate values** (printed on stdout, one token, exit 0). Each bench carries its
 own; the stdout token is the **instance** fold over them (see below):

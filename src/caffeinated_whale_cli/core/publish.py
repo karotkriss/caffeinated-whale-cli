@@ -42,8 +42,8 @@ from pathlib import Path
 from typing import Any
 
 from ..utils import config_utils, shared_home
+from . import bench_ops, integrations, resolvers, webapi
 from . import docker as core_docker
-from . import integrations, maintenance, resolvers, webapi
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -657,7 +657,9 @@ def _session_stopped(r: webapi.Response) -> bool:
 
 def _maintenance_refusal(run: _Run, url: str) -> CwcliError:
     project, bench_path = run.rec["project"], run.rec["bench_path"]
-    command = maintenance.clear_command(project, resolvers.bench_cli_flag(project, bench_path))
+    command = bench_ops.clear_maintenance_command(
+        project, resolvers.bench_cli_flag(project, bench_path)
+    )
     return CwcliError(
         ErrorKind.PRECONDITION,
         "publish.maintenance",

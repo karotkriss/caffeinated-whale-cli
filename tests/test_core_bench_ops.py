@@ -176,7 +176,7 @@ def test_a_site_left_in_maintenance_is_reported_and_fails_the_operation(containe
     off = [r for r in result.data.results if r.action == "maintenance_off"][0]
     assert "STILL in maintenance mode" in off.message
     # The remedy is a runnable cwcli command, never a raw in-container one.
-    assert "cwcli run" in off.message
+    assert "cwcli status proj --clear-maintenance --site a.localhost" in off.message
 
 
 def test_maintenance_is_disabled_even_when_the_migrate_raises(monkeypatch, container, _no_sleep):
@@ -676,7 +676,7 @@ def test_an_orphan_cwcli_cannot_kill_still_clears_maintenance_and_says_so(monkey
     msg = notices[0].message
     assert "may still be running" in msg
     assert "cwcli status proj" in msg
-    assert "set-maintenance-mode off" in msg
+    assert "cwcli status proj --clear-maintenance --site a.localhost" in msg
 
 
 def test_a_normal_migrate_does_not_touch_the_interrupt_cleanup(container, monkeypatch):

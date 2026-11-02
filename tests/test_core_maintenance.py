@@ -254,6 +254,7 @@ class _Bench:
             return (1, b"")  # no locks dir: nothing holds a migrate lock
         if isinstance(cmd, list) and cmd[:2] == ["rm", "-f"]:
             self.removed.append(cmd[2])
+            self.owners.pop(cmd[2].rsplit("/", 1)[-1].removesuffix(".json"), None)
             return (0, b"")
         self.commands.append(cmd)
         if cmd.startswith("bench set-config --global --parse "):
@@ -510,6 +511,38 @@ class TestClear:
 
         assert result.data.verified is False
         assert any(w.code == "maintenance.unverified" for w in result.warnings)
+
+
+class TestStaleOwnerRecord:
+    """A record left behind when the flag went off another way (a raw
+    ``set-maintenance-mode off``) must never name a later, deliberate maintenance
+    window as cwcli's interrupted leftover."""
+
+    def test_a_read_with_the_flag_off_drops_the_record_so_a_later_window_is_neutral(self):
+        import socket
+
+        record = {"verb": "migrate", "pid": 2**22 + 7, "host": socket.gethostname()}
+        bench = _Bench({}, {"a.localhost": {"maintenance_mode": 0}}, owners={"a.localhost": record})
+
+        assert m.inspect(bench, BENCH, project="proj").owners == []
+        assert bench.owners == {}
+
+        bench.sites["a.localhost"]["maintenance_mode"] = 1
+        report = m.inspect(bench, BENCH, project="proj")
+
+        assert report.down == ["a.localhost"] and report.owners == []
+        assert "interrupted" not in report.summary
+        assert "may have been set on purpose" in report.summary
+
+    def test_a_record_for_a_site_still_in_maintenance_is_kept(self):
+        import socket
+
+        record = {"verb": "migrate", "pid": 2**22 + 7, "host": socket.gethostname()}
+        bench = _Bench({}, {"a.localhost": {"maintenance_mode": 1}}, owners={"a.localhost": record})
+
+        report = m.inspect(bench, BENCH, project="proj")
+
+        assert [o.verb for o in report.owners] == ["migrate"] and bench.removed == []
 
 
 class TestOwnershipRecord:

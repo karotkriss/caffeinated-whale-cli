@@ -95,6 +95,13 @@ def status(
         "flag, then checks the sites answer again. Refused while a migrate, update or "
         "restore still runs on the bench. Not combined with --watch.",
     ),
+    site: str = typer.Option(
+        None,
+        "--site",
+        help="With --clear-maintenance: take only this site out of maintenance mode, by "
+        "turning off its own flag. It never touches the bench-wide flags; a site the bench "
+        "holds in maintenance is reported, not cleared.",
+    ),
 ):
     """
     Check the health status of a Frappe project instance.
@@ -119,6 +126,10 @@ def status(
     if project_name is None:
         render_instances_summary(verbose=verbose)
         raise typer.Exit(code=0)
+
+    if site and not clear_maintenance:
+        stderr_console.print("[bold red]Error:[/bold red] --site needs --clear-maintenance.")
+        raise typer.Exit(code=2)
 
     if watch and clear_maintenance:
         stderr_console.print(
@@ -146,7 +157,11 @@ def status(
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose, result.warnings)
-    code = _offer_clear_maintenance(project_name, report, assume_yes=clear_maintenance)
+    code = (
+        _clear_bench(project_name, bench=bench, path=path, site=site)
+        if site
+        else _offer_clear_maintenance(project_name, report, assume_yes=clear_maintenance)
+    )
 
     # The one machine-readable token on stdout (nothing else).
     typer.echo(report.overall)
@@ -210,13 +225,19 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
                     f"[dim]Left as it is. To clear it later: {found.command}[/dim]"
                 )
                 continue
-        code = max(code, _clear_bench(project_name, bench))
+        code = max(code, _clear_bench(project_name, path=bench.bench_path))
     return code
 
 
-def _clear_bench(project_name: str, bench: BenchStatus) -> int:
-    """Run the clear for one bench, narrating its steps on stderr. 0 when every site
-    answers again, else 1."""
+def _clear_bench(
+    project_name: str,
+    *,
+    bench: str | None = None,
+    path: str | None = None,
+    site: str | None = None,
+) -> int:
+    """Run the clear for one bench (or its one ``site``), narrating its steps on
+    stderr. 0 when every site answers again, else 1."""
 
     def narrate(event) -> None:
         if isinstance(event, core_maintenance.MaintenanceStepEnd):
@@ -234,7 +255,7 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
 
     try:
         result = core_maintenance.clear(
-            project_name, path=bench.bench_path, consent=True, on_event=narrate
+            project_name, bench=bench, path=path, site=site, consent=True, on_event=narrate
         )
     except CwcliError as e:
         stderr_console.print(f"[bold red]Not cleared:[/bold red] {e.message}")
@@ -243,11 +264,16 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
     for warning in result.warnings:
         stderr_console.print(f"[yellow]{warning.text}[/yellow]")
     if outcome is None:
+        if result.choice is not None:
+            stderr_console.print(
+                f"[bold red]Not cleared:[/bold red] {result.choice.prompt} "
+                "(pass --bench to name the bench, or start the instance first)"
+            )
         return 1
     if outcome.ok:
         unchecked = [s for s in outcome.sites if s not in outcome.answering]
         if outcome.answering or not unchecked:
-            done = ", ".join(outcome.answering) or "the bench"
+            done = ", ".join(outcome.answering) or site or "the bench"
             stderr_console.print(f"[green]Out of maintenance mode:[/green] {done}")
         if unchecked:
             stderr_console.print(

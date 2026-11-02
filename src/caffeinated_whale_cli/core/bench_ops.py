@@ -467,16 +467,23 @@ def clear_maintenance(container, bench_path: str, site: str, *, recheck: bool) -
     return not state
 
 
-def interrupt_recheck_hint(project: str, site: str, bench: str | None = None) -> str:
+def clear_maintenance_command(project: str, bench_flag: str = "", site: str | None = None) -> str:
+    """The cwcli line that takes a bench's sites (or the one ``site``) out of
+    maintenance mode, through the clear that also removes cwcli's record of it."""
+    command = f"cwcli status {shlex.quote(project)}{bench_flag} --clear-maintenance"
+    return command + (f" --site {shlex.quote(site)}" if site else "")
+
+
+def interrupt_recheck_hint(project: str, sites: list[str], bench_flag: str = "") -> str:
     """The plain-language warning when cwcli could not confirm the orphaned migrate
-    stopped: it may still be running, so name how to re-check and clear the site."""
-    bench_flag = f" --bench {bench}" if bench else ""
+    stopped: it may still be running, so name how to re-check and clear the sites."""
+    names = ", ".join(sites)
+    commands = "; ".join(clear_maintenance_command(project, bench_flag, s) for s in sites)
     return (
         f"cwcli was interrupted and could not confirm the in-container 'bench migrate' "
-        f"for '{site}' stopped; it may still be running. Re-check with "
-        f"'cwcli status {project}'. If '{site}' is left in maintenance mode (HTTP 503), "
-        f"clear it with: cwcli run {project} --site {site}{bench_flag} "
-        "set-maintenance-mode off"
+        f"for '{names}' stopped; it may still be running. Re-check with "
+        f"'cwcli status {project}{bench_flag}'. If '{names}' is left in maintenance mode "
+        f"(HTTP 503), clear it with: {commands}"
     )
 
 
@@ -680,7 +687,13 @@ def migrate_site(
         # otherwise re-assert maintenance behind us and strand the site at 503.
         interrupted = True
         if not end_migrate_on_interrupt(container, token):
-            emit(BenchOpNotice(message=interrupt_recheck_hint(project_name, target, bench)))
+            emit(
+                BenchOpNotice(
+                    message=interrupt_recheck_hint(
+                        project_name, [target], resolvers.bench_cli_flag(project_name, path)
+                    )
+                )
+            )
         raise
     finally:
         # Plain function, NOT a generator, precisely so this runs: an abandoned
@@ -699,8 +712,10 @@ def migrate_site(
                     ok=False,
                     message=(
                         f"Site '{target}' is STILL in maintenance mode and is not serving. "
-                        "Take it out with: cwcli run "
-                        f"{project_name} --site {target} set-maintenance-mode off"
+                        "Take it out with: "
+                        + clear_maintenance_command(
+                            project_name, resolvers.bench_cli_flag(project_name, path), target
+                        )
                     ),
                 )
             )
