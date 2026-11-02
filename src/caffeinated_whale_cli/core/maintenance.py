@@ -645,6 +645,7 @@ def clear(
     project: str,
     *,
     bench: str | None = None,
+    path: str | None = None,
     site: str | None = None,
     consent: bool = False,
     on_event: OnEvent | None = None,
@@ -664,15 +665,17 @@ def clear(
        0`` - the write ``bench update`` makes when it succeeds - and the paused
        scheduler with them, when they are the cause. **Clear each site's own flag**
        with ``bench --site <site> set-maintenance-mode off``.
-    4. **Verify** every site that was down answers Frappe's ping with 200, waiting up
-       to ``verify_timeout`` for Frappe's 60-second config cache.
+    4. **Verify** no site still answers Frappe's ping with 503/SessionStopped, waiting
+       up to ``verify_timeout`` for Frappe's 60-second config cache. A site that does
+       not answer at all is not waited for: it leaves ``verified`` False with a
+       ``maintenance.unverified`` warning.
 
     ``ok`` is False when a write failed or a site still answers maintenance.
     """
     emit = on_event or (lambda _e: None)
     if site is not None:
         resolvers.validate_site_name(site)
-    resolved = resolvers.resolve_container_and_bench(project, bench, None)
+    resolved = resolvers.resolve_container_and_bench(project, bench, path)
     if isinstance(resolved, Result):
         return resolved
     container, bench_path, warnings = resolved
@@ -786,10 +789,20 @@ def clear(
         if name not in cleared_sites and cleared_flags:
             bench_ops.forget_maintenance_owner(container, bench_path, name)
 
-    answering, still_down, verified = _verify(
+    answering, still_down, unanswered = _verify(
         container, port=port, sites=steps["scope"], timeout=verify_timeout, emit=emit
     )
     ok = ok and not still_down
+    verified = port is not None and bool(steps["scope"]) and not unanswered
+    if unanswered:
+        warnings.append(
+            Message(
+                "maintenance.unverified",
+                f"{', '.join(unanswered)} did not answer at all, so cwcli could not check "
+                f"that they are out of maintenance mode; start the bench and run "
+                f"`cwcli status {project}{bench_flag}`.",
+            )
+        )
     if port is None and steps["scope"]:
         warnings.append(
             Message(
@@ -830,30 +843,41 @@ def _clear_bench_flag(container, bench_path: str, flag: str) -> bool:
 
 def _verify(
     container, *, port: int | None, sites: list[str], timeout: float, emit: OnEvent
-) -> tuple[list[str], list[str], bool]:
-    """Poll until every site answers Frappe's ping with 200, within ``timeout``."""
+) -> tuple[list[str], list[str], list[str]]:
+    """Poll while any site still answers maintenance (503/SessionStopped), within
+    ``timeout``. Returns ``(answering, still_down, unanswered)``: a site that answers
+    nothing (web not listening, probe failed) is neither, and is not waited for."""
     if not sites or port is None:
-        return [], [], False
+        return [], [], []
     emit(MaintenanceStepStart(phase="verify", message="Check every site answers again"))
     deadline = time.monotonic() + timeout
     answers: dict[str, tuple[str, bool]] = {}
     while True:
         answers = probe_sites(container, port=port, sites=sites)
-        pending = [s for s in sites if answers.get(s, ("000", False))[0] != "200"]
-        if not pending or time.monotonic() >= deadline:
+        still_down = [
+            s for s in sites if s in answers and (answers[s][1] or answers[s][0] == "503")
+        ]
+        if not still_down or time.monotonic() >= deadline:
             break
         time.sleep(min(_VERIFY_INTERVAL_S, max(0.0, deadline - time.monotonic())))
-    answering = [s for s in sites if s not in pending]
-    if pending:
+    unanswered = [s for s in sites if answers.get(s, ("000", False))[0] == "000"]
+    answering = [s for s in sites if s not in still_down and s not in unanswered]
+    if still_down:
         detail = ", ".join(
-            f"{s} (HTTP {answers.get(s, ('000', False))[0]}"
-            + (", still SessionStopped" if answers.get(s, ("", False))[1] else "")
-            + ")"
-            for s in pending
+            f"{s} (HTTP {answers[s][0]}" + (", still SessionStopped" if answers[s][1] else "") + ")"
+            for s in still_down
         )
         emit(
             MaintenanceStepEnd(
-                phase="verify", status="failed", message=f"Still not answering: {detail}"
+                phase="verify", status="failed", message=f"Still in maintenance mode: {detail}"
+            )
+        )
+    elif unanswered:
+        emit(
+            MaintenanceStepEnd(
+                phase="verify",
+                status="warning",
+                message=f"No answer from {', '.join(unanswered)}: the web server may not be running",
             )
         )
     else:
@@ -861,7 +885,7 @@ def _verify(
             MaintenanceStepEnd(
                 phase="verify",
                 status="ok",
-                message=f"Every site answers HTTP 200: {', '.join(answering)}",
+                message=f"No site answers maintenance mode: {', '.join(answering)}",
             )
         )
-    return answering, pending, True
+    return answering, still_down, unanswered

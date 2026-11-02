@@ -186,7 +186,12 @@ def _carry_maintenance(benches: list[BenchStatus], previous: list[BenchStatus]) 
     for bench in benches:
         old = before.get(bench.bench_path)
         if bench.maintenance is None and old is not None and old.maintenance is not None:
-            bench = replace(bench, maintenance=old.maintenance)
+            bench = replace(
+                bench,
+                maintenance=old.maintenance,
+                maintenance_mode=old.maintenance_mode,
+                web_site=bench.web_site or old.web_site,
+            )
         out.append(bench)
     return out
 
