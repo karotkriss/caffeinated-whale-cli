@@ -141,12 +141,28 @@ def test_a_failed_maintenance_enable_refuses_the_migrate_entirely(container):
 def test_maintenance_mode_is_enabled_before_the_migrate_and_disabled_after(container):
     bench_ops.migrate_site("proj", site=SITE)
 
-    ordered = [c for c in container.calls if "maintenance" in c or c.endswith("migrate")]
+    record = f"{BENCH}/logs/.cwcli-maintenance/{SITE}.json"
+
+    def step(c):
+        # The maintenance record cwcli keeps beside the flag (this fake joins argv).
+        if c.startswith("python3 -c") and f" {record} " in c:
+            return "record"
+        if c == f"rm -f {record}":
+            return "forget"
+        return c if "maintenance" in c or c.endswith("migrate") else None
+
+    ordered = [s for s in map(step, container.calls) if s]
+    # The record is written BEFORE the flag, so a process killed outright still
+    # names itself; it is removed once the site is out of maintenance.
     assert ordered == [
+        "record",
         f"bench --site {SITE} set-maintenance-mode on",
         f"bench --site {SITE} migrate",
         f"bench --site {SITE} set-maintenance-mode off",
+        "forget",
     ]
+    written = next(c for c in container.calls if step(c) == "record")
+    assert json.loads(written.split(f" {record} ", 1)[1])["verb"] == "migrate"
 
 
 def test_a_site_left_in_maintenance_is_reported_and_fails_the_operation(container):
@@ -469,12 +485,16 @@ def test_set_maintenance_is_shared_with_core_update_not_copied(monkeypatch):
 
     seen: list[tuple] = []
     monkeypatch.setattr(
-        bench_ops, "set_maintenance", lambda c, p, s, *, enable: seen.append((s, enable)) or True
+        bench_ops,
+        "set_maintenance",
+        lambda c, p, s, *, enable, owner=None: seen.append((s, enable, owner)) or True,
     )
 
     core_update._set_maintenance(object(), BENCH, SITE, enable=True)
+    core_update._set_maintenance(object(), BENCH, SITE, enable=False)
 
-    assert seen == [(SITE, True)]
+    # The update names itself in the maintenance record it leaves until it clears it.
+    assert seen == [(SITE, True, "apps update"), (SITE, False, None)]
 
 
 # --------------------------------------- interrupt cleanup: end the orphan, clear last

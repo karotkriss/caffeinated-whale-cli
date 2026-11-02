@@ -10,9 +10,15 @@ gets one word while a human at a terminal still sees the full breakdown. Exit 0
 across the lifecycle states (including a real-but-stopped ``offline`` project); a
 truly-nonexistent project name exits non-zero with a "no such project" error.
 
-There is NO prompt on any path. The bare form on a multi-bench project used to ask
-which bench; it now reports all of them, each headed by its index, path, label, and
-own aggregate, with the web line naming the port that was actually probed.
+The bare form on a multi-bench project reports every bench, each headed by its
+index, path, label, and own aggregate, with the web line naming the port that was
+actually probed - it never asks which bench.
+
+The ONE question it asks: when a bench has sites in maintenance mode and nothing that
+sets maintenance mode is still running there, an interactive terminal (stdin, stdout
+and stderr all TTYs) is asked whether to take them out (``core.maintenance.clear``).
+A non-TTY is never asked; the warning names ``--clear-maintenance``, which does it
+without asking.
 
 ``--watch`` adds a live, continuously-refreshing per-process view (rich ``Live``
 on stderr). Crucially it re-polls with ``probe_web=False`` so repeated ticks make
@@ -28,11 +34,13 @@ import sys
 import time
 from collections.abc import Sequence
 
+import questionary
 import typer
 from rich.live import Live
 from rich.table import Table
 
 from ..core import docker as core_docker
+from ..core import maintenance as core_maintenance
 from ..core import resolvers
 from ..core import status as core_status
 from ..core.envelope import Message, Result
@@ -76,6 +84,14 @@ def status(
         "--interval",
         help="Seconds between --watch refreshes (floored at 1s).",
     ),
+    clear_maintenance: bool = typer.Option(
+        False,
+        "--clear-maintenance",
+        help="Take every site found in maintenance mode out of it without asking: clears "
+        "the bench-wide flag (and resumes a scheduler paused with it) or the site's own "
+        "flag, then checks the sites answer again. Refused while a migrate, update or "
+        "restore still runs on the bench.",
+    ),
 ):
     """
     Check the health status of a Frappe project instance.
@@ -92,6 +108,10 @@ def status(
     With no project name, this prints the all-instances summary (the same table
     `cwcli ls` gives) instead of erring - a bare `status` reads like "how is
     everything", not a missing-argument mistake.
+
+    When sites are in maintenance mode (HTTP 503), an interactive terminal is asked
+    whether to take them out; ``--clear-maintenance`` does it without asking, and
+    exits 1 if any site still does not answer.
     """
     if project_name is None:
         render_instances_summary(verbose=verbose)
@@ -116,10 +136,99 @@ def status(
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose, result.warnings)
+    code = _offer_clear_maintenance(project_name, report, assume_yes=clear_maintenance)
 
     # The one machine-readable token on stdout (nothing else).
     typer.echo(report.overall)
-    raise typer.Exit(code=0)
+    raise typer.Exit(code=code)
+
+
+def _interactive() -> bool:
+    """Only a person at a terminal is asked: stdin, stdout and stderr all TTYs, so a
+    script capturing the stdout token is never blocked on a question."""
+    return sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()
+
+
+def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_yes: bool) -> int:
+    """Ask (or, with ``--clear-maintenance``, just do) the clear for each stuck bench.
+
+    Returns the exit code: 1 when ``--clear-maintenance`` was refused (something that
+    sets maintenance mode still runs) or a clear left a site down, else 0. A declined
+    question is not a failure.
+    """
+    stuck = [b for b in report.benches if b.maintenance and b.maintenance.needs_clearing]
+    if not stuck:
+        if assume_yes:
+            stderr_console.print("[dim]No site is in maintenance mode.[/dim]")
+        return 0
+    code = 0
+    for bench in stuck:
+        found = bench.maintenance
+        assert found is not None
+        if found.busy:
+            if assume_yes:
+                stderr_console.print(
+                    "[bold red]Not cleared:[/bold red] " + "; ".join(found.busy) + "."
+                )
+                code = 1
+            continue
+        if not assume_yes:
+            if not _interactive():
+                continue  # the warning above names --clear-maintenance
+            leftover = bool(found.owners) and all(o.running is False for o in found.owners)
+            try:
+                answer = questionary.confirm(
+                    core_maintenance.prompt_text(found), default=leftover, auto_enter=False
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                answer = None
+            if not answer:
+                stderr_console.print(
+                    f"[dim]Left as it is. To clear it later: {found.command}[/dim]"
+                )
+                continue
+        code = max(code, _clear_bench(project_name, bench))
+    return code
+
+
+def _clear_bench(project_name: str, bench: BenchStatus) -> int:
+    """Run the clear for one bench, narrating its steps on stderr. 0 when every site
+    answers again, else 1."""
+
+    def narrate(event) -> None:
+        if isinstance(event, core_maintenance.MaintenanceStepEnd):
+            mark = "[green]✓[/green]" if event.status == "ok" else "[bold red]✗[/bold red]"
+            grid = Table.grid(padding=(0, 1))
+            grid.add_row(f"  {mark}", event.message)
+            stderr_console.print(grid)
+        elif event.phase == "verify":
+            stderr_console.print(
+                "  [dim]Waiting for every site to answer (Frappe can answer from its "
+                "config cache for up to a minute)...[/dim]"
+            )
+
+    selector = None if bench.index is None else str(bench.index)
+    try:
+        result = core_maintenance.clear(
+            project_name, bench=selector, consent=True, on_event=narrate
+        )
+    except CwcliError as e:
+        stderr_console.print(f"[bold red]Not cleared:[/bold red] {e.message}")
+        return 1
+    outcome = result.data
+    for warning in result.warnings:
+        stderr_console.print(f"[yellow]{warning.text}[/yellow]")
+    if outcome is None:
+        return 1
+    if outcome.ok:
+        done = ", ".join(outcome.answering or outcome.sites) or "the bench"
+        stderr_console.print(f"[green]Out of maintenance mode:[/green] {done}")
+        return 0
+    stderr_console.print(
+        "[bold red]Still in maintenance mode:[/bold red] "
+        + (", ".join(outcome.still_down) or "a write was refused")
+    )
+    return 1
 
 
 def _fetch(

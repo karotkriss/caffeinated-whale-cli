@@ -101,6 +101,7 @@ from dataclasses import dataclass, replace
 
 from docker.errors import APIError, NotFound
 
+from . import maintenance as core_maintenance
 from . import resolvers, supervision
 from .docker import get_project_containers
 from .envelope import Message, Result, Status
@@ -172,6 +173,12 @@ class BenchStatus:
     #: a ``migrate``/``apps update`` killed by SIGTERM/SIGHUP leaves behind - so it is
     #: reported plainly here (and named in a warning) rather than left as a bare 503.
     maintenance_mode: bool | None = None
+    #: Maintenance mode across EVERY site of the bench (``core.maintenance``): which
+    #: sites answer 503, which write holds them there (their own flag, the bench-wide
+    #: flag, or being served as the default site), who set it, and whether anything
+    #: that sets it still runs. None when it was not read (``--watch``) or the bench
+    #: could not be read.
+    maintenance: core_maintenance.BenchMaintenance | None = None
     processes: list[ProcessHealth]
     # True when the bench is running under honcho / ``bench start`` rather than
     # cwcli's supervisord (pre-v3, or a plain ``bench start``): the processes are
@@ -233,6 +240,7 @@ def status(
     bench_path: str | None = None,
     probe_web: bool = True,
     fused: bool = False,
+    read_maintenance: bool | None = None,
 ) -> Result[StatusReport]:
     """Report a project's per-bench health. See module docstring.
 
@@ -246,6 +254,10 @@ def status(
     Per-program liveness + state still come from the ``ps`` read and
     ``supervisorctl`` (neither touches the web port), so ``overall`` stays honest:
     with no web signal it is driven by supervisor-up + every program healthy.
+
+    ``read_maintenance`` reads every site's maintenance mode (one exec per bench,
+    no HTTP request); None follows ``probe_web``. The web UI daemon turns it on for
+    instances nobody has open on a slow cadence, so the Sites list still shows them.
 
     ``fused=True`` reads each SUPERVISED bench through
     :func:`supervision.fused_probe` - ONE ``docker exec`` instead of the default
@@ -342,6 +354,7 @@ def status(
                     web_port=web_port,
                     web_site=resolvers.resolve_representative_site(project_name, path),
                     probe_web=probe_web,
+                    read_maintenance=probe_web if read_maintenance is None else read_maintenance,
                     warnings=warnings,
                     bench_flag=resolvers.bench_cli_flag(project_name, path),
                 ),
@@ -440,6 +453,65 @@ def _targets(
     return [(index, path, label)], warnings
 
 
+def _site_maintenance(
+    report: core_maintenance.BenchMaintenance | None, site: str | None
+) -> bool | None:
+    """Whether ``site`` answers in maintenance mode, from the bench's report.
+
+    None when nothing was read, no site is known, or the site's config is unreadable.
+    """
+    if report is None or not site:
+        return None
+    entry = next((s for s in report.sites if s.site == site), None)
+    if entry is not None:
+        return entry.on
+    return False
+
+
+def _maintenance_warnings(
+    report: core_maintenance.BenchMaintenance | None,
+    project_name: str,
+    bench_flag: str,
+    warnings: list[Message],
+) -> None:
+    """The bench's maintenance and paused-scheduler faults, each naming the way out.
+
+    One ``status.maintenance_mode`` warning covers every affected site and both
+    levels, because the way out is one command for the whole bench (the bench-wide
+    flags are written once, not per site). While something that sets maintenance mode
+    still runs, the warning says what instead of offering the command.
+    """
+    if report is None:
+        return
+    detail = {"bench_path": report.bench_path}
+    if report.needs_clearing:
+        text = "MAINTENANCE MODE: " + core_maintenance.describe(report)
+        if report.busy:
+            text += " Not cleared while it is still in use: " + "; ".join(report.busy) + "."
+        else:
+            text += f" Take {'them' if len(report.down) > 1 else 'it'} out with: {report.command}"
+        warnings.append(Message("status.maintenance_mode", text, detail=detail))
+    if "pause_scheduler" in report.bench_flags:
+        if "maintenance_mode" in report.bench_flags:
+            text = (
+                "SCHEDULER PAUSED bench-wide: pause_scheduler is set in "
+                f"{report.bench_path}/sites/common_site_config.json alongside maintenance_mode, "
+                "so no site on that bench runs scheduled jobs. Taking the bench out of "
+                "maintenance mode resumes it in the same step."
+            )
+        else:
+            text = (
+                "SCHEDULER PAUSED bench-wide: pause_scheduler is set in "
+                f"{report.bench_path}/sites/common_site_config.json, so no site on that bench "
+                "that does not override it runs scheduled jobs (bench update sets it while it "
+                "runs and leaves it set when it fails). Clear it with: "
+                + supervision.clear_bench_wide_flags_hint(
+                    project_name, ["pause_scheduler"], bench_flag
+                )
+            )
+        warnings.append(Message("status.scheduler_paused", text, detail=detail))
+
+
 def _bench_status(
     frappe_container,
     *,
@@ -453,6 +525,7 @@ def _bench_status(
     warnings: list[Message],
     bench_flag: str = "",
     tcp_only: bool = False,
+    read_maintenance: bool | None = None,
 ) -> BenchStatus:
     """One bench's live health, probed on ITS OWN port (or not probed at all).
 
@@ -468,67 +541,24 @@ def _bench_status(
     because cwcli could not read a JSON file.
     """
     probed = probe_web and web_port is not None
-    # Maintenance mode is read whenever a site is known and the caller wants a probe
-    # (skipped in the quiet --watch loop): a site stuck in maintenance answers 503
-    # with no other signal, so status names it and the way out. Gated on web_site,
-    # not web_port - a bench whose port is unreadable can still be stuck.
-    common = supervision.common_site_config(frappe_container, bench_path) if probe_web else None
-    maintenance = (
-        supervision.maintenance_mode_on(frappe_container, bench_path, web_site, common=common or {})
-        if probe_web and web_site
+    # Maintenance mode across every site of the bench, read whenever the caller wants
+    # a probe (skipped in the quiet --watch loop): a site stuck in maintenance answers
+    # 503 with no other signal, so status names the sites, the cause and the way out.
+    # The live per-site HTTP check runs only on the HTTP tier and only when something
+    # is in maintenance; ``tcp_only`` callers repeat and must not fill access logs.
+    bench_maintenance = (
+        core_maintenance.inspect(
+            frappe_container,
+            bench_path,
+            project=project_name,
+            bench_flag=bench_flag,
+            port=None if tcp_only else web_port,
+        )
+        if (probe_web if read_maintenance is None else read_maintenance)
         else None
     )
-    # The bench-wide flags `bench update` sets for its whole run and leaves set when
-    # it fails. Read separately from the site's merged view because they hold down
-    # EVERY site that does not override them, and because the way out is a different
-    # command: `set-maintenance-mode off` writes one site's own override and leaves
-    # the rest of the bench down.
-    bench_flags = (supervision.bench_wide_flags(common) or []) if probe_web else []
-    if "maintenance_mode" in bench_flags:
-        warnings.append(
-            Message(
-                "status.maintenance_mode",
-                "MAINTENANCE MODE ON bench-wide: maintenance_mode is set in "
-                f"{bench_path}/sites/common_site_config.json, so every site on that bench "
-                "that does not override it answers 503 (bench update sets it while it runs "
-                "and leaves it set when it fails). Clear it with: "
-                + supervision.clear_bench_wide_flags_hint(
-                    project_name, ["maintenance_mode"], bench_flag
-                ),
-                detail={"bench_path": bench_path},
-            )
-        )
-    if (
-        maintenance
-        and web_site
-        and (
-            "maintenance_mode" not in bench_flags
-            or supervision.maintenance_mode_on(frappe_container, bench_path, web_site, common={})
-        )
-    ):
-        warnings.append(
-            Message(
-                "status.maintenance_mode",
-                f"MAINTENANCE MODE ON for site '{web_site}' (it answers 503 to users). "
-                f"Take it out with: cwcli run {project_name}{bench_flag} --site {web_site} "
-                "set-maintenance-mode off",
-                detail={"bench_path": bench_path},
-            )
-        )
-    if "pause_scheduler" in bench_flags:
-        warnings.append(
-            Message(
-                "status.scheduler_paused",
-                "SCHEDULER PAUSED bench-wide: pause_scheduler is set in "
-                f"{bench_path}/sites/common_site_config.json, so no site on that bench that "
-                "does not override it runs scheduled jobs (bench update sets it while it runs "
-                "and leaves it set when it fails). Clear it with: "
-                + supervision.clear_bench_wide_flags_hint(
-                    project_name, ["pause_scheduler"], bench_flag
-                ),
-                detail={"bench_path": bench_path},
-            )
-        )
+    maintenance = _site_maintenance(bench_maintenance, web_site)
+    _maintenance_warnings(bench_maintenance, project_name, bench_flag, warnings)
     marker = supervision.read_marker(frappe_container, bench_path)
     snapshot = supervision.discover_stack(frappe_container, bench_path)
     expected = supervision.expected_labels(frappe_container, bench_path)
@@ -606,6 +636,7 @@ def _bench_status(
         web_http_code=web_code,
         web_listening=web_listening,
         maintenance_mode=maintenance,
+        maintenance=bench_maintenance,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,
     )
@@ -623,6 +654,7 @@ def _bench_status_fused(
     probe_web: bool,
     warnings: list[Message],
     bench_flag: str = "",
+    read_maintenance: bool | None = None,
 ) -> BenchStatus:
     """:func:`_bench_status`'s one-exec twin for a repeating caller (``fused=True``).
 
@@ -660,16 +692,21 @@ def _bench_status_fused(
             warnings=warnings,
             bench_flag=bench_flag,
             tcp_only=True,
+            read_maintenance=read_maintenance,
         )
 
-    # The site's own maintenance flag, read as the default path reads it: a site
-    # stuck in maintenance answers 503 with no other signal, and the web UI's Site
-    # page shows (and offers to clear) exactly this field.
-    maintenance = (
-        supervision.maintenance_mode_on(frappe_container, bench_path, web_site)
-        if probe_web and web_site
+    # Maintenance mode across the bench, read as the default path reads it (one
+    # exec, no HTTP request): the web UI's instance, bench, site and Sites pages show
+    # it and offer to take the sites out of maintenance.
+    bench_maintenance = (
+        core_maintenance.inspect(
+            frappe_container, bench_path, project=project_name, bench_flag=bench_flag
+        )
+        if (probe_web if read_maintenance is None else read_maintenance)
         else None
     )
+    maintenance = _site_maintenance(bench_maintenance, web_site)
+    _maintenance_warnings(bench_maintenance, project_name, bench_flag, warnings)
     return BenchStatus(
         index=index,
         bench_path=bench_path,
@@ -689,6 +726,7 @@ def _bench_status_fused(
         web_http_code=None,
         web_listening=fused.web_listening,
         maintenance_mode=maintenance,
+        maintenance=bench_maintenance,
         processes=fused.processes,
     )
 

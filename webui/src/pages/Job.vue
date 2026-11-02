@@ -18,6 +18,7 @@ import { backups, loadBackups } from '../data/backups'
 import { openRestoreWizard } from '../data/restore-wizard'
 import { openNewBench } from '../data/new-bench-dialog'
 import { openNewSite } from '../data/new-site-dialog'
+import { openAction } from '../data/dialog'
 import { TabButtons } from 'frappe-ui'
 import { feed, openLine } from '../data/follow'
 
@@ -116,6 +117,9 @@ const failure = computed(() => {
   if (job.result?.data_loss_refused) return { title: 'Refused: local work would be discarded', description: `Nothing ran. ${(job.result.data_loss_apps || []).join(', ')} holds uncommitted or unpushed work the reset would discard; tick Force to accept that loss.` }
   // A publish fails by its report, part by part: name the part and its own reason.
   const failedPart = job.verb === 'publish-site' && Object.entries(job.result?.parts || {}).find(([, p]) => p.state === 'failed')
+  // Frappe answering 503 SessionStopped is maintenance mode, its own cause with its own
+  // fix: the same clear the site and bench pages offer, then Retry.
+  if (failedPart?.[1].code === 'publish.maintenance') return { title: 'Publishing stopped: the site is in maintenance mode', description: `${failedPart[1].message} Take it out of maintenance mode, then Retry checks it again.`, maintenance: true }
   if (failedPart) return { title: `Publishing stopped at the ${PUBLISH_PART[failedPart[0]]}`, description: `${failedPart[1].message} The site itself was not touched; Retry repeats only what is missing.` }
   if (job.verb === 'unpublish-site' && job.result?.failed?.length) return { title: 'Part of the public address was not removed', description: `${job.result.failed.join(' ')} It stays recorded, so Retry finishes it.` }
   const cause = job.cause
@@ -136,6 +140,11 @@ function enterRootPassword() {
   const retry = { args: r.args || {}, site: r.target?.site, rejected: [r.error.message, r.error.hint].filter(Boolean).join(' ') }
   if (r.verb === 'new-bench') openNewBench({ project: r.target.project, host, retry })
   else openNewSite({ project: r.target.project, bench: r.target.bench, host, retry })
+}
+// The publish job's own target names the instance and bench the site lives on.
+function clearMaintenance() {
+  const { project, bench } = record.value.target || {}
+  openAction('bench.maintenance_off', { project, host, bench: bench == null ? null : String(bench) })
 }
 const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : ''
 const eventTitle = (event) => {
@@ -369,7 +378,7 @@ async function continueChoice(value) {
           <Button variant="solid" label="Continue" :disabled="!consentTyped" @click="continueChoice()" />
         </div>
       </template>
-      <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" :primary-action="passwordRejected ? { label: 'Enter the root password', onClick: enterRootPassword } : undefined" />
+      <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" :primary-action="passwordRejected ? { label: 'Enter the root password', onClick: enterRootPassword } : failure.maintenance ? { label: 'Take it out of maintenance', onClick: clearMaintenance } : undefined" />
       <DependencyTree v-if="refusedPlan" :plan="refusedPlan" />
       <div v-if="benchState" class="rounded-6 border border-outline-red-2 bg-surface-red-1 px-4 py-3 text-sm">
         <div class="font-medium text-ink-red-6">Bench state after this run</div>
