@@ -88,12 +88,16 @@ const before = text('a.example.com')
 m.catalogLanded({{ progress: {{ host: 'b.example.com', done: 1, total: 10 }} }})
 const afterTick = [text('a.example.com'), text('b.example.com')]
 m.catalogLanded({{ source: {{ kind: 'marketplace', host: 'marketplace', signed_in: true }} }})
-console.log(JSON.stringify({{ before, afterTick, afterSource: text('b.example.com') }}))
+const afterSource = text('b.example.com')
+console.log(JSON.stringify({{ before, afterTick, afterSource, grid: m.catalog.progress }}))
 """
     assert _run(script, tmp_path) == {
         "before": "442 of 442",
         "afterTick": [None, "1 of 10"],
         "afterSource": None,
+        # The grid's page-wide status line must not keep "b · 1 of 10" while the
+        # marketplace is fetched.
+        "grid": None,
     }
 
 

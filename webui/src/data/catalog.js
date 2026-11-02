@@ -48,7 +48,10 @@ export async function scanCatalog() {
 // row's progress.
 export function catalogLanded(frame = {}) {
   const host = frame.source?.host || frame.progress?.host
-  if (host) for (const s of sources.value) if (s.host !== host) s.progress = null
+  if (host) {
+    for (const s of sources.value) if (s.host !== host) s.progress = null
+    if (catalog.progress?.host !== host) catalog.progress = null
+  }
   if (frame.source) {
     catalog.scanning = true
     upsertSource(frame.source)
