@@ -121,7 +121,14 @@ def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
     monkeypatch.setattr(status_mod.time, "sleep", _sleep)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=True,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == ""  # watch writes NOTHING to stdout
@@ -138,7 +145,14 @@ def test_watch_non_tty_degrades_to_single_quiet_snapshot(monkeypatch, capsys):
     calls = _record_probe_web(monkeypatch)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=True,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == "running"  # single snapshot token on stdout
@@ -155,7 +169,14 @@ def test_watch_redirected_stderr_degrades_to_single_quiet_snapshot(monkeypatch, 
     calls = _record_probe_web(monkeypatch)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=True,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == "running"  # single snapshot token on stdout
@@ -175,7 +196,12 @@ def test_watch_interval_floored_at_one_second(given, expected, monkeypatch):
 
     with pytest.raises(typer.Exit) as exc:
         status_mod.status(
-            project_name="proj", bench=None, verbose=False, watch=True, interval=given
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=True,
+            interval=given,
+            clear_maintenance=False,
         )
     assert exc.value.exit_code == 0
     assert seen == [expected]

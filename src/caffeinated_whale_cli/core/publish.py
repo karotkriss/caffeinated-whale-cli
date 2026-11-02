@@ -43,7 +43,7 @@ from typing import Any
 
 from ..utils import config_utils, shared_home
 from . import docker as core_docker
-from . import integrations, resolvers, webapi
+from . import integrations, maintenance, resolvers, webapi
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -354,6 +354,9 @@ class _Run:
     proxy: tuple | None
     proxy_client: Any = None
     emit: OnEvent = lambda _e: None
+    #: The certificate step issued a certificate or changed the host's TLS settings
+    #: this run, so the proxy may still be loading it when the site is checked.
+    fresh_tls: bool = False
 
 
 def _host_spec(run: _Run) -> dict[str, Any]:
@@ -598,6 +601,7 @@ def _certificate_step(run: _Run, part: dict) -> dict:
         )
         try:
             cert = client.request_certificate(run.domain)
+            run.fresh_tls = True
         except CwcliError as e:
             if client.challenge == "dns":
                 fix = "check the DNS-challenge token can edit the zone"
@@ -622,6 +626,7 @@ def _certificate_step(run: _Run, part: dict) -> dict:
     host = client.host(host_id) or {}
     if any(host.get(k) != v for k, v in tls.items()):
         client.update_host(host_id, tls)
+        run.fresh_tls = True
     expires = _parse_time(cert.get("expires_on"))
     return {
         "state": "done",
@@ -634,21 +639,78 @@ def _certificate_step(run: _Run, part: dict) -> dict:
     }
 
 
+#: How long the check keeps retrying right after a certificate was issued or the
+#: host's TLS settings changed: the proxy reloads them asynchronously, and a check in
+#: that same second has failed with a TLS "unrecognized name" error.
+FRESH_TLS_WAIT_S = 30.0
+_VERIFY_RETRY_S = 2.0
+
+
+def _session_stopped(r: webapi.Response) -> bool:
+    """Frappe's maintenance-mode answer: HTTP 503 whose body names ``SessionStopped``."""
+    if r.status != 503:
+        return False
+    if isinstance(r.body, dict) and r.body.get("exc_type") == "SessionStopped":
+        return True
+    return "SessionStopped" in (r.text or "")
+
+
+def _maintenance_refusal(run: _Run, url: str) -> CwcliError:
+    project, bench_path = run.rec["project"], run.rec["bench_path"]
+    command = maintenance.clear_command(project, resolvers.bench_cli_flag(project, bench_path))
+    return CwcliError(
+        ErrorKind.PRECONDITION,
+        "publish.maintenance",
+        f"{url} answered HTTP 503 SessionStopped: {run.domain} is in maintenance mode, "
+        "so Frappe refuses every request. The site is published; it answers once it is "
+        "out of maintenance mode.",
+        hint=f"Take it out of maintenance mode: {command}",
+        detail={"cause": "maintenance", "project": project, "bench_path": bench_path},
+    )
+
+
 def _verify_step(run: _Run, part: dict) -> dict:
+    """Frappe's ping through the published address answers ``pong``.
+
+    Maintenance mode is named as its own cause (HTTP 503 ``SessionStopped``), with
+    the way out, and never retried: it does not clear by itself. Right after a
+    certificate was issued the check retries for :data:`FRESH_TLS_WAIT_S`, because
+    the proxy loads a new certificate asynchronously.
+    """
     url = f"{run.rec['url']}/api/method/ping"
-    try:
-        r = webapi.call("GET", url, timeout=15)
-    except webapi.UnreachableError as e:
-        raise CwcliError(
-            ErrorKind.PRECONDITION, "publish.unreachable", f"{url} did not answer: {e}"
-        ) from None
-    if r.status != 200 or not isinstance(r.body, dict) or r.body.get("message") != "pong":
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "publish.unreachable",
-            f"{url} answered HTTP {r.status}, not Frappe's pong.",
+    deadline = time.monotonic() + (FRESH_TLS_WAIT_S if run.fresh_tls else 0.0)
+    while True:
+        failure: CwcliError
+        try:
+            r = webapi.call("GET", url, timeout=15)
+        except webapi.UnreachableError as e:
+            failure = CwcliError(
+                ErrorKind.PRECONDITION, "publish.unreachable", f"{url} did not answer: {e}"
+            )
+        else:
+            if r.status == 200 and isinstance(r.body, dict) and r.body.get("message") == "pong":
+                return {"state": "done", "message": f"{run.rec['url']} answers"}
+            if _session_stopped(r):
+                raise _maintenance_refusal(run, url)
+            failure = CwcliError(
+                ErrorKind.PRECONDITION,
+                "publish.unreachable",
+                f"{url} answered HTTP {r.status}, not Frappe's pong.",
+            )
+        if time.monotonic() >= deadline:
+            raise failure
+        run.emit(
+            PublishNotice(
+                text=f"{failure.message} The proxy may still be loading the new "
+                "certificate; checking again."
+            )
         )
-    return {"state": "done", "message": f"{run.rec['url']} answers"}
+        time.sleep(_VERIFY_RETRY_S)
+
+
+def _without_cause(part: dict) -> dict:
+    """``part`` minus a past failure's ``code``/``hint``: they describe that attempt only."""
+    return {k: v for k, v in part.items() if k not in ("code", "hint")}
 
 
 _STEPS = {
@@ -775,10 +837,18 @@ def publish_site(
         # removable by Unpublish) even while its integration is off.
         ran.add(name)
         try:
-            part = {**prior_part, **_STEPS[name](run, prior_part)}
+            part = {**_without_cause(prior_part), **_STEPS[name](run, prior_part)}
         except CwcliError as e:
             failed = name
-            part = {**prior_part, "state": "failed", "message": e.message}
+            # After the step, which may have recorded what it wrote before failing.
+            part = {
+                **_without_cause(prior_part),
+                "state": "failed",
+                "message": e.message,
+                "code": e.code,
+            }
+            if e.hint:
+                part["hint"] = e.hint
         rec["parts"][name] = {**part, "at": time.time()}
         _put(site, rec)
         if not off:

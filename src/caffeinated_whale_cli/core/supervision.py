@@ -825,8 +825,14 @@ def write_marker(container, bench_path: str) -> str:
             "log_path": log_dir,
         }
     )
-    container.exec_run(["python3", "-c", _WRITE_FILE_PROG, _marker_path(bench_path), payload])
+    write_bench_file(container, _marker_path(bench_path), payload)
     return log_dir
+
+
+def write_bench_file(container, path: str, text: str) -> None:
+    """Write ``text`` to ``path`` inside the container (parent dirs created), as the
+    container's default user, which owns the bench."""
+    container.exec_run(["python3", "-c", _WRITE_FILE_PROG, path, text])
 
 
 # -------------------------------------------------------------------------- launch

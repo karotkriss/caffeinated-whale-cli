@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -1669,3 +1670,78 @@ def test_a_job_runs_as_admin_only_when_the_server_stamped_its_origin_so(
     )
     jobs.run_job(record["id"])
     assert seen["admin"] is admin
+
+
+def test_clear_maintenance_runs_the_core_clear_as_recorded_steps(fake_spawn, monkeypatch):
+    # Starting the job is the consent (the page asks first); the core does the whole
+    # job for the bench and narrates each step, which the job records.
+    from caffeinated_whale_cli.core import maintenance as core_maintenance
+
+    record = jobs.create_job("clear-maintenance", {"project": "p", "bench": "0"}, {})
+    seen = {}
+
+    def clear(project, *, bench=None, site=None, consent=False, on_event=None, **_):
+        seen.update(project=project, bench=bench, site=site, consent=consent)
+        on_event(core_maintenance.MaintenanceStepStart(phase="bench_flags", message="Clear"))
+        on_event(
+            core_maintenance.MaintenanceStepEnd(phase="bench_flags", status="ok", message="done")
+        )
+        outcome = core_maintenance.MaintenanceClearReport(
+            ok=True,
+            project=project,
+            bench_path="/w/b0",
+            sites=["a.localhost"],
+            cleared_bench_flags=["maintenance_mode", "pause_scheduler"],
+            scheduler_resumed=True,
+        )
+        return Result(status=Status.OK, data=outcome)
+
+    monkeypatch.setattr(jobs.core_maintenance, "clear", clear)
+
+    assert jobs.run_job(record["id"]) == 0
+    finished = jobs.read_job(record["id"], include_events=True)
+    assert seen == {"project": "p", "bench": "0", "site": None, "consent": True}
+    assert finished["state"] == "succeeded"
+    assert finished["result"]["scheduler_resumed"] is True
+    types = [e["type"] for e in finished["events"]]
+    assert "maintenance_step_start" in types and "maintenance_step_end" in types
+
+
+def test_a_clear_that_leaves_a_site_down_fails_the_job(fake_spawn, monkeypatch):
+    from caffeinated_whale_cli.core import maintenance as core_maintenance
+
+    record = jobs.create_job("clear-maintenance", {"project": "p", "site": "a.localhost"}, {})
+    monkeypatch.setattr(
+        jobs.core_maintenance,
+        "clear",
+        lambda *a, **k: Result(
+            status=Status.OK,
+            data=core_maintenance.MaintenanceClearReport(
+                ok=False,
+                project="p",
+                bench_path="/w/b0",
+                sites=["a.localhost"],
+                still_down=["a.localhost"],
+            ),
+        ),
+    )
+
+    assert jobs.run_job(record["id"]) == 1
+    assert jobs.read_job(record["id"])["state"] == "failed"
+
+
+def test_the_job_runner_names_itself_for_maintenance_records(fake_spawn, monkeypatch):
+    record = jobs.create_job("backup", {"project": "p"}, {})
+    # setenv records the variable's absence, so teardown removes what run_job sets.
+    monkeypatch.setenv(jobs.core_bench_ops.JOB_ID_ENV, "before")
+    seen = {}
+
+    def dispatch(*_a, **_k):
+        seen["env"] = os.environ.get(jobs.core_bench_ops.JOB_ID_ENV)
+        return Result(status=Status.OK, data={"ok": True})
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    jobs.run_job(record["id"])
+
+    assert seen["env"] == record["id"]

@@ -94,7 +94,14 @@ def _run(monkeypatch, capsys, report, *, container=_FakeContainer, warnings=()):
         lambda name: None if container is None else container(),
     )
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False, watch=False, interval=2.0)
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=False,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 0
     return capsys.readouterr()
 
@@ -164,7 +171,14 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
 
     monkeypatch.setattr(status_mod.core_status, "status", _raise)
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False, watch=False, interval=2.0)
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=False,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 1
     captured = capsys.readouterr()
     # Nothing on stdout (no misleading "offline" token); the error is on stderr.
@@ -189,7 +203,14 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
     monkeypatch.setattr(status_mod.core_status, "status", _boom)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name=None, bench=None, verbose=False, watch=False, interval=2.0)
+        status_mod.status(
+            project_name=None,
+            bench=None,
+            verbose=False,
+            watch=False,
+            interval=2.0,
+            clear_maintenance=False,
+        )
     assert exc.value.exit_code == 0
     assert calls == [{"verbose": False}]
 
@@ -338,18 +359,172 @@ def test_a_bench_left_down_by_bench_update_is_named_with_the_bench_wide_way_out(
     for verbose in (False, True):
         with pytest.raises(typer.Exit):
             status_mod.status(
-                project_name="proj", bench=None, verbose=verbose, watch=False, interval=2.0
+                project_name="proj",
+                bench=None,
+                verbose=verbose,
+                watch=False,
+                interval=2.0,
+                clear_maintenance=False,
             )
         err = harness_collapse(capsys.readouterr().err)
 
-        assert "MAINTENANCE MODE ON bench-wide" in err
-        assert "cwcli run proj set-config --global --parse maintenance_mode 0" in err
+        assert "maintenance_mode is set bench-wide" in err
         assert "SCHEDULER PAUSED bench-wide" in err
-        assert "cwcli run proj set-config --global --parse pause_scheduler 0" in err
-        assert err.count("set-config --global --parse maintenance_mode 0") == 1
+        assert "resumes it in the same step" in err
+        # One way out, named once; a non-TTY is never asked.
+        assert err.count("cwcli status proj --clear-maintenance") == 1
         assert "set-maintenance-mode off" not in err
+        assert "Out of maintenance mode" not in err
 
 
 def harness_collapse(text: str) -> str:
     """Rich wraps long lines at the console width; compare on collapsed whitespace."""
     return " ".join(text.split())
+
+
+# --------------------------------------------- the maintenance-mode question
+
+
+from dataclasses import replace  # noqa: E402
+
+from caffeinated_whale_cli.core import maintenance as core_maintenance  # noqa: E402
+
+
+def _stuck(*, busy=(), owners=()):
+    return core_maintenance.BenchMaintenance(
+        bench_path="/w/b0",
+        bench_flags=["maintenance_mode", "pause_scheduler"],
+        sites=[core_maintenance.SiteMaintenance(site="site.example.com", on=True, cause="bench")],
+        down=["site.example.com"],
+        owners=list(owners),
+        busy=list(busy),
+        command="cwcli status proj --clear-maintenance",
+    )
+
+
+class _Asked:
+    """Stands in for questionary.confirm and records what was asked."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked: list = []
+
+    def __call__(self, message, default=False, auto_enter=True):
+        self.asked.append((message, default))
+        return type("Q", (), {"ask": lambda _s: self.answer})()
+
+
+def _maintenance_run(
+    monkeypatch, capsys, maintenance, *, tty, answer=None, flag=False, clear_ok=True
+):
+    report = _report("running", benches=[replace(_bench("running"), maintenance=maintenance)])
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
+    monkeypatch.setattr(
+        status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
+    )
+    monkeypatch.setattr(status_mod.core_docker, "get_frappe_container", lambda name: None)
+    monkeypatch.setattr(status_mod, "_interactive", lambda: tty)
+    asked = _Asked(answer)
+    monkeypatch.setattr(status_mod.questionary, "confirm", asked)
+    cleared: list = []
+
+    def clear(project, *, bench=None, consent=False, on_event=None, **_):
+        cleared.append((project, bench, consent))
+        on_event(core_maintenance.MaintenanceStepEnd(phase="check", status="ok", message="x"))
+        outcome = core_maintenance.MaintenanceClearReport(
+            ok=clear_ok,
+            project=project,
+            bench_path="/w/b0",
+            sites=["site.example.com"],
+            answering=["site.example.com"] if clear_ok else [],
+            still_down=[] if clear_ok else ["site.example.com"],
+            verified=True,
+        )
+        return Result(status=Status.OK, data=outcome)
+
+    monkeypatch.setattr(status_mod.core_maintenance, "clear", clear)
+    with pytest.raises(typer.Exit) as exc:
+        status_mod.status(
+            project_name="proj",
+            bench=None,
+            verbose=False,
+            watch=False,
+            interval=2.0,
+            clear_maintenance=flag,
+        )
+    out = capsys.readouterr()
+    return exc.value.exit_code, out, asked.asked, cleared
+
+
+class TestMaintenanceQuestion:
+    def test_a_terminal_is_asked_and_yes_takes_the_sites_out(self, monkeypatch, capsys):
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=True, answer=True
+        )
+
+        assert asked == [
+            ("Take site.example.com out of maintenance mode and resume the scheduler?", False)
+        ]
+        assert cleared == [("proj", "0", True)]
+        assert "Out of maintenance mode: site.example.com" in out.err
+        assert out.out.strip() == "running"  # the token stays alone on stdout
+        assert code == 0
+
+    def test_no_leaves_it_and_names_the_command(self, monkeypatch, capsys):
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=True, answer=False
+        )
+
+        assert asked and cleared == []
+        assert "cwcli status proj --clear-maintenance" in harness_collapse(out.err)
+        assert code == 0
+
+    def test_a_known_leftover_defaults_to_yes(self, monkeypatch, capsys):
+        owner = core_maintenance.MaintenanceOwner(
+            site="site.example.com", verb="apps update", running=False
+        )
+        _, _, asked, _ = _maintenance_run(
+            monkeypatch, capsys, _stuck(owners=[owner]), tty=True, answer=False
+        )
+
+        assert asked[0][1] is True
+
+    def test_a_non_tty_is_never_asked(self, monkeypatch, capsys):
+        code, out, asked, cleared = _maintenance_run(monkeypatch, capsys, _stuck(), tty=False)
+
+        assert asked == [] and cleared == []
+        assert code == 0
+
+    def test_the_flag_clears_without_asking(self, monkeypatch, capsys):
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=False, flag=True
+        )
+
+        assert asked == [] and cleared == [("proj", "0", True)]
+        assert code == 0
+
+    def test_the_flag_exits_1_when_a_site_still_does_not_answer(self, monkeypatch, capsys):
+        code, out, _, _ = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=False, flag=True, clear_ok=False
+        )
+
+        assert code == 1
+        assert "Still in maintenance mode: site.example.com" in out.err
+
+    def test_busy_is_never_offered_and_the_flag_is_refused(self, monkeypatch, capsys):
+        busy = ["an in-container 'bench migrate' is still running (pid 5)"]
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(busy=busy), tty=True, answer=True
+        )
+        assert asked == [] and cleared == [] and code == 0
+
+        code, out, asked, cleared = _maintenance_run(
+            monkeypatch, capsys, _stuck(busy=busy), tty=False, flag=True
+        )
+        assert cleared == [] and code == 1
+        assert "Not cleared: an in-container 'bench migrate' is still running" in harness_collapse(
+            out.err
+        )

@@ -34,16 +34,26 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(publish.resolvers, "require_site_dir", lambda c, b, s: f"{b}/sites/{s}")
     monkeypatch.setattr(publish.resolvers, "resolve_host_ports", lambda c, b: ports["value"])
     pings: list[str] = []
-    answer = {"status": 200}
+    # ``unreachable``: how many pings fail with no HTTP answer first (a TLS error
+    # while the proxy loads a fresh certificate); ``body``/``text``: the answer.
+    answer = {"status": 200, "unreachable": 0}
     real = webapi.call
 
     def call(method, url, **kwargs):
         if url.endswith("/api/method/ping"):
             pings.append(url)
-            return webapi.Response(answer["status"], {"message": "pong"}, "")
+            if answer["unreachable"]:
+                answer["unreachable"] -= 1
+                raise webapi.UnreachableError("TLS alert: unrecognized name")
+            body = answer.get("body", {"message": "pong"})
+            return webapi.Response(answer["status"], body, answer.get("text", ""))
         return real(method, url, **kwargs)
 
     monkeypatch.setattr(webapi, "call", call)
+    # The verify step's retry clock: sleeping advances it, so a wait costs no time.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(publish.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(publish.time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s))
     yield SimpleNamespace(cf=cf, npm=proxy, ports=ports, pings=pings, answer=answer)
     cf.close()
     proxy.close()
@@ -412,6 +422,57 @@ class TestPublish:
         report = publish.publish_site("p", SITE).data
         assert not report.ok and report.parts["verify"]["state"] == "failed"
         assert integrations.view("npm")[0]["state"] == "on"  # NPM's own steps passed
+
+    def test_maintenance_mode_is_named_as_its_own_cause_with_the_way_out(self, world):
+        # Frappe answers 503 SessionStopped to every request while a site is in
+        # maintenance mode; "not Frappe's pong" sent the user diagnosing by hand.
+        turn_on(world)
+        world.answer.update(
+            status=503,
+            body={"exc_type": "SessionStopped", "exception": "frappe.exceptions.SessionStopped"},
+        )
+        report = publish.publish_site("p", SITE).data
+        verify = report.parts["verify"]
+        assert not report.ok and verify["state"] == "failed"
+        assert verify["code"] == "publish.maintenance"
+        assert "maintenance mode" in verify["message"]
+        assert (
+            verify["hint"] == "Take it out of maintenance mode: cwcli status p --clear-maintenance"
+        )
+        assert len(world.pings) == 1  # maintenance does not clear by itself: no retry
+
+    def test_a_retry_after_maintenance_drops_the_old_cause(self, world):
+        turn_on(world)
+        world.answer.update(status=503, body={"exc_type": "SessionStopped"})
+        publish.publish_site("p", SITE)
+        world.answer.update(status=200, body={"message": "pong"})
+        verify = publish.publish_site("p", SITE).data.parts["verify"]
+        assert verify["state"] == "done" and "code" not in verify and "hint" not in verify
+
+    def test_a_check_right_after_a_new_certificate_waits_for_the_proxy(self, world):
+        # The proxy loads a new certificate asynchronously; a check in that same
+        # second once failed with TLS "unrecognized name".
+        turn_on(world)
+        world.answer["unreachable"] = 3
+        report = publish.publish_site("p", SITE).data
+        assert report.ok and report.parts["verify"]["state"] == "done"
+        assert len(world.pings) == 4
+
+    def test_the_wait_is_bounded(self, world):
+        turn_on(world)
+        world.answer["unreachable"] = 10_000
+        report = publish.publish_site("p", SITE).data
+        assert report.parts["verify"]["code"] == "publish.unreachable"
+        assert len(world.pings) <= publish.FRESH_TLS_WAIT_S / publish._VERIFY_RETRY_S + 1
+
+    def test_no_new_certificate_means_no_wait(self, world):
+        turn_on(world)
+        assert publish.publish_site("p", SITE).data.ok  # the certificate exists now
+        world.pings.clear()
+        world.answer["unreachable"] = 1
+        report = publish.publish_site("p", SITE).data
+        assert report.parts["verify"]["code"] == "publish.unreachable"
+        assert len(world.pings) == 1
 
     def test_a_refused_token_turns_the_dns_integration_to_error(self, world):
         turn_on(world)
