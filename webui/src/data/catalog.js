@@ -112,12 +112,12 @@ export function namespaceOf(app) {
   return i > 0 ? path.slice(0, i) : ''
 }
 export const hostLabel = (host) => (host === 'github.com' ? 'GitHub' : host === 'marketplace' ? 'Marketplace' : host)
-// The forges in the grid's source filter: every signed-in source, plus any host the
-// apps came from. A host nobody is signed in to (installed apps that point at GitHub
-// on an install with no gh sign-in) is named as such, so picking it is never a surprise.
+// The forges in the grid's source filter: every host some app came from. A host
+// nobody is signed in to (installed apps that point at GitHub on an install with no
+// gh sign-in) is named as such, so picking it is never a surprise.
 export const hostFilterOptions = computed(() => {
-  const signedIn = new Set(sources.value.filter((s) => s.signed_in && s.kind !== 'marketplace').map((s) => s.host))
-  const hosts = [...new Set([...apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean), ...signedIn])].sort()
+  const signedIn = new Set(sources.value.filter((s) => s.signed_in).map((s) => s.host))
+  const hosts = [...new Set(apps.value.filter((a) => a.source?.kind !== 'marketplace').map((a) => a.source?.host).filter(Boolean))].sort()
   return hosts.map((h) => ({ label: signedIn.has(h) ? hostLabel(h) : `${hostLabel(h)} (not signed in)`, value: h }))
 })
 // "100 of 442" while a source's scan runs, else null.

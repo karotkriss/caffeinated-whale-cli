@@ -118,16 +118,20 @@ console.log(JSON.stringify({{ rows: m.sources.value, icon: m.hostIcon('github.co
 
 
 def test_the_source_filter_names_a_forge_nobody_is_signed_in_to(tmp_path):
+    """Only hosts some app came from are offered: a signed-in forge with no apps
+    (gitlab.com here) would show nothing when picked."""
     answer = {
         "scanned_at": None,
         "scanning": False,
         "sources": [
             {"kind": "github", "host": "github.com", "signed_in": False},
             {"kind": "gitlab", "host": "gitlab.example.com", "signed_in": True},
+            {"kind": "gitlab", "host": "gitlab.com", "signed_in": True},
             {"kind": "marketplace", "host": "marketplace", "signed_in": True},
         ],
         "apps": [
             {"name": "hrms", "source": {"kind": "github", "host": "github.com"}},
+            {"name": "erp", "source": {"kind": "gitlab", "host": "gitlab.example.com"}},
             {"name": "shop", "source": {"kind": "marketplace", "host": "marketplace"}},
         ],
     }

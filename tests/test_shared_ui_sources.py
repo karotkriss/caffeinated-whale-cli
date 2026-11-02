@@ -226,6 +226,72 @@ def test_shared_mode_scans_the_hosts_the_bridge_may_answer(shared_mode, monkeypa
     assert cat.gitlab_hosts() == []
 
 
+@unix_only
+def test_the_branch_list_git_asks_the_shared_credential_first(
+    machine_bridge, tmp_path, monkeypatch
+):
+    """The Apps page's host git (``git_refs._git_env``: the branch list's ls-remote and
+    the dependency read) gets its credential from the same answer as the catalog's
+    scan. Real git runs the real helper process, which reaches the machine socket."""
+    monkeypatch.setenv("CWCLI_HOME", str(cred_daemon.PID_DIR.parent))
+    env = {**git_refs._git_env(), "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    # The fixture fakes subprocess.run for the in-process accounts; git is real.
+    with subprocess.Popen(
+        ["git", "credential", "fill"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    ) as proc:
+        out, err = proc.communicate("protocol=https\nhost=github.com\nusername=svc\n\n", timeout=30)
+    assert proc.returncode == 0, err
+    assert "password=tok-from-shared" in out
+    assert machine_bridge.asked_by_member == []
+
+
+def test_the_dependency_read_git_is_given_the_same_helper(tmp_path, monkeypatch):
+    from caffeinated_whale_cli.core import app_deps
+
+    monkeypatch.setattr(git_refs, "gitlab_hosts", lambda: ["gitlab.example.com"])
+    for url in ("https://github.com/acme/app", "https://gitlab.example.com/acme/app"):
+        code, out, _err = app_deps._git(
+            ["config", "--get-urlmatch", "credential.helper", url], str(tmp_path)
+        )
+        assert code == 0 and out.strip().splitlines()[-1] == git_refs.credential_helper()
+
+
+def test_a_scan_lists_no_allowlist_only_host_nothing_can_sign_in_to(tmp_path, monkeypatch):
+    """A shared install's allowlist names gitlab.com by default; with no credential
+    for it at all it is not listed. A host the account's own glab names still is."""
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(cat, "gitlab_hosts", lambda: ["gitlab.example.com", "gitlab.com"])
+    monkeypatch.setattr(cat, "glab_config_hosts", lambda: ["gitlab.example.com"])
+    monkeypatch.setattr(cat, "extra_sources", lambda: [])
+    monkeypatch.setattr(cat, "credential", lambda host: None)
+    monkeypatch.setattr(
+        cat,
+        "scan_github",
+        lambda previous, extra, *, started=None: (
+            cat.SourceState(kind="github", host="github.com", error="gh is not signed in"),
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        cat,
+        "scan_marketplace",
+        lambda previous, *, started=None: (
+            cat.SourceState(kind="marketplace", host="marketplace", signed_in=True),
+            {},
+        ),
+    )
+    store._scanning = True
+    store._scan(None)
+    hosts = {s.host: s for s in store.sources()}
+    assert "gitlab.com" not in hosts
+    assert hosts["gitlab.example.com"].signed_in is False
+
+
 # ------------------------------------------------- item 1: listed while scanning
 
 

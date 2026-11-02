@@ -37,7 +37,6 @@ def test_glab_is_asked_only_for_hosts_it_is_configured_for(monkeypatch):
 
 
 def test_git_refs_scopes_the_glab_helper_to_configured_hosts(monkeypatch):
-    monkeypatch.setattr(git_refs.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(git_refs, "gitlab_hosts", lambda: ["gitlab.com"])
     monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     env = git_refs._git_env()

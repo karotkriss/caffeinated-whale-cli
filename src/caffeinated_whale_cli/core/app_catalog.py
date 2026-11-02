@@ -339,55 +339,63 @@ def _parse_app_line(entry: str) -> dict[str, Any]:
 # ------------------------------------------------------------ credentials
 
 
-def credential(host: str) -> str | None:
-    """The token for ``host``, in memory only. None when nothing is signed in.
+def credential_answer(host: str) -> bytes:
+    """git's credential-protocol answer for ``host`` (``password=...`` and friends),
+    in memory only; empty when nothing is signed in.
 
     The same answer a container's git gets from the credential bridge, in the same
     order: on a shared install the machine's service-account credential first
     (``cred_daemon.shared_credential``, the machine-wide bridge socket), then the
     running account's own ``gh``/``glab`` - run from cwcli's neutral working
-    directory, never the daemon's (``credbridge.run_host_tool``).
+    directory, never the daemon's (``credbridge.run_host_tool``). The catalog's REST
+    scan and every host ``git`` the Apps page runs (``git_refs.credential_helper``)
+    ask here, so they all see the same repositories.
     """
     if host == "github.com":
         tool = "gh"
     elif host in gitlab_hosts():
         tool = "glab"
     else:
-        return None
+        return b""
     from ..utils import cred_daemon
 
-    request = f"protocol=https\nhost={host}\n\n".encode()
     out = cred_daemon.shared_credential(host)
-    if not out:
-        try:
-            out = credbridge.run_host_tool(
+    if out:
+        return out
+    try:
+        return bytes(
+            credbridge.run_host_tool(
                 [tool, "auth", "git-credential", "get"],
-                input=request,
+                input=f"protocol=https\nhost={host}\n\n".encode(),
                 capture_output=True,
                 timeout=20,
             ).stdout
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return None
-    for line in out.decode("utf-8", "replace").splitlines():
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return b""
+
+
+def credential(host: str) -> str | None:
+    """The token for ``host`` (:func:`credential_answer`'s password). None when nothing
+    is signed in."""
+    for line in credential_answer(host).decode("utf-8", "replace").splitlines():
         if line.startswith("password="):
             return line[len("password=") :].strip() or None
     return None
 
 
-def gitlab_hosts() -> list[str]:
-    """Every GitLab host a credential may answer for (names only; no token is read
-    here): the running account's glab config, plus, on a shared install, the hosts
-    the machine-wide bridge is allowed to answer (``[cred_bridge] allowed_hosts``),
-    since the service account's glab config is not this account's to read."""
+def glab_config_hosts() -> list[str]:
+    """Every host the running account's glab is configured for (names only; the token
+    is never read here)."""
     path = (
         Path(os.environ.get("GLAB_CONFIG_DIR") or Path.home() / ".config" / "glab-cli")
         / "config.yml"
     )
-    hosts: list[str] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        lines = []
+        return []
+    hosts: list[str] = []
     in_hosts = False
     for line in lines:
         if not line.strip() or line.lstrip().startswith("#"):
@@ -397,6 +405,16 @@ def gitlab_hosts() -> list[str]:
             continue
         if in_hosts and re.match(r"^ {2,4}[A-Za-z0-9.-]+:\s*$", line):
             hosts.append(line.strip()[:-1])
+    return hosts
+
+
+def gitlab_hosts() -> list[str]:
+    """Every GitLab host a credential may answer for (names only; no token is read
+    here): the running account's glab config, plus, on a shared install, the hosts
+    the machine-wide bridge is allowed to answer (``[cred_bridge] allowed_hosts``),
+    since the service account's glab config is not this account's to read. A host
+    only the allowlist names is listed as a source once its credential answers."""
+    hosts = glab_config_hosts()
     if shared_home.shared_mode():
         from ..utils import cred_daemon
 
@@ -1678,7 +1696,7 @@ class CatalogStore:
                 by_host[live.host] = SourceState(**asdict(live))
                 rows.append(by_host[live.host])
         hosts = set(by_host)
-        for host in ["github.com", *gitlab_hosts()]:
+        for host in ["github.com", *glab_config_hosts()]:
             if host not in hosts:
                 rows.append(
                     SourceState(
@@ -1743,6 +1761,8 @@ class CatalogStore:
                 gl_source, gl_apps = scan_gitlab(
                     host, previous, groups, progress=_progress, started=_started
                 )
+                if not gl_source.signed_in and host not in glab_config_hosts():
+                    continue
                 sources.append(gl_source)
                 if gl_source.error is None:
                     remote = {k: v for k, v in remote.items() if not _scanned_by(k, v, host)}
