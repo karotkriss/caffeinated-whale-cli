@@ -1,37 +1,58 @@
 // Settings > Integrations (core/integrations.py through /api/v1/integrations).
 // Secrets are write-only: the daemon answers which are set, never their values, and
 // an empty secret in a request keeps the stored one.
+//
+// `host` is the machine whose integrations the panel shows: null for this machine,
+// else a remote host's id. A remote's list, tests, saves and actions go to that
+// host's own daemon through the hub's forward (`apiBase(host)`), so its secrets are
+// sealed there and never pass through this machine's store; Detect runs there too.
 import { reactive } from 'vue'
-import { getJson, postJson } from './api'
+import { apiBase, getJson, postJson } from './api'
+import { loadPublications } from './publish'
 
-export const integrations = reactive({ list: [], loading: false, error: null })
+export const integrations = reactive({ list: [], loading: false, error: null, host: null })
+
+// Show (and act on) one machine's integrations: null is this machine.
+export function pickIntegrationsHost(host) {
+  if ((host || null) === integrations.host) return
+  integrations.host = host || null
+  integrations.list = []
+  integrations.error = null
+}
 
 export async function loadIntegrations() {
+  const host = integrations.host
   integrations.loading = true
   try {
-    integrations.list = (await getJson('/api/v1/integrations')).integrations
+    const list = (await getJson(`${apiBase(host)}/integrations`)).integrations
+    if (host !== integrations.host) return // the picker moved on while this read ran
+    integrations.list = list
     integrations.error = null
   } catch (e) {
-    integrations.error = e
+    if (host === integrations.host) integrations.error = e
   } finally {
-    integrations.loading = false
+    if (host === integrations.host) integrations.loading = false
   }
 }
 
-const post = (payload) => postJson('/api/v1/integrations', payload)
+const post = (payload) => postJson(`${apiBase(integrations.host)}/integrations`, payload)
 export const testIntegration = (id, settings, secrets) => post({ op: 'test', id, settings, secrets })
 // takeOver: the Admin chose to switch a hook point another integration serves (409 integration.hook_taken otherwise).
-export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => post({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
-export const disableIntegration = (id) => post({ op: 'disable', id })
+// Turning one on or off changes whether that machine can publish: read its publications again.
+const change = async (payload) => { const host = integrations.host; const out = await post(payload); await loadPublications(host); return out }
+export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => change({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
+export const disableIntegration = (id) => change({ op: 'disable', id })
 export const integrationAction = (id, action, args, settings, secrets) => post({ op: 'action', id, action, args, settings, secrets })
 
 // Community integrations (core/community.py): every install and update names the
-// exact commit the Admin reviewed on the trust screen.
-export const previewCommunity = (url, ref) => post({ op: 'community_preview', url, ref })
-export const addCommunity = (url, ref, commit) => post({ op: 'community_add', url, ref, commit })
-export const checkCommunity = (id) => post({ op: 'community_check', id })
-export const updateCommunity = (id, commit) => post({ op: 'community_update', id, commit })
-export const removeCommunity = (id) => post({ op: 'community_remove', id })
+// exact commit the Admin reviewed on the trust screen. Always this machine's: a
+// remote installs code only through its own Admin (its bridge refuses a hub's).
+const postLocal = (payload) => postJson('/api/v1/integrations', payload)
+export const previewCommunity = (url, ref) => postLocal({ op: 'community_preview', url, ref })
+export const addCommunity = (url, ref, commit) => postLocal({ op: 'community_add', url, ref, commit })
+export const checkCommunity = (id) => postLocal({ op: 'community_check', id })
+export const updateCommunity = (id, commit) => postLocal({ op: 'community_update', id, commit })
+export const removeCommunity = (id) => postLocal({ op: 'community_remove', id })
 
 // mode: 'add' | 'update' | 'remove'; id names the installed one for update and remove.
 export const communityDialog = reactive({ open: false, mode: 'add', id: null })

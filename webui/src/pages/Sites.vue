@@ -7,7 +7,8 @@
 // With a publishing integration on (or any site published), a Public address column
 // shows each published site's address and the state of its DNS record, proxy host
 // and certificate, with Publish, Retry, Check for drift and Unpublish in its menu.
-// Publications are this machine's own, so a remote host's site has none here.
+// Publications are each machine's own: a remote host's sites read that host's store
+// through the hub, and its globe menu publishes and checks there, with its settings.
 import { computed, onMounted, ref, watch } from 'vue'
 import { Badge, Button, Dropdown, Select, TabButtons, TextInput, Tooltip } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
@@ -24,7 +25,7 @@ import { openAction } from '../data/dialog'
 import { loadSiteIcons, refreshSiteIcons, siteIcons, siteIcon } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
 import { can } from '../data/session'
-import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publicationAt, SHOWN_PARTS } from '../data/publish'
+import { canPublish, checkSite, isLive, isPublicName, loadPublications, PART_LABEL, PART_STATE, publicationAt, publicationsFor, SHOWN_PARTS } from '../data/publish'
 import { hostName, staleInstance } from '../data/hosts'
 
 onMounted(() => {
@@ -62,7 +63,7 @@ const rows = computed(() => {
           word: stale ? 'unknown' : QUIET[token] || token,
           isDefault: s.name === b.default_site,
           devMode: detailOf(i.project, i.host)?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,
-          pub: i.host ? null : publicationAt(s.name, i.project, b.path),
+          pub: publicationAt(s.name, i.project, b.path, publicationsFor(i.host) || {}),
         })
       }
     }
@@ -100,8 +101,11 @@ const withIcon = computed(() => rows.value.filter((r) => siteIcon(r.project, r.s
 const ctx = (r) => ({ project: r.project, host: r.host, bench: String(r.bench.index), benchName: benchName(r.bench), site: r.site.name })
 const whereLine = (r) => `${r.host ? hostName(r.host) + ' · ' : ''}${r.project} · ${benchName(r.bench)}`
 const picked = computed(() => instances.value.find((i) => i.key === project.value))
-// The column shows once publishing is possible or anything is published.
-const publishing = computed(() => canPublish() || rows.value.some((r) => r.pub))
+// Each remote host's publications, read once through the hub (its stream then carries
+// each change) as soon as one of its instances is listed.
+watch(() => [...new Set(instances.value.map((i) => i.host).filter(Boolean))].sort().join('\n'), (ids) => { for (const h of ids.split('\n').filter(Boolean)) if (!publicationsFor(h)) loadPublications(h) }, { immediate: true })
+// The column shows once publishing is possible on any listed machine or anything is published.
+const publishing = computed(() => canPublish() || rows.value.some((r) => r.pub || canPublish(r.host)))
 const columns = computed(() =>
   publishing.value
     ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', '8.5rem', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
@@ -120,15 +124,15 @@ function pubMenu(r) {
   const c = ctx(r)
   const open = r.pub ? [{ label: 'Open public address', icon: 'lucide-external-link', onClick: () => window.open(r.pub.url, '_blank', 'noopener') }] : []
   const manage = []
-  if (!r.pub && canPublish() && isPublicName(r.site.name)) manage.push({ label: 'Publish…', icon: 'lucide-globe', onClick: () => openAction('site.publish', c) })
+  if (!r.pub && canPublish(r.host) && isPublicName(r.site.name)) manage.push({ label: 'Publish…', icon: 'lucide-globe', onClick: () => openAction('site.publish', c) })
   if (r.pub && !isLive(r.pub)) manage.push({ label: 'Retry what is missing…', icon: 'lucide-rotate-cw', onClick: () => openAction('site.publish', c) })
-  if (r.pub) manage.push({ label: 'Check for drift', icon: 'lucide-scan-search', onClick: () => checkSite(r.site.name) })
-  const groups = [{ group: 'Public address', options: [...open, ...manage] }]
+  if (r.pub) manage.push({ label: 'Check for drift', icon: 'lucide-scan-search', onClick: () => checkSite(r.site.name, r.host) })
+  const groups = [{ group: r.host ? `Public address · ${hostName(r.host)}'s integrations` : 'Public address', options: [...open, ...manage] }]
   if (r.pub && can('admin')) groups.push({ group: 'Danger zone', options: [{ label: 'Unpublish…', icon: 'lucide-globe-lock', theme: 'red', onClick: () => openAction('site.unpublish', c) }] })
   return groups
 }
-// A remote host's site is published from that machine's own web UI, never from here.
-const hasMenu = (r) => !r.host && (!!r.pub || (canPublish() && isPublicName(r.site.name) && can('operator')))
+// A remote host's site publishes on that machine, through the hub, with its own settings.
+const hasMenu = (r) => !!r.pub || (canPublish(r.host) && isPublicName(r.site.name) && can('operator'))
 </script>
 
 <template>

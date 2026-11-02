@@ -509,6 +509,12 @@ class TestHostsRoutes:
             and body["data"]["hosts"] == []
         )
         assert "secret" not in json.dumps(body) and "PRIVATE" not in json.dumps(body)
+        # The grant the Settings > Integrations picker names for an Operator-capped host:
+        # the same command as the default grant, at the Admin cap.
+        hub = body["data"]["hub"]
+        assert hub["allow_command"].endswith(" --max-role operator")
+        assert hub["allow_admin_command"] == hub["allow_command"].removesuffix("operator") + "admin"
+        assert '--key "ssh-ed25519 AAAA cwcli-hub:hub-t"' in hub["allow_admin_command"]
 
     def test_the_protocol_comes_from_core_and_the_page_meta_says_so(self, daemon):
         assert serve_cmd.PROTOCOL_VERSION == PROTOCOL_VERSION

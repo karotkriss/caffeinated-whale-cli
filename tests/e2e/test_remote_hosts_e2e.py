@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pytest
 
+from ..publish_fakes import NPM_EMAIL, NPM_PASSWORD, FakeNpm
 from . import harness
 
 pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
@@ -561,6 +562,162 @@ class TestTheRemoteCapsTheHub:
             token=HUB_TOKEN,
         )
         assert status == 403 and _code(body) == "auth.role_forbidden"
+
+
+class TestTheHubSetsUpTheRemotesOwnIntegrations:
+    """Each remote runs its own edge (its own Nginx Proxy Manager and Cloudflare), and the
+    hub is where they are managed: Settings > Integrations' host picker drives the
+    REMOTE's own integrations through the forward. That needs the remote to grant the
+    Admin cap; at the Operator cap the hub says so and names the exact grant. The
+    remote's settings and secrets stay on the remote (the hub relays the form and the
+    test result), and a publish on a remote instance runs there with them."""
+
+    def _cap_is(self, lab, cap):
+        return lambda: (lambda v: v if v["state"] == "connected" and v["cap"] == cap else None)(
+            lab.host_view()
+        )
+
+    def test_at_the_operator_cap_the_hub_names_the_admin_grant_and_the_remote_refuses(self, lab):
+        assert lab.ensure_connected()["cap"] == "operator"
+        status, body, _ = _api(lab.hub, "/api/v1/hosts", token=HUB_TOKEN)
+        assert status == 200, body
+        hub = body["data"]["hub"]
+        # The picker's message is built from the host's `cap` and this command
+        # (webui/src/data/hosts.js, pinned in tests/test_webui_remote_integrations.py).
+        assert hub["allow_admin_command"].startswith("cwcli remote allow --hub ")
+        assert hub["allow_admin_command"].endswith(" --max-role admin")
+        assert hub["allow_admin_command"].removesuffix("admin") == hub[
+            "allow_command"
+        ].removesuffix("operator")
+        # Through the hub, a set-up of the remote's integration is the remote's own
+        # refusal: its bridge lowered the hub's Admin to the Operator cap.
+        status, body, _ = _api(
+            lab.hub,
+            f"/api/v1/hosts/{lab.host_id}/integrations",
+            {
+                "op": "test",
+                "id": "npm",
+                "settings": {"url": "http://127.0.0.1:1", "email": NPM_EMAIL},
+                "secrets": {"password": NPM_PASSWORD},
+            },
+            token=HUB_TOKEN,
+        )
+        assert (
+            status == 403
+            and _code(body) == "auth.role_forbidden"
+            and body["errors"][0]["role"] == "operator"
+        ), body
+
+    def test_at_the_admin_cap_the_hub_tests_and_turns_on_the_remotes_proxy_and_publishes_with_it(
+        self, lab
+    ):
+        fake = FakeNpm()
+        settings = {"url": fake.url, "email": NPM_EMAIL, "forward_host": "127.0.0.1"}
+        forward = f"/api/v1/hosts/{lab.host_id}/integrations"
+        try:
+            lab.allow(cap="admin")
+            harness.wait_until(
+                self._cap_is(lab, "admin"), timeout=60, interval=0.5, desc="the admin cap"
+            )
+            # Detect is the remote's own container discovery, run there.
+            status, body, _ = _api(
+                lab.hub,
+                forward,
+                {"op": "action", "id": "npm", "action": "detect", "args": {}, "settings": {}, "secrets": {}},
+                token=HUB_TOKEN,
+            )  # fmt: skip
+            assert status == 200 and "found" in body["data"]["result"], body
+            # Test: the remote's client reaches the fake proxy manager (on its loopback).
+            status, body, _ = _api(
+                lab.hub,
+                forward,
+                {"op": "test", "id": "npm", "settings": settings, "secrets": {"password": NPM_PASSWORD}},
+                token=HUB_TOKEN,
+            )  # fmt: skip
+            assert status == 200 and body["data"]["check"]["ok"] is True, body
+            assert ("GET", "/api/users/me", None) in fake.calls
+            # Turn on: tests again, then saves ON THE REMOTE.
+            status, body, _ = _api(
+                lab.hub,
+                forward,
+                {"op": "configure", "id": "npm", "settings": settings, "secrets": {"password": NPM_PASSWORD}, "enable": True},
+                token=HUB_TOKEN,
+            )  # fmt: skip
+            assert status == 200 and body["data"]["integration"]["state"] == "on", body
+            remote = _api(lab.remote, "/api/v1/integrations", token=REMOTE_TOKEN)[1]["data"]
+            npm_there = next(i for i in remote["integrations"] if i["id"] == "npm")
+            assert npm_there["enabled"] and npm_there["settings"]["url"] == fake.url
+            assert npm_there["secrets_set"]["password"] is True
+            # The hub's own integration is untouched, and nothing of the remote's settings
+            # or secret landed anywhere in the hub's home: no second store, no copy.
+            at_hub = _api(lab.hub, "/api/v1/integrations", token=HUB_TOKEN)[1]["data"]
+            assert next(i for i in at_hub["integrations"] if i["id"] == "npm")["enabled"] is False
+            for path in lab.hub_home.rglob("*"):
+                if path.is_file():
+                    text = path.read_text(errors="replace")
+                    assert fake.url not in text and NPM_PASSWORD not in text, path
+            # The publish flow on a remote instance reads THAT host's store and options
+            # through the hub: its proxy is on (the fake's access list proves whose), while
+            # this hub's own store offers nothing.
+            status, body, _ = _api(
+                lab.hub, f"/api/v1/hosts/{lab.host_id}/publications", token=HUB_TOKEN
+            )
+            assert status == 200 and body["data"]["proxy"]["id"] == "npm", body
+            assert body["data"]["dns"] is None
+            assert (
+                _api(lab.hub, "/api/v1/publications", token=HUB_TOKEN)[1]["data"]["proxy"] is None
+            )
+            status, body, _ = _api(
+                lab.hub, f"/api/v1/hosts/{lab.host_id}/publish/options", token=HUB_TOKEN
+            )
+            assert status == 200, body
+            assert [a["name"] for a in body["data"]["proxy"]["access_lists"]] == ["Office only"]
+            # ... and a publish job started through the hub runs on the remote, with its
+            # settings: the remote's own store holds it, attributed to the hub, and it ends
+            # with the remote's own reason (no such instance there). The hub's store never
+            # sees it.
+            status, body, _ = _api(
+                lab.hub,
+                f"/api/v1/hosts/{lab.host_id}/jobs",
+                {
+                    "verb": "publish-site",
+                    "target": {
+                        "project": "cwe2e-no-such-instance-remote",
+                        "bench": "0",
+                        "site": "site.example.com",
+                    },
+                    "args": {},
+                },
+                token=HUB_TOKEN,
+            )
+            assert status == 202, body
+            job_id = body["data"]["id"]
+            record = harness.wait_until(
+                lambda: (
+                    lambda r: (
+                        r
+                        if r[0] == 200 and r[1]["data"]["state"] not in ("queued", "running")
+                        else None
+                    )
+                )(_api(lab.remote, f"/api/v1/jobs/{job_id}", token=REMOTE_TOKEN)),
+                timeout=120,
+                interval=1,
+                desc="the remote publish job to finish",
+            )[1]["data"]
+            assert record["origin"]["via"] == "hub" and record["state"] == "failed"
+            assert all(
+                j["id"] != job_id for j in _api(lab.hub, "/api/v1/jobs", token=HUB_TOKEN)[1]["data"]
+            )
+        finally:
+            # Leave the remote as the other tests expect: its proxy off, the Operator cap.
+            _api(lab.hub, forward, {"op": "disable", "id": "npm"}, token=HUB_TOKEN)
+            lab.allow()
+            fake.close()
+        harness.wait_until(
+            self._cap_is(lab, "operator"), timeout=60, interval=0.5, desc="the restored cap"
+        )
+        remote = _api(lab.remote, "/api/v1/integrations", token=REMOTE_TOKEN)[1]["data"]
+        assert next(i for i in remote["integrations"] if i["id"] == "npm")["enabled"] is False
 
 
 class TestTrustIsPinnedBothWays:

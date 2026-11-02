@@ -21,11 +21,11 @@ import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
-import { onHost } from '../data/hosts'
+import { hostName, onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
-import { canPublish, loadPublications, preflightPublish, publishOptions } from '../data/publish'
+import { canPublish, loadPublications, preflightPublish, publicationsFor, publishOptions, publishPlan } from '../data/publish'
 import { can } from '../data/session'
 
 const project = ref(null)
@@ -48,6 +48,7 @@ const running = ref(false)
 const error = ref(null)
 // Publishing (all off until the box is ticked).
 const publishing = ref(false)
+const publishWanted = ref(false) // a retry's Publish, ticked once its host's store says it can publish
 const label = ref('')
 const zone = ref(null)
 const options = ref(null)
@@ -70,6 +71,7 @@ watch(() => newSiteDialog.open, (open) => {
   makeDefault.value = false
   devMode.value = false
   publishing.value = false
+  publishWanted.value = false
   label.value = ''
   rows.value = null
   options.value = null
@@ -78,12 +80,13 @@ watch(() => newSiteDialog.open, (open) => {
   address.value = ''
   proxied.value = false
   accessList.value = '0'
-  loadPublications()
   const first = newSiteDialog.project ? findInstance(newSiteDialog.project, newSiteDialog.host) : instances.value.find((i) => i.container_running) || instances.value[0]
   const before = ikey(host.value, project.value)
+  const hostBefore = host.value
   project.value = first?.project || newSiteDialog.project || null
   host.value = first?.host || newSiteDialog.host || null
   bench.value = newSiteDialog.bench
+  if (host.value === hostBefore) loadPublications(host.value)
   // Read the bench's apps afresh: a detail the page loaded earlier misses an app fetched since.
   if (project.value && ikey(host.value, project.value) === before) loadDetail(project.value, { host: host.value, force: true })
   const retry = newSiteDialog.retry
@@ -94,13 +97,16 @@ watch(() => newSiteDialog.open, (open) => {
   apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
   makeDefault.value = !!a.default
   devMode.value = !!a.developer_mode
-  publishing.value = !!a.publish && publishable.value
+  publishWanted.value = !!a.publish
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
+// A remote instance publishes with its host's own integrations: read that host's store
+// (its DNS and proxy, if on); its options and preflight are that host's too.
+watch(host, (h) => { loadPublications(h); options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
 const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
-  set: (k) => { const i = fleet.instances[k]; project.value = i?.project || null; host.value = i?.host || null },
+  set: (k) => { const i = fleet.instances[k]; if ((i?.host || null) !== host.value) { publishing.value = false; publishWanted.value = false } project.value = i?.project || null; host.value = i?.host || null },
 })
 const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
 const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
@@ -136,9 +142,13 @@ const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
 
-// Publish only for this machine's instances: publish.js talks to this daemon's integrations.
-const publishable = computed(() => !host.value && canPublish())
+// Publish with the integrations of the machine the instance is on: this daemon's, or
+// the remote host's own through the hub.
+const publishable = computed(() => canPublish(host.value))
+const machine = computed(() => (host.value ? hostName(host.value) : null))
+const remotePubError = computed(() => (host.value && publicationsFor(host.value)?.error) || null)
 watch(publishable, (ok) => { if (!ok) publishing.value = false })
+watch([publishWanted, publishable], ([w, ok]) => { if (w && ok) { publishWanted.value = false; publishing.value = true } })
 // The zone picker applies only while publishing with a DNS integration on.
 const zones = computed(() => options.value?.dns?.zones || [])
 const zoned = computed(() => publishing.value && zones.value.length > 0)
@@ -149,7 +159,12 @@ watch(publishing, async (on) => {
     return
   }
   if (!options.value) {
-    try { options.value = await publishOptions() } catch (e) { optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
+    const h = host.value
+    try {
+      const o = await publishOptions(h)
+      if (host.value !== h) return
+      options.value = o
+    } catch (e) { if (host.value === h) optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
   }
   proxied.value = !!(options.value.proxied_allowed && options.value.dns?.proxied_default)
   const typed = site.value.trim()
@@ -162,25 +177,17 @@ const accessOptions = computed(() => [{ label: 'Anyone (no access list)', value:
 const portRow = computed(() => (rows.value || []).find((r) => r.part === 'port' && r.port))
 const publicUrl = computed(() => (options.value?.proxy ? `https://${fullName.value}` : `http://${fullName.value}:${portRow.value?.port ?? '<bench port>'}`))
 const deep = computed(() => proxied.value && zoned.value && label.value.includes('.'))
-const publishSays = computed(() => {
-  const dns = options.value?.dns?.name || 'Cloudflare'
-  const proxy = options.value?.proxy?.name || 'Nginx Proxy Manager'
-  const both = !!options.value?.dns && !!options.value?.proxy
-  if (!options.value) return 'After the site is created, a second job publishes it at its own domain.'
-  if (both) return `After the site is created, a second job (Publish site) writes its ${dns} A record, makes its ${proxy} proxy host, requests its Let's Encrypt certificate, then checks it answers over HTTPS. Retry repeats only what is missing.`
-  if (options.value.dns) return `After the site is created, a second job writes its ${dns} A record (DNS only), then checks it answers at its bench port. Without a proxy there is no certificate.`
-  return `After the site is created, a second job makes its ${proxy} proxy host and requests its Let's Encrypt certificate. With no DNS integration the name must already point at this machine.`
-})
+const publishSays = computed(() => publishPlan(options.value, machine.value))
 let preflightTimer = null
 let preflightSeq = 0
-watch([publishing, fullName, project, bench, recordAddress, proxied], () => {
+watch([publishing, fullName, project, host, bench, recordAddress, proxied], () => {
   clearTimeout(preflightTimer)
   rows.value = null
-  if (!publishing.value || !fullName.value || !project.value || bench.value == null) return
   const seq = ++preflightSeq
+  if (!publishing.value || !fullName.value || !project.value || bench.value == null) return
   preflightTimer = setTimeout(async () => {
     try {
-      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value })
+      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value }, host.value)
       if (seq === preflightSeq) rows.value = out.rows
     } catch (e) {
       if (seq === preflightSeq) rows.value = [{ part: 'name', state: 'fail', text: e.hint ? `${e.message} ${e.hint}` : e.message }]
@@ -318,9 +325,10 @@ async function start() {
         </div>
         <Checkbox v-model="makeDefault" label="Make it the bench's default site" />
         <Checkbox v-model="devMode" label="Turn developer mode on for it" />
+        <p v-if="remotePubError" class="text-p-sm text-ink-amber-6 sm:col-span-2">Whether {{ machine }} can publish sites could not be read ({{ remotePubError.message }}); its own Cloudflare DNS and Nginx Proxy Manager decide that, under Settings > Integrations with {{ machine }} picked.</p>
         <div v-if="publishable" class="space-y-3 rounded-6 border border-outline-gray-1 p-3 sm:col-span-2">
           <div>
-            <Checkbox v-model="publishing" label="Publish it at a public address" />
+            <Checkbox v-model="publishing" :label="`Publish it at a public address${machine ? ` with ${machine}'s own integrations` : ''}`" />
             <p class="mt-1 pl-6 text-p-sm text-ink-gray-5">{{ publishSays }}</p>
           </div>
           <template v-if="publishing">

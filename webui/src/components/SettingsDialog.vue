@@ -6,7 +6,7 @@
 // and each row keeps its terminal twin as a compact copy affordance.
 import { computed, ref, watch } from 'vue'
 import AppearanceControls from '../premium/AppearanceControls.vue'
-import { Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
+import { Alert, Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Select, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
 import CommandCopy from '../components/CommandCopy.vue'
 import DoctorView from '../components/DoctorView.vue'
@@ -16,12 +16,12 @@ import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session
 import PasswordForm from './PasswordForm.vue'
 import IntegrationDialog from './IntegrationDialog.vue'
 import CommunityDialog from './CommunityDialog.vue'
-import { integrations, loadIntegrations, disableIntegration, openIntegration, openCommunity, isDirectorySource, STATE, PUBLISHER } from '../data/integrations'
+import { integrations, loadIntegrations, disableIntegration, openIntegration, openCommunity, isDirectorySource, pickIntegrationsHost, STATE, PUBLISHER } from '../data/integrations'
 import { openJob } from '../data/job-dialog'
 import { applySetting, settings } from '../data/settings'
 import { catalog, loadCatalog, scanCatalog, sources, hostLabel } from '../data/catalog'
 import { ago } from '../data/fleet'
-import { hosts, hostList, loadHosts, checkHost, removeHost, repinHost, applyHostLink, dropHost, openAddHost, linkLook, linkAdvice } from '../data/hosts'
+import { hosts, hostList, hasHosts, loadHosts, checkHost, removeHost, repinHost, applyHostLink, dropHost, openAddHost, linkLook, linkAdvice, integrationsRefusal } from '../data/hosts'
 
 const open = computed({ get: () => settingsDialog.open, set: (v) => (settingsDialog.open = v) })
 const tab = computed({ get: () => settingsDialog.tab, set: (v) => (settingsDialog.tab = v) })
@@ -54,6 +54,29 @@ const directoryUser = computed(() => isDirectorySource(session.user?.source))
 const signInOn = computed(() => integrations.list.some((i) => i.provides.includes('sign_in') && i.enabled))
 
 // --- integrations -----------------------------------------------------------
+// Whose integrations the panel shows: this machine (the hub), or a remote host whose
+// own Cloudflare DNS and Nginx Proxy Manager are set up and tested from here through
+// the hub's forward. The remote keeps its secrets; this hub relays the form and the
+// test result. Its link must be connected and its grant the Admin cap, else the panel
+// says which, and names the command the remote's owner runs (data/hosts.js).
+const pickedHost = computed(() => (integrations.host ? hosts.byId[integrations.host] || null : null))
+const machine = computed(() => pickedHost.value?.name || 'this machine')
+const machineOptions = computed(() => [{ label: `This machine${hosts.hub?.name ? ` (${hosts.hub.name})` : ''}`, value: '' }, ...hostList.value.map((h) => ({ label: h.name, value: h.id }))])
+const integrationsRefused = computed(() => {
+  if (!integrations.host) return null
+  if (!pickedHost.value) return { kind: 'link', title: 'This host is no longer listed', text: 'Pick another machine.', command: null }
+  return integrationsRefusal(pickedHost.value, hosts.hub)
+})
+const integrationsHost = computed({
+  get: () => integrations.host || '',
+  set: (v) => { pickIntegrationsHost(v || null); if (!integrationsRefused.value) loadIntegrations() },
+})
+// A remote's link moves while the panel is open (its owner raised the cap, the link
+// dropped and came back): read its list as soon as that is possible.
+watch([() => integrations.host, () => integrationsRefused.value?.kind || 'ok'], ([h, kind], [wasH, was]) => { if (h && h === wasH && kind === 'ok' && was !== 'ok') loadIntegrations() })
+// The picker is a view of this tab: leaving it, or closing, returns to this machine's list.
+watch([open, tab], ([o, t]) => { if ((!o || t !== 'integrations') && integrations.host) { pickIntegrationsHost(null); if (o) loadIntegrations() } })
+const refusalTheme = computed(() => (integrationsRefused.value?.kind === 'cap' ? 'amber' : ['red', 'amber'].includes(linkLook(pickedHost.value?.state).theme) ? linkLook(pickedHost.value?.state).theme : 'gray'))
 const official = computed(() => integrations.list.filter((i) => i.publisher === 'official'))
 const community = computed(() => integrations.list.filter((i) => i.publisher === 'community'))
 const communityMenu = (i) => [
@@ -375,12 +398,27 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
           </SettingsBody>
         </SettingsPanel>
 
-        <SettingsPanel value="integrations">
-          <SettingsHeader title="Integrations" description="Connect cwcli to systems outside it. Each starts off; turning one on tests it first and turns it on only when the test passes. Secrets are stored encrypted on this machine and never shown again." />
+        <!-- min-w-0: as on the account panel; the grant command (one long key token) must wrap, not widen the column. -->
+        <SettingsPanel value="integrations" class="min-w-0">
+          <SettingsHeader title="Integrations" :description="integrations.host ? `${machine}'s own integrations, set up and tested from this hub through its link. Each starts off; turning one on tests it on ${machine} first and turns it on only when the test passes. Secrets are stored encrypted on ${machine} and never leave it: this hub relays only the setup form and the test result.` : 'Connect cwcli to systems outside it. Each starts off; turning one on tests it first and turns it on only when the test passes. Secrets are stored encrypted on this machine and never shown again.'">
+            <!-- The picker sits beside the heading, except on a phone, where it would squeeze the text to a word a line: there it goes below. -->
+            <template v-if="hasHosts" #actions><Select v-model="integrationsHost" :options="machineOptions" class="w-56 max-sm:hidden" aria-label="Machine whose integrations to set up" /></template>
+          </SettingsHeader>
           <SettingsBody>
+            <Select v-if="hasHosts" v-model="integrationsHost" :options="machineOptions" class="mt-2 w-full sm:hidden" aria-label="Machine whose integrations to set up" />
             <ErrorMessage :message="integrations.error?.message || errorText" />
+            <template v-if="integrationsRefused">
+              <Alert class="mt-3" :theme="refusalTheme" :title="integrationsRefused.title" :description="integrationsRefused.text" />
+              <CommandLine v-if="integrationsRefused.command" class="mt-2" :command="integrationsRefused.command" wrap />
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <Button v-if="pickedHost" icon-left="lucide-refresh-cw" :label="`Check ${pickedHost.name} now`" :loading="checkingHost === pickedHost.id" @click="checkNow(pickedHost)" />
+                <Button label="Remote hosts" @click="tab = 'hosts'" />
+                <Button label="This machine" @click="integrationsHost = ''" />
+              </div>
+            </template>
+            <template v-else>
             <LoadingText v-if="integrations.loading && !integrations.list.length" class="py-3" />
-            <div class="pt-3 text-sm font-medium text-ink-gray-5">Official</div>
+            <div class="pt-3 text-sm font-medium text-ink-gray-5">Official{{ integrations.host ? ` · on ${machine}` : '' }}</div>
             <div v-for="i in official" :key="i.id" class="flex items-center gap-8 py-3.5">
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -397,6 +435,8 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
               </div>
             </div>
+            <p v-if="integrations.host" class="pt-5 text-p-sm text-ink-gray-5">Community integrations are installed on {{ machine }} by its own Admin, from its own web UI or with cwcli integrations add there; a hub never installs code on a remote host.</p>
+            <template v-else>
             <div class="flex items-center gap-4 pt-5">
               <div class="min-w-0 flex-1 text-sm font-medium text-ink-gray-5">Community</div>
               <div class="flex shrink-0 items-center gap-1"><CommandCopy command="cwcli integrations add <repository-url>" /><Button icon-left="lucide-package-plus" label="Add from a repository…" @click="openCommunity('add')" /></div>
@@ -421,6 +461,8 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               </div>
             </div>
             <p v-if="!community.length && !integrations.loading" class="py-3 text-p-sm text-ink-gray-5">No community integrations yet.</p>
+            </template>
+            </template>
           </SettingsBody>
         </SettingsPanel>
 
@@ -515,8 +557,8 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </div>
     </template>
   </Dialog>
-  <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
-    <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }} Its settings are kept for the next time it is turned on.</p>
+  <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}${integrations.host ? ` on ${machine}` : ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
+    <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }}{{ integrations.host ? ` This happens on ${machine}, not on this hub.` : '' }} Its settings are kept for the next time it is turned on.</p>
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button label="Cancel" @click="close" />

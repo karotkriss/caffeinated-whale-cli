@@ -94,6 +94,23 @@ export function linkAdvice(h) {
   }
 }
 
+// Why a remote host's integrations cannot be set up from this hub right now, or null
+// when they can: the link must be connected and the grant must be the Admin cap
+// (changing integrations is an Admin's act there, and the remote lowers this hub to
+// its cap). `hub` is the hosts view's hub record, which carries the exact grant
+// command the remote's owner runs to raise the cap.
+export function integrationsRefusal(h, hub = hosts.hub) {
+  if (!h) return null
+  if (h.state !== 'connected') return { kind: 'link', title: `${h.name} is ${linkLook(h.state).label}`, text: linkAdvice(h) || 'Its integrations can be set up once the link is connected.', command: null }
+  if (h.cap === 'admin') return null
+  return {
+    kind: 'cap',
+    title: `Configuring ${h.name}'s integrations needs the Admin cap`,
+    text: `${h.name} granted this hub the ${h.cap || 'granted'} role, which ${h.cap === 'viewer' ? 'can only read the fleet there and' : 'can run the fleet there but'} cannot change its integrations. On ${h.name}, as the user who runs cwcli there, run this command (it replaces the earlier grant), then check the link here:`,
+    command: hub?.allow_admin_command || null,
+  }
+}
+
 // The one Add host dialog for the whole app (components/AddHostDialog.vue).
 export const addHostDialog = reactive({ open: false })
 export const openAddHost = () => (addHostDialog.open = true)

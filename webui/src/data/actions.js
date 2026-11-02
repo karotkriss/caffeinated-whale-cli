@@ -17,6 +17,7 @@
 // and no request can express --no-backup or --force.
 
 import { can, ROLE_LABEL, session } from './session'
+import { hostName } from './hosts'
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
@@ -234,7 +235,7 @@ export const ACTIONS = {
     confirm: 'confirm',
     cli: () => null, // no terminal command: the web UI's publish-site job
     says: (c) =>
-      `Publishes ${c.site} at its own name: ${publishParts(c) || 'through the publishing integrations'}, then checks it answers. Each step reads what already exists first, so running it again repeats only what is missing, and cwcli changes only what it created.`,
+      `Publishes ${c.site} at its own name${c.host ? ` with ${hostName(c.host)}'s own integration settings` : ''}: ${publishParts(c) || 'through the publishing integrations'}, then checks it answers. Each step reads what already exists first, so running it again repeats only what is missing, and cwcli changes only what it created.`,
     request: (c) => ({ verb: 'publish-site', target: { project: c.project, bench: c.bench, site: c.site }, args: {} }),
     done: (c) => `${c.site} published`,
   },
@@ -246,7 +247,7 @@ export const ACTIONS = {
     confirm: 'typed',
     cli: () => null,
     says: (c) =>
-      `Removes what cwcli made for ${c.site}: the proxy host, then its certificate when no other host uses it, then the DNS record. Each is deleted only while it still matches what cwcli wrote; anything changed by hand is left and reported. The site itself stays.`,
+      `Removes what cwcli made for ${c.site}${c.host ? ` with ${hostName(c.host)}'s own integration settings` : ''}: the proxy host, then its certificate when no other host uses it, then the DNS record. Each is deleted only while it still matches what cwcli wrote; anything changed by hand is left and reported. The site itself stays.`,
     request: (c) => ({ verb: 'unpublish-site', target: { project: c.project, site: c.site }, args: {} }),
     done: (c) => `${c.site} unpublished`,
   },

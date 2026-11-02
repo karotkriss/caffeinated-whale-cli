@@ -26,6 +26,21 @@ The same sequence is the committed real-SSH E2E, `tests/e2e/test_remote_hosts_e2
   The instance assertion is conditional because the test needs no Frappe instance and the remote fleet can be empty; the link facts and the absence of automatic jobs are always checked.
 - **The files.** `hosts.json`, `keys/hub_ed25519` and `keys/known_hosts` on the hub are all 0600; no API answer contains the private key or any token (`GET /api/v1/hosts` carries the public key line only).
 
+## Each remote host's own integrations, set up from the hub
+
+Evidence for the host picker in Settings > Integrations (2026-11-01), on the same two-daemon lab (hub `hub.example.com`, remote `remote.example.com`, a private `sshd` on loopback) with a local fake of Nginx Proxy Manager's API (`tests/publish_fakes.py`) standing in for the remote's own proxy manager.
+The same sequence is the committed real-SSH E2E class `TestTheHubSetsUpTheRemotesOwnIntegrations` in `tests/e2e/test_remote_hosts_e2e.py`; the page's decisions are pinned under node in `tests/test_webui_remote_integrations.py`.
+
+- **At the Operator cap the hub says what is missing and names the grant.** With the remote picked, the panel showed "Configuring remote.example.com's integrations needs the Admin cap", the sentence naming the operator role the remote granted, and the exact command to run there, `cwcli remote allow --hub hub.example.com --key "<hub public key>" --max-role admin`, read from the hub's own `allow_admin_command` (`GET /api/v1/hosts`), never typed by hand.
+  A set-up sent through the forward anyway came back as the remote's own `403 auth.role_forbidden`, `role: operator`.
+  Re-granting at `--max-role admin` on the remote flipped the panel live, with no reload, to the remote's own official list (`Official · on remote.example.com`); lowering it again brought the message back the same way.
+  Every other link state (unreachable, host key changed, cwcli not running there, a different cwcli version, no longer accepting the hub) is named with the Remote hosts panel's advice before the cap is considered.
+- **The Admin cap sets up the remote's own integration from the hub.** "Turn on Nginx Proxy Manager on remote.example.com" ran Test connection and Test and turn on through `POST /api/v1/hosts/<host>/integrations`; the fake proxy manager recorded the remote daemon's requests, and afterwards the REMOTE's `GET /api/v1/integrations` read `npm: on`, `settings.url` the fake's address, `secrets_set.password: true`, attributed to `admin@hub.example.com`, while the hub's own `npm` stayed `off` and no file under the hub's home held the URL or the password.
+  Detect is an action, so it ran on the remote too (its own container discovery).
+- **A publish on a remote instance uses that host's settings and says so.** New site, with an instance on `remote.example.com` picked, offered "Publish it at a public address with remote.example.com's own integrations" (absent before the change) and the sentence "a second job on remote.example.com, with remote.example.com's own Nginx Proxy Manager settings, makes its Nginx Proxy Manager proxy host ...", with the access lists read from the remote through `GET /api/v1/hosts/<host>/publish/options` (the fake's "Office only"), while the hub's own `/api/v1/publications` offered no proxy.
+  A `publish-site` job started through the hub landed in the remote's store (`via: hub`) and its page on the hub shows "Integration settings: remote.example.com's own".
+  The Sites list reads each remote host's own publications through the forward and its globe menu publishes, checks drift and unpublishes there.
+
 ## Screenshots
 
 The screenshots of this run are no longer kept in the repository.
