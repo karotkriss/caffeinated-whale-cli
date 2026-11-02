@@ -122,9 +122,12 @@ class TestTheAdminCapMessage:
         assert got["command"] == HUB["allow_admin_command"]
         assert got["command"].endswith("--max-role admin")
 
-    def test_a_viewer_cap_gets_the_same_message(self, node):
+    def test_a_viewer_cap_gets_the_same_message_without_claiming_it_can_run_the_fleet(self, node):
         got = self._refusal(node, _host(cap="viewer"))
         assert got["kind"] == "cap" and "the viewer role" in got["text"]
+        assert "can only read the fleet there" in got["text"]
+        assert "can run the fleet" not in got["text"]
+        assert got["command"] == HUB["allow_admin_command"]
 
     def test_an_admin_capped_connected_host_is_not_refused(self, node):
         assert self._refusal(node, _host(cap="admin")) is None

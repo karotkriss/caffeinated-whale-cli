@@ -48,6 +48,7 @@ const running = ref(false)
 const error = ref(null)
 // Publishing (all off until the box is ticked).
 const publishing = ref(false)
+const publishWanted = ref(false) // a retry's Publish, ticked once its host's store says it can publish
 const label = ref('')
 const zone = ref(null)
 const options = ref(null)
@@ -70,6 +71,7 @@ watch(() => newSiteDialog.open, (open) => {
   makeDefault.value = false
   devMode.value = false
   publishing.value = false
+  publishWanted.value = false
   label.value = ''
   rows.value = null
   options.value = null
@@ -94,17 +96,16 @@ watch(() => newSiteDialog.open, (open) => {
   apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
   makeDefault.value = !!a.default
   devMode.value = !!a.developer_mode
-  publishing.value = !!a.publish && publishable.value
+  publishWanted.value = !!a.publish
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
 // A remote instance publishes with its host's own integrations: read that host's store
-// (its DNS and proxy, if on), and start the Publish section over, since its options and
-// preflight are that host's too.
-watch(host, (h) => { if (h) loadPublications(h); publishing.value = false; options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
+// (its DNS and proxy, if on); its options and preflight are that host's too.
+watch(host, (h) => { if (h) loadPublications(h); options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
 const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
-  set: (k) => { const i = fleet.instances[k]; project.value = i?.project || null; host.value = i?.host || null },
+  set: (k) => { const i = fleet.instances[k]; if ((i?.host || null) !== host.value) { publishing.value = false; publishWanted.value = false } project.value = i?.project || null; host.value = i?.host || null },
 })
 const projectOptions = computed(() => instances.value.map((i) => ({ label: `${i.project}${onHost(i.host)}${i.container_running ? '' : ' (stopped, asks to start)'}`, value: i.key })))
 const benches = computed(() => detailOf(project.value, host.value)?.data?.benches || [])
@@ -146,6 +147,7 @@ const publishable = computed(() => canPublish(host.value))
 const machine = computed(() => (host.value ? hostName(host.value) : null))
 const remotePubError = computed(() => (host.value && publicationsFor(host.value)?.error) || null)
 watch(publishable, (ok) => { if (!ok) publishing.value = false })
+watch([publishWanted, publishable], ([w, ok]) => { if (w && ok) { publishWanted.value = false; publishing.value = true } })
 // The zone picker applies only while publishing with a DNS integration on.
 const zones = computed(() => options.value?.dns?.zones || [])
 const zoned = computed(() => publishing.value && zones.value.length > 0)

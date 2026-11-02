@@ -73,7 +73,7 @@ const integrationsHost = computed({
 })
 // A remote's link moves while the panel is open (its owner raised the cap, the link
 // dropped and came back): read its list as soon as that is possible.
-watch(() => (integrations.host ? integrationsRefused.value?.kind || 'ok' : 'local'), (kind, was) => { if (kind === 'ok' && was && was !== 'ok') loadIntegrations() })
+watch([() => integrations.host, () => integrationsRefused.value?.kind || 'ok'], ([h, kind], [wasH, was]) => { if (h && h === wasH && kind === 'ok' && was !== 'ok') loadIntegrations() })
 // The picker is a view of this tab: leaving it, or closing, returns to this machine's list.
 watch([open, tab], ([o, t]) => { if ((!o || t !== 'integrations') && integrations.host) { pickIntegrationsHost(null); if (o) loadIntegrations() } })
 const refusalTheme = computed(() => (integrationsRefused.value?.kind === 'cap' ? 'amber' : ['red', 'amber'].includes(linkLook(pickedHost.value?.state).theme) ? linkLook(pickedHost.value?.state).theme : 'gray'))
@@ -557,8 +557,8 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </div>
     </template>
   </Dialog>
-  <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
-    <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }} Its settings are kept for the next time it is turned on.</p>
+  <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}${integrations.host ? ` on ${machine}` : ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
+    <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }}{{ integrations.host ? ` This happens on ${machine}, not on this hub.` : '' }} Its settings are kept for the next time it is turned on.</p>
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button label="Cancel" @click="close" />

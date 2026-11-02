@@ -106,7 +106,7 @@ export function integrationsRefusal(h, hub = hosts.hub) {
   return {
     kind: 'cap',
     title: `Configuring ${h.name}'s integrations needs the Admin cap`,
-    text: `${h.name} granted this hub the ${h.cap || 'granted'} role, which can run the fleet there but cannot change its integrations. On ${h.name}, as the user who runs cwcli there, run this command (it replaces the earlier grant), then check the link here:`,
+    text: `${h.name} granted this hub the ${h.cap || 'granted'} role, which ${h.cap === 'viewer' ? 'can only read the fleet there and' : 'can run the fleet there but'} cannot change its integrations. On ${h.name}, as the user who runs cwcli there, run this command (it replaces the earlier grant), then check the link here:`,
     command: hub?.allow_admin_command || null,
   }
 }
