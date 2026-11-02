@@ -148,6 +148,7 @@ class TestPlan:
             "bench_flags": ["maintenance_mode", "pause_scheduler"],
             "sites": [],
             "scope": ["a.localhost"],
+            "held": [],
         }
 
     def test_a_scheduler_paused_alone_is_not_maintenance(self):
@@ -161,6 +162,7 @@ class TestPlan:
             "bench_flags": [],
             "sites": ["a.localhost"],
             "scope": ["a.localhost"],
+            "held": [],
         }
 
     def test_served_as_a_default_site_in_its_own_maintenance_clears_the_default(self):
@@ -168,7 +170,19 @@ class TestPlan:
             {"default_site": "a.localhost"},
             {"a.localhost": {"maintenance_mode": 1}, "b.localhost": {}},
         )
-        assert m.plan(report, "b.localhost")["sites"] == ["a.localhost"]
+        assert m.plan(report)["sites"] == ["a.localhost"]
+
+    def test_a_site_scope_writes_only_that_site_and_names_what_holds_it(self):
+        report = _assess(
+            {"maintenance_mode": 1, "default_site": "a.localhost"},
+            {"a.localhost": {"maintenance_mode": 1}, "b.localhost": {}},
+        )
+        assert m.plan(report, "b.localhost") == {
+            "bench_flags": [],
+            "sites": [],
+            "scope": ["b.localhost"],
+            "held": ["b.localhost"],
+        }
 
     def test_site_scope_leaves_the_bench_flag_when_that_site_does_not_inherit_it(self):
         report = _assess(
@@ -179,6 +193,7 @@ class TestPlan:
             "bench_flags": [],
             "sites": ["a.localhost"],
             "scope": ["a.localhost"],
+            "held": [],
         }
 
     def test_the_question_says_the_scheduler_resumes(self):
@@ -431,6 +446,41 @@ class TestClear:
 
         assert out.ok and out.cleared_sites == ["a.localhost"]
         assert bench.commands == ["bench --site a.localhost set-maintenance-mode off"]
+
+    def test_a_site_scope_never_clears_the_bench_wide_flag(self, wire):
+        bench = wire(
+            _Bench(
+                {"maintenance_mode": 1, "pause_scheduler": 1},
+                {"a.localhost": {}, "b.localhost": {}},
+            )
+        )
+
+        result = m.clear("proj", site="a.localhost", consent=True)
+        out = result.data
+
+        assert out.ok is False and out.still_down == ["a.localhost"]
+        assert out.cleared_bench_flags == [] and out.scheduler_resumed is False
+        assert bench.commands == []
+        assert bench.common == {"maintenance_mode": 1, "pause_scheduler": 1}
+        (warning,) = [w for w in result.warnings if w.code == "maintenance.bench_wide"]
+        assert "cwcli status proj --clear-maintenance" in warning.text
+
+    def test_a_site_answered_as_the_default_site_is_not_cleared_through_it(self, wire):
+        bench = wire(
+            _Bench(
+                {"default_site": "a.localhost"},
+                {"a.localhost": {"maintenance_mode": 1}, "b.localhost": {}},
+                lag=1,
+            )
+        )
+
+        result = m.clear("proj", site="b.localhost", consent=True)
+
+        assert result.data.ok is False and result.data.still_down == ["b.localhost"]
+        assert bench.commands == []
+        assert bench.sites["a.localhost"]["maintenance_mode"] == 1
+        (warning,) = [w for w in result.warnings if w.code == "maintenance.bench_wide"]
+        assert "default site 'a.localhost'" in warning.text
 
     def test_records_of_the_freed_sites_are_removed(self, wire):
         owners = {"a.localhost": {"verb": "apps update", "pid": 1, "host": "elsewhere"}}
