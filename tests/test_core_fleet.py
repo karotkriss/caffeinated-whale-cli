@@ -465,6 +465,31 @@ class TestMaintenanceCadence:
         f.probe("p")
         assert probing.calls[-1][1]["read_maintenance"] is True
 
+    def test_a_cycle_that_skips_the_read_publishes_no_change(self, listing, probing, monkeypatch):
+        clock = {"now": 100.0}
+        monkeypatch.setattr(core_fleet.time, "monotonic", lambda: clock["now"])
+        listing(("p", "running", ["8000"]))
+        probing(
+            lambda project, **kw: _report(
+                benches=[
+                    (
+                        _bench(maintenance=_maint(), maintenance_mode=True)
+                        if kw["read_maintenance"]
+                        else _bench(web_site=None)
+                    )
+                ]
+            )
+        )
+        f = core_fleet.Fleet()
+        f.bootstrap()
+
+        f.probe("p")
+        read = core_fleet.health_key(f.get("p"))
+        clock["now"] += 5
+        f.probe("p")
+
+        assert core_fleet.health_key(f.get("p")) == read
+
     def test_a_focused_instance_reads_it_every_probe(self, listing, probing):
         listing(("p", "running", ["8000"]))
         probing(lambda project, **kw: _report())

@@ -66,6 +66,9 @@ def status(
         "--bench",
         help="Which bench to report: its numeric index or label (multi-bench projects).",
     ),
+    path: str = typer.Option(
+        None, "--path", "-p", help="Explicit bench directory (lower-level alternative to --bench)."
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -111,7 +114,7 @@ def status(
 
     When sites are in maintenance mode (HTTP 503), an interactive terminal is asked
     whether to take them out; ``--clear-maintenance`` does it without asking, and
-    exits 1 if any site still does not answer.
+    exits 1 if any site still answers maintenance mode or its state could not be read.
     """
     if project_name is None:
         render_instances_summary(verbose=verbose)
@@ -119,12 +122,14 @@ def status(
 
     if watch and sys.stdout.isatty() and sys.stderr.isatty():
         # Live view: quiet (probe_web=False) so repeated ticks never hit :8000.
-        _watch_loop(project_name, bench, verbose, max(_MIN_INTERVAL, interval))
+        _watch_loop(project_name, bench, path, verbose, max(_MIN_INTERVAL, interval))
         raise typer.Exit(code=0)
 
     # One-shot. The plain command keeps its web probe; a non-TTY --watch degrades
     # to a single quiet snapshot (probe_web=False) to preserve watch semantics.
-    result = _fetch(project_name, bench, probe_web=not watch)
+    result = _fetch(
+        project_name, bench, path, probe_web=not watch, read_maintenance=clear_maintenance or None
+    )
     report = result.data
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
@@ -153,15 +158,24 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
     """Ask (or, with ``--clear-maintenance``, just do) the clear for each stuck bench.
 
     Returns the exit code: 1 when ``--clear-maintenance`` was refused (something that
-    sets maintenance mode still runs) or a clear left a site down, else 0. A declined
-    question is not a failure.
+    sets maintenance mode still runs, or a bench's maintenance state could not be
+    read) or a clear left a site down, else 0. A declined question is not a failure.
     """
     stuck = [b for b in report.benches if b.maintenance and b.maintenance.needs_clearing]
-    if not stuck:
-        if assume_yes:
-            stderr_console.print("[dim]No site is in maintenance mode.[/dim]")
-        return 0
+    unread = [b.bench_path for b in report.benches if b.maintenance is None]
     code = 0
+    if assume_yes and (unread or not report.container_running):
+        where = ", ".join(unread) or project_name
+        reason = "" if report.container_running else " because the container is not running"
+        stderr_console.print(
+            f"[bold red]Not cleared:[/bold red] cwcli could not read maintenance mode on "
+            f"{where}{reason}."
+        )
+        code = 1
+    if not stuck:
+        if assume_yes and not unread:
+            stderr_console.print("[dim]No site is in maintenance mode.[/dim]")
+        return code
     for bench in stuck:
         found = bench.maintenance
         assert found is not None
@@ -197,7 +211,9 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
 
     def narrate(event) -> None:
         if isinstance(event, core_maintenance.MaintenanceStepEnd):
-            mark = "[green]✓[/green]" if event.status == "ok" else "[bold red]✗[/bold red]"
+            mark = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]"}.get(
+                event.status, "[bold red]✗[/bold red]"
+            )
             grid = Table.grid(padding=(0, 1))
             grid.add_row(f"  {mark}", event.message)
             stderr_console.print(grid)
@@ -207,10 +223,9 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
                 "config cache for up to a minute)...[/dim]"
             )
 
-    selector = None if bench.index is None else str(bench.index)
     try:
         result = core_maintenance.clear(
-            project_name, bench=selector, consent=True, on_event=narrate
+            project_name, path=bench.bench_path, consent=True, on_event=narrate
         )
     except CwcliError as e:
         stderr_console.print(f"[bold red]Not cleared:[/bold red] {e.message}")
@@ -234,8 +249,10 @@ def _clear_bench(project_name: str, bench: BenchStatus) -> int:
 def _fetch(
     project_name: str,
     bench: str | None,
+    path: str | None = None,
     *,
     probe_web: bool,
+    read_maintenance: bool | None = None,
 ) -> Result[StatusReport]:
     """One snapshot. NON-PROMPTING on every path.
 
@@ -246,7 +263,13 @@ def _fetch(
     it already was, and a non-TTY no longer has a path that could hang or refuse.
     """
     try:
-        return core_status.status(project_name, bench=bench, probe_web=probe_web)
+        return core_status.status(
+            project_name,
+            bench=bench,
+            bench_path=path,
+            probe_web=probe_web,
+            read_maintenance=read_maintenance,
+        )
     except CwcliError as e:
         # A truly-nonexistent project (NOT_FOUND) or an unreachable Docker daemon
         # (DOCKER) reaches here; a real-but-stopped project is a returned
@@ -256,7 +279,9 @@ def _fetch(
         raise typer.Exit(code=1) from None
 
 
-def _watch_loop(project_name: str, bench: str | None, verbose: bool, interval: float) -> None:
+def _watch_loop(
+    project_name: str, bench: str | None, path: str | None, verbose: bool, interval: float
+) -> None:
     """Live per-process view on stderr, re-polling with the web probe suppressed.
 
     Every tick re-polls with ``probe_web=False``, so the watch loop makes zero HTTP
@@ -264,19 +289,21 @@ def _watch_loop(project_name: str, bench: str | None, verbose: bool, interval: f
     context exit); exit 0, nothing on stdout.
     """
     try:
-        report = _snapshot(project_name, bench, probe_web=False)
+        report = _snapshot(project_name, bench, path, probe_web=False)
         with Live(_render_table(report), console=stderr_console, refresh_per_second=4) as live:
             while True:
                 time.sleep(interval)
-                report = _snapshot(project_name, bench, probe_web=False)
+                report = _snapshot(project_name, bench, path, probe_web=False)
                 live.update(_render_table(report))
     except KeyboardInterrupt:
         pass
 
 
-def _snapshot(project_name: str, bench: str | None, *, probe_web: bool) -> StatusReport:
+def _snapshot(
+    project_name: str, bench: str | None, path: str | None, *, probe_web: bool
+) -> StatusReport:
     """A quiet (``probe_web=False``) watch snapshot."""
-    result = _fetch(project_name, bench, probe_web=probe_web)
+    result = _fetch(project_name, bench, path, probe_web=probe_web)
     assert result.data is not None
     return result.data
 

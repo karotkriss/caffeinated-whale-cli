@@ -192,10 +192,12 @@ class _Bench:
     """A stateful fake bench for :func:`m.clear`: every write the clear makes lands in
     the configs, and the probe answers what Frappe would after ``lag`` probes."""
 
-    def __init__(self, common, sites, *, lag=0, refuse=(), procs=None, owners=None):
+    def __init__(self, common, sites, *, lag=0, refuse=(), procs=None, owners=None, unserved=False):
         self.common = dict(common)
         self.sites = {k: dict(v) for k, v in sites.items()}
         self.lag = lag
+        self.unserved = unserved
+        self.probes = 0
         self.refuse = set(refuse)
         self.procs = procs or {}
         self.owners = dict(owners or {})
@@ -219,6 +221,12 @@ class _Bench:
                 ),
             )
         if maintenance_fakes.is_probe(cmd):
+            self.probes += 1
+            if self.unserved:
+                return (
+                    0,
+                    maintenance_fakes.probe_output(cmd, {s: ("000", False) for s in self.sites}),
+                )
             if self.lag:
                 self.lag -= 1
                 return (
@@ -322,13 +330,28 @@ class TestClear:
 
         assert out.ok and out.answering == ["a.localhost"]
 
-    def test_a_site_that_never_answers_fails_the_clear(self, wire):
+    def test_a_site_that_keeps_answering_maintenance_fails_the_clear(self, wire):
         wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}, lag=10_000))
 
         out = m.clear("proj", consent=True, verify_timeout=0).data
 
         assert out.ok is False
         assert out.still_down == ["a.localhost"]
+
+    def test_a_bench_whose_web_server_is_down_is_cleared_but_unverified(self, wire):
+        bench = wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}, unserved=True))
+        seen, emit = _events()
+
+        result = m.clear("proj", consent=True, on_event=emit)
+        out = result.data
+
+        assert out.ok is True and out.verified is False
+        assert out.still_down == [] and out.answering == []
+        assert out.cleared_bench_flags == ["maintenance_mode"]
+        assert bench.probes == 2  # the check's probe, then one verify probe: no wait
+        assert any(w.code == "maintenance.unverified" for w in result.warnings)
+        verify = [e for e in seen if isinstance(e, m.MaintenanceStepEnd) and e.phase == "verify"]
+        assert verify[0].status == "warning"
 
     def test_a_refused_write_fails_the_clear(self, wire):
         wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}, refuse={"maintenance_mode"}))
@@ -458,6 +481,16 @@ class TestOwnershipRecord:
         c = self._C()
 
         bench_ops.set_maintenance(c, BENCH, "a.localhost", enable=False)
+
+        assert c.calls[-1] == ["rm", "-f", f"{BENCH}/logs/.cwcli-maintenance/a.localhost.json"]
+
+    def test_a_refused_enable_forgets_the_record_it_wrote(self):
+        c = self._C()
+        c.exec_run = lambda cmd, workdir=None, **_: c.calls.append(cmd) or (
+            (1, b"") if isinstance(cmd, str) else (0, b"")
+        )
+
+        assert not bench_ops.set_maintenance(c, BENCH, "a.localhost", enable=True, owner="migrate")
 
         assert c.calls[-1] == ["rm", "-f", f"{BENCH}/logs/.cwcli-maintenance/a.localhost.json"]
 

@@ -235,7 +235,8 @@ def set_maintenance(
 
     ``owner`` names the operation turning it on (``"migrate"``, ``"apps update"``);
     it is recorded before the flag is written (:func:`record_maintenance_owner`), and
-    a successful disable removes the record whoever wrote it.
+    a successful disable removes the record whoever wrote it, and an enable bench
+    refused removes the record it just wrote.
     """
     if enable and owner:
         record_maintenance_owner(container, bench_path, site, owner)
@@ -243,7 +244,7 @@ def set_maintenance(
     cmd = f"bench --site {shlex.quote(site)} set-maintenance-mode {mode}"
     exit_code, _ = container.exec_run(cmd, workdir=bench_path)
     ok = bool(exit_code == 0)
-    if ok and not enable:
+    if (ok and not enable) or (enable and owner and not ok):
         forget_maintenance_owner(container, bench_path, site)
     return ok
 

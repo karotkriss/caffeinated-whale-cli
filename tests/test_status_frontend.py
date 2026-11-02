@@ -97,6 +97,7 @@ def _run(monkeypatch, capsys, report, *, container=_FakeContainer, warnings=()):
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=False,
             interval=2.0,
@@ -174,6 +175,7 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=False,
             interval=2.0,
@@ -206,6 +208,7 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
         status_mod.status(
             project_name=None,
             bench=None,
+            path=None,
             verbose=False,
             watch=False,
             interval=2.0,
@@ -361,6 +364,7 @@ def test_a_bench_left_down_by_bench_update_is_named_with_the_bench_wide_way_out(
             status_mod.status(
                 project_name="proj",
                 bench=None,
+                path=None,
                 verbose=verbose,
                 watch=False,
                 interval=2.0,
@@ -415,15 +419,19 @@ class _Asked:
 
 
 def _maintenance_run(
-    monkeypatch, capsys, maintenance, *, tty, answer=None, flag=False, clear_ok=True
+    monkeypatch, capsys, maintenance, *, tty, answer=None, flag=False, clear_ok=True, report=None
 ):
-    report = _report("running", benches=[replace(_bench("running"), maintenance=maintenance)])
+    if report is None:
+        report = _report("running", benches=[replace(_bench("running"), maintenance=maintenance)])
+    fetched: list = []
     monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
     monkeypatch.setattr(
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
     monkeypatch.setattr(
-        status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
+        status_mod.core_status,
+        "status",
+        lambda *a, **k: fetched.append(k) or Result(status=Status.OK, data=report),
     )
     monkeypatch.setattr(status_mod.core_docker, "get_frappe_container", lambda name: None)
     monkeypatch.setattr(status_mod, "_interactive", lambda: tty)
@@ -431,8 +439,8 @@ def _maintenance_run(
     monkeypatch.setattr(status_mod.questionary, "confirm", asked)
     cleared: list = []
 
-    def clear(project, *, bench=None, consent=False, on_event=None, **_):
-        cleared.append((project, bench, consent))
+    def clear(project, *, path=None, consent=False, on_event=None, **_):
+        cleared.append((project, path, consent))
         on_event(core_maintenance.MaintenanceStepEnd(phase="check", status="ok", message="x"))
         outcome = core_maintenance.MaintenanceClearReport(
             ok=clear_ok,
@@ -450,12 +458,14 @@ def _maintenance_run(
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=False,
             interval=2.0,
             clear_maintenance=flag,
         )
     out = capsys.readouterr()
+    _maintenance_run.fetched = fetched
     return exc.value.exit_code, out, asked.asked, cleared
 
 
@@ -468,7 +478,7 @@ class TestMaintenanceQuestion:
         assert asked == [
             ("Take site.example.com out of maintenance mode and resume the scheduler?", False)
         ]
-        assert cleared == [("proj", "0", True)]
+        assert cleared == [("proj", "/w/b0", True)]
         assert "Out of maintenance mode: site.example.com" in out.err
         assert out.out.strip() == "running"  # the token stays alone on stdout
         assert code == 0
@@ -503,7 +513,7 @@ class TestMaintenanceQuestion:
             monkeypatch, capsys, _stuck(), tty=False, flag=True
         )
 
-        assert asked == [] and cleared == [("proj", "0", True)]
+        assert asked == [] and cleared == [("proj", "/w/b0", True)]
         assert code == 0
 
     def test_the_flag_exits_1_when_a_site_still_does_not_answer(self, monkeypatch, capsys):
@@ -513,6 +523,26 @@ class TestMaintenanceQuestion:
 
         assert code == 1
         assert "Still in maintenance mode: site.example.com" in out.err
+
+    def test_the_flag_reads_maintenance_and_refuses_a_bench_it_could_not_read(
+        self, monkeypatch, capsys
+    ):
+        code, out, _, cleared = _maintenance_run(monkeypatch, capsys, None, tty=False, flag=True)
+
+        assert _maintenance_run.fetched[0]["read_maintenance"] is True
+        assert cleared == [] and code == 1
+        assert "could not read maintenance mode on /w/b0" in harness_collapse(out.err)
+        assert "No site is in maintenance mode" not in out.err
+
+    def test_the_flag_refuses_a_stopped_instance(self, monkeypatch, capsys):
+        code, out, _, cleared = _maintenance_run(
+            monkeypatch, capsys, None, tty=False, flag=True, report=_report("offline")
+        )
+
+        assert cleared == [] and code == 1
+        assert "could not read maintenance mode on proj because the container is not running" in (
+            harness_collapse(out.err)
+        )
 
     def test_busy_is_never_offered_and_the_flag_is_refused(self, monkeypatch, capsys):
         busy = ["an in-container 'bench migrate' is still running (pid 5)"]

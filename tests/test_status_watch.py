@@ -124,6 +124,7 @@ def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=True,
             interval=2.0,
@@ -148,6 +149,7 @@ def test_watch_non_tty_degrades_to_single_quiet_snapshot(monkeypatch, capsys):
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=True,
             interval=2.0,
@@ -172,6 +174,7 @@ def test_watch_redirected_stderr_degrades_to_single_quiet_snapshot(monkeypatch, 
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=True,
             interval=2.0,
@@ -191,13 +194,14 @@ def test_watch_interval_floored_at_one_second(given, expected, monkeypatch):
     monkeypatch.setattr(status_mod.sys.stderr, "isatty", lambda: True)
     seen: list = []
     monkeypatch.setattr(
-        status_mod, "_watch_loop", lambda project, bench, verbose, interval: seen.append(interval)
+        status_mod, "_watch_loop", lambda project, bench, path, verbose, interval: seen.append(interval)
     )
 
     with pytest.raises(typer.Exit) as exc:
         status_mod.status(
             project_name="proj",
             bench=None,
+            path=None,
             verbose=False,
             watch=True,
             interval=given,
