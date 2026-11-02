@@ -18,6 +18,7 @@ import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '..
 import { appOpener } from '../data/app-panel'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl, instancePath, benchPath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
+import { maintenanceSites } from '../data/actions'
 import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
 import { can } from '../data/session'
@@ -93,7 +94,8 @@ watch(jobList, (list) => {
 const siteMaintenance = computed(() => health.value?.maintenance?.sites?.find((s) => s.site === siteName) || null)
 const maintenance = computed(() => {
   if (!health.value?.maintenance) return health.value?.web_site === siteName ? health.value.maintenance_mode : null
-  return siteMaintenance.value ? siteMaintenance.value.on : false
+  if (siteMaintenance.value) return siteMaintenance.value.on
+  return maintenanceSites(health.value.maintenance).includes(siteName)
 })
 const MAINTENANCE_CAUSE = {
   site: "set in the site's own site_config.json",
@@ -103,6 +105,7 @@ const MAINTENANCE_CAUSE = {
 const maintenanceNote = computed(() => {
   const s = siteMaintenance.value
   if (maintenance.value == null) return 'read while the bench serves'
+  if (!s && maintenance.value && health.value?.maintenance) return `${MAINTENANCE_CAUSE.site}; the web server answers it as the default site, but its scheduler stays stopped`
   if (!s?.on) return 'read live while the bench serves'
   if (s.cause === 'served_as') return `answered as the default site ${s.served_as}, which is in maintenance mode`
   return MAINTENANCE_CAUSE[s.cause] || 'answers HTTP 503'

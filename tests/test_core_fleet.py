@@ -500,6 +500,16 @@ class TestMaintenanceCadence:
         f.probe("p")
         assert [c[1]["read_maintenance"] for c in probing.calls[-2:]] == [True, True]
 
+    def test_a_site_own_flag_change_alone_is_published(self):
+        from dataclasses import replace
+
+        quiet = _maint(down=())
+        assert core_fleet.health_key(_state(benches=[_bench(maintenance=quiet)])) != (
+            core_fleet.health_key(
+                _state(benches=[_bench(maintenance=replace(quiet, own_set=["a.localhost"]))])
+            )
+        )
+
     def test_a_maintenance_change_is_published(self):
         assert core_fleet.health_key(_state()) != core_fleet.health_key(
             _state(benches=[_bench(maintenance=_maint())])

@@ -203,6 +203,7 @@ def _maintenance_key(report) -> tuple | None:
     return (
         tuple(report.bench_flags),
         tuple((s.site, s.on, s.cause, s.served_as) for s in report.sites),
+        tuple(report.own_set),
         report.served_as,
         tuple((o.site, o.verb, o.job_id, o.running) for o in report.owners),
         tuple(report.busy),

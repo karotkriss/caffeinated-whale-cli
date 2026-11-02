@@ -29,6 +29,11 @@ const secrets = (v) => (v?.db_root_password ? { secrets: { db_root_password: v.d
 // What a publish creates, in order, from the integrations that are on (ctx.publishVia).
 const publishParts = (c) => [c.publishVia?.dns && `an A record in ${c.publishVia.dns}`, c.publishVia?.proxy && `a proxy host and a Let's Encrypt certificate in ${c.publishVia.proxy}`].filter(Boolean).join(', then ')
 
+// The sites a bench's maintenance report holds in maintenance mode (core.maintenance):
+// those answering HTTP 503, plus those whose own site_config.json sets it while the web
+// server answers them as the default site (their scheduler is still stopped).
+export const maintenanceSites = (m) => [...new Set([...(m?.down || []), ...(m?.own_set || [])])].sort()
+
 // What the maintenance clear will write, from the bench's own report (core.maintenance).
 function maintenanceSays(m) {
   const steps = []
@@ -37,7 +42,7 @@ function maintenanceSays(m) {
       ? 'sets maintenance_mode and pause_scheduler to 0 in sites/common_site_config.json, which also resumes the scheduler'
       : 'sets maintenance_mode to 0 in sites/common_site_config.json')
   }
-  const own = (m?.sites || []).filter((s) => s.on && s.cause === 'site').map((s) => s.site)
+  const own = [...new Set([...(m?.sites || []).filter((s) => s.on && s.cause === 'site').map((s) => s.site), ...(m?.own_set || [])])].sort()
   if (own.length) steps.push(`turns off the maintenance mode set in the site's own config on ${own.join(', ')}`)
   const what = steps.length ? `cwcli ${steps.join(', then ')}` : 'cwcli clears what keeps them in maintenance mode'
   return `${m?.question || "Take this bench's sites out of maintenance mode?"} ${what}, and waits until every site answers again (Frappe can keep answering from its config cache for up to a minute). Nothing else changes.`
@@ -288,7 +293,10 @@ export const ACTIONS = {
     cli: (c) => `cwcli status ${q(c.project)}${benchFlag(c)} --clear-maintenance`,
     says: (c) => maintenanceSays(c.maintenance),
     request: (c) => ({ verb: 'clear-maintenance', target: { project: c.project, bench: c.bench }, args: {} }),
-    done: (c) => (c.maintenance?.down?.length ? `${c.maintenance.down.join(', ')} answer${c.maintenance.down.length === 1 ? 's' : ''} again` : 'Maintenance mode is cleared'),
+    done: (c) => {
+      const sites = maintenanceSites(c.maintenance)
+      return sites.length ? `${sites.join(', ')} ${sites.length === 1 ? 'is' : 'are'} out of maintenance mode` : 'Maintenance mode is cleared'
+    },
   },
 
   // app

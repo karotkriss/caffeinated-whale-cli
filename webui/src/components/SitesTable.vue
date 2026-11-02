@@ -2,6 +2,7 @@
 import { Badge, Tooltip } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import { parseApp } from '../data/fleet'
+import { maintenanceSites } from '../data/actions'
 import DevModeBadge from './DevModeBadge.vue'
 
 const props = defineProps({
@@ -10,7 +11,7 @@ const props = defineProps({
   devModes: { type: Object, default: () => ({}) }, // detail.dev_modes, keyed `<bench path>/<site>`
   maintenance: { type: Object, default: null }, // the bench's health.maintenance (core.maintenance)
 })
-const down = (site) => props.maintenance?.down?.includes(site.name)
+const down = (site) => maintenanceSites(props.maintenance).includes(site.name)
 const appsOf = (site) => site.installed_apps.map(parseApp).filter((a) => a.name !== 'frappe')
 </script>
 
@@ -28,7 +29,7 @@ const appsOf = (site) => site.installed_apps.map(parseApp).filter((a) => a.name 
           <span class="truncate font-mono text-sm text-ink-gray-8">{{ item.name }}</span>
           <Badge v-if="item.name === bench.default_site" size="sm" theme="gray" label="default" />
           <DevModeBadge :state="devModes[`${bench.path}/${item.name}`]" quiet-off />
-          <Tooltip v-if="down(item)" text="Answers HTTP 503 to every request until it is taken out of maintenance mode"><Badge size="sm" theme="red" variant="subtle" label="maintenance" /></Tooltip>
+          <Tooltip v-if="down(item)" text="In maintenance mode (HTTP 503, or its scheduler stopped) until it is taken out of it"><Badge size="sm" theme="red" variant="subtle" label="maintenance" /></Tooltip>
         </ListCell>
         <ListCell class="gap-1 overflow-hidden max-md:hidden">
           <span v-if="!appsOf(item).length" class="text-sm text-ink-gray-5">frappe only</span>

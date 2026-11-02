@@ -9,6 +9,7 @@ import { computed } from 'vue'
 import { Alert } from 'frappe-ui'
 import { openAction } from '../data/dialog'
 import { activeJobs, jobLabel } from '../data/jobs'
+import { maintenanceSites } from '../data/actions'
 
 const props = defineProps({
   maintenance: { type: Object, default: null }, // BenchStatus.maintenance
@@ -18,7 +19,7 @@ const props = defineProps({
 })
 
 const m = computed(() => props.maintenance)
-const down = computed(() => m.value?.down || [])
+const down = computed(() => maintenanceSites(m.value))
 const shown = computed(() => {
   if (!m.value) return false
   if (props.site) return down.value.includes(props.site)
