@@ -180,6 +180,11 @@ class BenchMaintenance:
         """A site answers maintenance, or the bench-wide flag waits for the next site."""
         return bool(self.down) or "maintenance_mode" in self.bench_flags
 
+    @property
+    def unknown(self) -> list[str]:
+        """Sites whose config could not be read: neither in maintenance nor out of it."""
+        return [s.site for s in self.sites if s.on is None]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaintenanceClearReport:
@@ -709,13 +714,32 @@ def clear(
             f"cwcli could not read the site configs of {bench_path}.",
         )
     steps = plan(report, site)
+    unknown = [s for s in report.unknown if site is None or s == site]
+    if unknown:
+        warnings.append(
+            Message(
+                "maintenance.unknown",
+                f"cwcli could not read the config of {', '.join(unknown)}, so it cannot tell "
+                "whether they are in maintenance mode.",
+            )
+        )
     if not (steps["bench_flags"] or steps["sites"] or steps["scope"]):
         emit(
-            MaintenanceStepEnd(phase="check", status="ok", message="No site is in maintenance mode")
+            MaintenanceStepEnd(
+                phase="check",
+                status="failed" if unknown else "ok",
+                message=(
+                    f"Could not read maintenance mode on {', '.join(unknown)}"
+                    if unknown
+                    else "No site is in maintenance mode"
+                ),
+            )
         )
         return Result(
             status=Status.OK,
-            data=MaintenanceClearReport(ok=True, project=project, bench_path=bench_path, sites=[]),
+            data=MaintenanceClearReport(
+                ok=not unknown, project=project, bench_path=bench_path, sites=[]
+            ),
             warnings=warnings,
         )
     if report.busy:
@@ -835,7 +859,7 @@ def clear(
         container, port=port, sites=steps["scope"], timeout=verify_timeout, emit=emit
     )
     ok = ok and not still_down
-    verified = port is not None and bool(steps["scope"]) and not unanswered
+    verified = port is not None and bool(steps["scope"]) and not unanswered and not unknown
     if unanswered:
         warnings.append(
             Message(

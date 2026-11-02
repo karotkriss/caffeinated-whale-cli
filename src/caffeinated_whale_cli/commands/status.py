@@ -171,7 +171,7 @@ def _offer_clear_maintenance(project_name: str, report: StatusReport, *, assume_
         b.bench_path
         for b in report.benches
         if b.maintenance is None and b.bench_present != resolvers.BENCH_ABSENT
-    ]
+    ] + [s for b in report.benches if b.maintenance for s in b.maintenance.unknown]
     code = 0
     if assume_yes and (unread or not report.container_running):
         where = ", ".join(unread) or project_name
