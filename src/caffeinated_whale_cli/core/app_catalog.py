@@ -1664,16 +1664,19 @@ class CatalogStore:
 
     def sources(self) -> list[SourceState]:
         rows = [SourceState(**s) for s in self._disk.get("sources") or []]
-        hosts = {s.host for s in rows}
+        by_host = {s.host: s for s in rows}
         with self._lock:
             inflight = list(self._inflight.values()) if self._scanning else []
         for live in inflight:
             # A host with a disk row keeps that row (its last counts) and only
-            # gains progress below; a host on its first scan gets a snapshot of
-            # the live row, so it is listed as signed in with its progress.
-            if live.host not in hosts:
-                rows.append(SourceState(**asdict(live)))
-                hosts.add(live.host)
+            # gains the live sign-in and progress; a host on its first scan gets
+            # a snapshot of the live row, so it is listed as signed in with its progress.
+            if live.host in by_host:
+                by_host[live.host].signed_in = live.signed_in
+            else:
+                by_host[live.host] = SourceState(**asdict(live))
+                rows.append(by_host[live.host])
+        hosts = set(by_host)
         for host in ["github.com", *gitlab_hosts()]:
             if host not in hosts:
                 rows.append(

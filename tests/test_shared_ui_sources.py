@@ -313,3 +313,32 @@ def test_a_rescan_keeps_the_last_counts_on_a_known_host(tmp_path, monkeypatch):
     store._progress["gitlab.example.com"] = {"done": 10, "total": 442}
     row = {s.host: s for s in store.sources()}["gitlab.example.com"]
     assert row.repos == 442 and row.apps == 3 and row.progress == {"done": 10, "total": 442}
+
+
+def test_a_rescan_lists_a_host_whose_last_scan_saved_it_signed_out(tmp_path, monkeypatch):
+    store = _store(tmp_path, monkeypatch)
+    store._disk = {
+        "version": cat.CATALOG_VERSION,
+        "scanned_at": 1.0,
+        "remote": {},
+        "sources": [
+            cat.asdict(
+                cat.SourceState(
+                    kind="gitlab",
+                    host="gitlab.example.com",
+                    signed_in=False,
+                    error="glab has no credential for gitlab.example.com",
+                    scanned_at=1.0,
+                )
+            )
+        ],
+    }
+    store._scanning = True
+    store._inflight["gitlab.example.com"] = cat.SourceState(
+        kind="gitlab", host="gitlab.example.com", signed_in=True
+    )
+    store._progress["gitlab.example.com"] = {"done": 100, "total": 442}
+    row = {s.host: s for s in store.sources()}["gitlab.example.com"]
+    assert row.signed_in is True
+    assert row.progress == {"done": 100, "total": 442}
+    assert row.scanned_at == 1.0
