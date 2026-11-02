@@ -10,7 +10,7 @@ from email.message import Message
 
 from caffeinated_whale_cli.core import advisories as adv
 from caffeinated_whale_cli.core import app_catalog as cat
-from caffeinated_whale_cli.core import git_refs
+from caffeinated_whale_cli.core import credbridge, git_refs
 
 
 def _fake_tools(monkeypatch, gitlab_hosts):
@@ -20,7 +20,9 @@ def _fake_tools(monkeypatch, gitlab_hosts):
         asked.append((argv[0], input.decode()))
         return subprocess.CompletedProcess(argv, 0, stdout=b"password=tok\n")
 
-    monkeypatch.setattr(cat.subprocess, "run", run)
+    # The host tools run through credbridge.run_host_tool (the neutral-cwd seam) after
+    # the shared credential, which is off outside shared mode.
+    monkeypatch.setattr(credbridge.subprocess, "run", run)
     monkeypatch.setattr(cat, "gitlab_hosts", lambda: gitlab_hosts)
     return asked
 

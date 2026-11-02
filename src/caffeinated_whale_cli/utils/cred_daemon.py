@@ -58,6 +58,10 @@ PID_FILE = PID_DIR / "credbridge.pid"
 LOG_FILE = PID_DIR / "credbridge.log"
 AUDIT_FILE = PID_DIR / "credbridge-audit.log"
 REGISTRY_FILE = PID_DIR / "credbridge-registry.json"
+# Shared mode only: ONE machine-wide socket in the run dir, beside the per-workspace
+# ones, so a HOST process (the web UI's app catalog) can ask the service account's
+# gh/glab the way a container's git does - the same listener, audit and allowlist.
+MACHINE_SOCK_NAME = "credential-bridge.sock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +534,80 @@ def _start_unix_listener(
     return _Listener(workspace=str(host_dir), srv=srv, thread=thread)
 
 
+def machine_socket_path() -> Path:
+    """The machine-wide socket (shared mode), read via the module attribute so a
+    monkeypatched ``PID_DIR`` is honoured."""
+    return PID_DIR / MACHINE_SOCK_NAME
+
+
+def _start_machine_listener(stop: threading.Event, credbridge) -> socket.socket | None:
+    """Shared mode: bind the run dir's machine-wide socket and serve it like a
+    workspace socket (same audit, same live allowlist). Group-gated by the same
+    ``shared_home.socket_mode`` rule, so only cwcli group members can ask."""
+    if not shared_home.shared_mode() or not hasattr(socket, "AF_UNIX"):
+        return None
+    sock_path = machine_socket_path()
+    with contextlib.suppress(FileNotFoundError):
+        sock_path.unlink()
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    prev_cwd = os.getcwd()
+    try:
+        # Bind the short relative name from inside the dir: AF_UNIX sun_path caps
+        # at ~108 bytes (the workspace listener's trick).
+        os.chdir(sock_path.parent)
+        srv.bind(sock_path.name)
+    except OSError as e:
+        srv.close()
+        _log(f"could not bind the machine-wide socket {sock_path}: {e!r}")
+        return None
+    finally:
+        os.chdir(prev_cwd)
+    with contextlib.suppress(OSError):
+        sock_path.chmod(shared_home.socket_mode())
+        shared_home.apply_group(sock_path)
+    srv.settimeout(credbridge._ACCEPT_TIMEOUT)
+    srv.listen(16)
+    threading.Thread(
+        target=credbridge._serve,
+        args=(srv, stop, None),
+        kwargs={
+            "audit": lambda host, answered: _audit(None, host, answered),
+            "allowlist": allowed_hosts,
+        },
+        daemon=True,
+    ).start()
+    _log(f"credential-bridge daemon serving the machine-wide socket {sock_path}")
+    return srv
+
+
+def shared_credential(host: str, *, timeout: float = 5.0) -> bytes:
+    """Ask the machine-wide bridge for ``host``'s credential: the service account's
+    own gh/glab answer, exactly what a container's git gets in shared mode.
+
+    ``b""`` outside shared mode, when the daemon is not serving the socket, when
+    the connect is refused (not a group member), or when it answers nothing (host
+    not in ``allowed_hosts``, service account not signed in) - so a caller falls
+    through to its own sign-in. Never raises.
+    """
+    if not shared_home.shared_mode() or not hasattr(socket, "AF_UNIX"):
+        return b""
+    sock_path = machine_socket_path()
+    if not sock_path.is_socket():
+        return b""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(str(sock_path))
+            s.sendall(f"protocol=https\nhost={host}\n\n".encode())
+            s.shutdown(socket.SHUT_WR)
+            out = b""
+            while chunk := s.recv(4096):
+                out += chunk
+            return out
+    except OSError:
+        return b""
+
+
 def _reconcile_unix_listeners(
     listeners: dict[str, _Listener], registry: dict[str, str], stop: threading.Event, credbridge
 ) -> None:
@@ -613,6 +691,7 @@ def _run_daemon_loop() -> None:
         _log(f"credential-bridge daemon serving loopback TCP :{port}")
     else:
         _log("credential-bridge daemon serving AF_UNIX sockets")
+    machine_srv = _start_machine_listener(stop, credbridge)
 
     _write_pid_file()
     _log("credential-bridge daemon started")
@@ -638,6 +717,11 @@ def _run_daemon_loop() -> None:
     if tcp_srv is not None:
         with contextlib.suppress(Exception):
             tcp_srv.close()
+    if machine_srv is not None:
+        with contextlib.suppress(Exception):
+            machine_srv.close()
+        with contextlib.suppress(OSError):
+            machine_socket_path().unlink(missing_ok=True)
     _clear_pid_file()
     _log("credential-bridge daemon stopped")
 

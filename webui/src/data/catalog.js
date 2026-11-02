@@ -40,16 +40,35 @@ export async function scanCatalog() {
   }
 }
 
-// Called by the fleet stream on a `catalog` frame: a progress tick, or the landing.
+// Called by the fleet stream on a `catalog` frame: a source the scan found to
+// answer, a progress tick, or the landing. A source is listed the moment it
+// answers (a first scan has no row on disk yet), and the tick rides on its row,
+// so the sidebar and the Sources card show "100 of 442" while the scan runs.
 export function catalogLanded(frame = {}) {
+  if (frame.source) {
+    catalog.scanning = true
+    upsertSource(frame.source)
+    return
+  }
   if (frame.progress) {
     catalog.scanning = true
     catalog.progress = frame.progress
+    const row = sources.value.find((s) => s.host === frame.progress.host)
+    if (row) row.progress = { done: frame.progress.done, total: frame.progress.total }
+    else loadCatalog() // the row is on the daemon already; a page that missed the source frame re-reads
     return
   }
   catalog.scanning = false
   catalog.progress = null
   loadCatalog({ fresh: true })
+}
+
+function upsertSource(source) {
+  if (!catalog.data) return
+  const rows = catalog.data.sources || (catalog.data.sources = [])
+  const i = rows.findIndex((s) => s.host === source.host)
+  if (i < 0) rows.push(source)
+  else rows.splice(i, 1, { ...rows[i], ...source, progress: rows[i].progress ?? source.progress })
 }
 
 export const apps = computed(() => catalog.data?.apps || [])
@@ -93,6 +112,8 @@ export function namespaceOf(app) {
   return i > 0 ? path.slice(0, i) : ''
 }
 export const hostLabel = (host) => (host === 'github.com' ? 'GitHub' : host === 'marketplace' ? 'Marketplace' : host)
+// "100 of 442" while a source's scan runs, else null.
+export const progressText = (s) => (s?.progress ? `${s.progress.done} of ${s.progress.total}` : null)
 // Every category the registry names, for the grid's filter.
 export const categories = computed(() => [...new Set(apps.value.flatMap((a) => a.source?.categories || []))].sort())
 

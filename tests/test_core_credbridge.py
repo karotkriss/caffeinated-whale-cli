@@ -83,7 +83,7 @@ def test_host_credential_dispatches_by_host(monkeypatch, host, expected_tool):
     class Done:
         stdout = b"password=SECRET\n"
 
-    def fake_run(argv, input=None, capture_output=None):
+    def fake_run(argv, input=None, capture_output=None, **_kw):
         seen["argv"] = argv
         seen["input"] = input
         return Done()
@@ -169,7 +169,7 @@ def test_host_credential_allowlist_refuses_before_any_tool_runs(monkeypatch):
 
 @unix_only
 def test_bridge_stands_up_and_answers_then_tears_down(tmp_path, monkeypatch):
-    def fake_run(argv, input=None, capture_output=None):
+    def fake_run(argv, input=None, capture_output=None, **_kw):
         # Prove the request reached the dispatcher, and answer like gh would.
         assert b"host=github.com" in input
 
@@ -391,7 +391,7 @@ def test_serve_tcp_requires_the_token(monkeypatch):
     """
     seen = {}
 
-    def fake_run(argv, input=None, capture_output=None):
+    def fake_run(argv, input=None, capture_output=None, **_kw):
         seen["input"] = input
         return type("D", (), {"stdout": b"password=OK\n"})()
 

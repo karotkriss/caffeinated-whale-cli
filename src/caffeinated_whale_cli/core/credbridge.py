@@ -74,13 +74,16 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
+from typing import Any
 
 from ..utils import shared_home
+from ..utils.config_utils import cwcli_home
 from .errors import CwcliError, ErrorKind
 
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
@@ -295,6 +298,30 @@ def tool_for_host(host: str) -> str:
     return "gh" if host.endswith("github.com") else "glab"
 
 
+def neutral_cwd() -> str:
+    """The working directory for every ``gh``/``glab`` run cwcli makes.
+
+    Both tools read a per-repository config from the git repository at their
+    working directory (glab: ``.git/glab-cli/config.yml``), so a cwcli daemon
+    started inside a repository its account cannot read (another user's home on
+    a shared install) failed EVERY glab call with ``failed to read configuration:
+    open .git/glab-cli/config.yml: permission denied`` and the GitLab app source
+    silently vanished. None of cwcli's own calls concern the caller's repository,
+    so they run from the cwcli home - cwcli's own directory, never a repository,
+    always readable by the account running cwcli - else the temp dir.
+    """
+    home = cwcli_home()
+    return str(home) if home.is_dir() else tempfile.gettempdir()
+
+
+def run_host_tool(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for ``gh``/``glab``, and for a ``git`` that may invoke them
+    as credential helpers: always from :func:`neutral_cwd`, never the caller's
+    working directory. Every other keyword is ``subprocess.run``'s."""
+    kwargs.setdefault("cwd", neutral_cwd())
+    return subprocess.run(argv, **kwargs)
+
+
 def host_credential(
     request: bytes,
     *,
@@ -331,11 +358,13 @@ def host_credential(
         return b""
     tool = tool_for_host(host)
     try:
-        out = subprocess.run(
-            [tool, "auth", "git-credential", "get"],
-            input=request,
-            capture_output=True,
-        ).stdout
+        out = bytes(
+            run_host_tool(
+                [tool, "auth", "git-credential", "get"],
+                input=request,
+                capture_output=True,
+            ).stdout
+        )
     except FileNotFoundError:
         # The host lacks gh/glab: return nothing, git falls back to its usual
         # unauthenticated behaviour (which fails for a private repo, as before).

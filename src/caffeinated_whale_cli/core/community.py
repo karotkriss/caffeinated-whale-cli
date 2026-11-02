@@ -187,7 +187,12 @@ def _git(args: list[str], *, helper: str | None = None) -> subprocess.CompletedP
         cmd += ["-c", f"credential.helper={helper}"]
     try:
         return subprocess.run(
-            cmd + args, capture_output=True, text=True, env=_git_env(), timeout=_GIT_TIMEOUT_S
+            cmd + args,
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            timeout=_GIT_TIMEOUT_S,
+            cwd=credbridge.neutral_cwd(),  # the gh/glab helper runs from git's cwd
         )
     except FileNotFoundError as e:
         raise CwcliError(

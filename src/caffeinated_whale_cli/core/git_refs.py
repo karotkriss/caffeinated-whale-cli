@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from .app_catalog import gitlab_hosts
+from .credbridge import neutral_cwd
 
 _TIMEOUT_S = 20
 _TTL_S = 300
@@ -82,6 +83,9 @@ def list_remote_refs(url: str) -> RemoteRefs:
             timeout=_TIMEOUT_S,
             env=_git_env(),
             check=False,
+            # git runs the gh/glab credential helpers from ITS working directory;
+            # never the caller's (see credbridge.neutral_cwd).
+            cwd=neutral_cwd(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return RemoteRefs(url=url, ok=False, error=str(exc)[:200])
