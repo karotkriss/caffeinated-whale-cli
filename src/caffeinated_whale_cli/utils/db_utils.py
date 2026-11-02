@@ -483,7 +483,7 @@ def clear_all_cache():
     add reuse a caller's stored reference for a different bench.
     """
     initialize_database()
-    with db.atomic():
+    with db.atomic("IMMEDIATE"):
         for project in list(Project.select()):
             project.delete_instance(recursive=True)
 
