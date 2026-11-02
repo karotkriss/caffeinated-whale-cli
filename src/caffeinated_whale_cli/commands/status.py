@@ -272,18 +272,25 @@ def _clear_bench(
         return 1
     if outcome.ok:
         unchecked = [s for s in outcome.sites if s not in outcome.answering]
-        if outcome.answering or not unchecked:
-            done = ", ".join(outcome.answering) or site or "the bench"
-            stderr_console.print(f"[green]Out of maintenance mode:[/green] {done}")
+        if outcome.answering:
+            stderr_console.print(
+                f"[green]Out of maintenance mode:[/green] {', '.join(outcome.answering)}"
+            )
         if unchecked:
             stderr_console.print(
                 f"[yellow]Flags cleared, not checked:[/yellow] {', '.join(unchecked)}"
             )
         return 0
-    stderr_console.print(
-        "[bold red]Still in maintenance mode:[/bold red] "
-        + (", ".join(outcome.still_down) or "a write was refused")
-    )
+    if outcome.still_down:
+        stderr_console.print(
+            "[bold red]Still in maintenance mode:[/bold red] " + ", ".join(outcome.still_down)
+        )
+    elif any(w.code == "maintenance.unknown" for w in result.warnings):
+        stderr_console.print(
+            "[bold red]Not cleared:[/bold red] cwcli could not read maintenance mode there."
+        )
+    else:
+        stderr_console.print("[bold red]Not cleared:[/bold red] a write was refused.")
     return 1
 
 

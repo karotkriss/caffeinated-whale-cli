@@ -459,6 +459,15 @@ class TestClear:
         (warning,) = [w for w in result.warnings if w.code == "maintenance.unknown"]
         assert "a.localhost" in warning.text
 
+    def test_a_site_not_on_the_bench_is_refused_not_reported_clean(self, wire):
+        bench = wire(_Bench({}, {"a.localhost": {}}))
+
+        with pytest.raises(CwcliError) as e:
+            m.clear("proj", site="typo.localhost", consent=True)
+
+        assert e.value.kind is ErrorKind.NOT_FOUND and e.value.code == "site.not_found"
+        assert bench.commands == []
+
     def test_a_site_scope_never_clears_the_bench_wide_flag(self, wire):
         bench = wire(
             _Bench(
@@ -533,6 +542,28 @@ class TestStaleOwnerRecord:
         assert report.down == ["a.localhost"] and report.owners == []
         assert "interrupted" not in report.summary
         assert "may have been set on purpose" in report.summary
+
+    def test_a_site_served_as_the_default_keeps_its_own_record_and_is_cleared(self, wire):
+        import socket
+
+        record = {"verb": "migrate", "pid": 2**22 + 7, "host": socket.gethostname()}
+        bench = wire(
+            _Bench(
+                {"default_site": "y.localhost"},
+                {"y.localhost": {}, "x.localhost": {"maintenance_mode": 1}},
+                owners={"x.localhost": record},
+            )
+        )
+
+        report = m.inspect(bench, BENCH, project="proj")
+        assert report.own_set == ["x.localhost"] and report.needs_clearing
+        assert bench.removed == [] and "x.localhost" in bench.owners
+
+        out = m.clear("proj", site="x.localhost", consent=True).data
+
+        assert out.ok and out.cleared_sites == ["x.localhost"]
+        assert bench.commands == ["bench --site x.localhost set-maintenance-mode off"]
+        assert bench.common == {"default_site": "y.localhost"}
 
     def test_a_record_for_a_site_still_in_maintenance_is_kept(self):
         import socket

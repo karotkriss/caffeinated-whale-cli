@@ -159,12 +159,20 @@ class BenchMaintenance:
     set outside cwcli. ``busy`` explains, in plain words, what still runs that sets
     maintenance mode; clearing is refused while it is non-empty. ``command`` is the
     cwcli line that takes the bench out of maintenance.
+
+    ``own_flags`` is every site's OWN maintenance flag as Frappe merges it for that
+    site (its own ``site_config.json`` key, else the bench-wide value), None when it
+    could not be read; it is what the site's scheduler reads, whichever site the web
+    server answers it as. ``own_set`` lists the sites whose own ``site_config.json``
+    sets it.
     """
 
     bench_path: str
     bench_flags: list[str]
     sites: list[SiteMaintenance]
     down: list[str]
+    own_flags: dict[str, bool | None] = field(default_factory=dict)
+    own_set: list[str] = field(default_factory=list)
     served_as: str | None = None
     owners: list[MaintenanceOwner] = field(default_factory=list)
     busy: list[str] = field(default_factory=list)
@@ -177,8 +185,9 @@ class BenchMaintenance:
 
     @property
     def needs_clearing(self) -> bool:
-        """A site answers maintenance, or the bench-wide flag waits for the next site."""
-        return bool(self.down) or "maintenance_mode" in self.bench_flags
+        """A site answers maintenance, a site's own file sets it, or the bench-wide flag
+        waits for the next site."""
+        return bool(self.down or self.own_set) or "maintenance_mode" in self.bench_flags
 
     @property
     def unknown(self) -> list[str]:
@@ -396,7 +405,18 @@ def assess(
     flags = supervision.bench_wide_flags(common) or []
     served_as = _served_as(raw, common or {}, names)
     sites: list[SiteMaintenance] = []
+    own_flags: dict[str, bool | None] = {}
+    own_set: list[str] = []
     for name in sorted(names):
+        own = configs.get(name)
+        if own is None or common is None:
+            own_flags[name] = None
+        elif "maintenance_mode" in own:
+            own_flags[name] = bool(own["maintenance_mode"])
+            if own_flags[name]:
+                own_set.append(name)
+        else:
+            own_flags[name] = bool(common.get("maintenance_mode"))
         target = served_as or name
         config = configs.get(target)
         if config is None or common is None:
@@ -416,13 +436,15 @@ def assess(
                 )
             )
     down = [s.site for s in sites if s.on]
-    in_scope = set(down) | ({served_as} if served_as else set())
+    in_scope = set(down) | set(own_set) | ({served_as} if served_as else set())
     owners = [o for o in _owners(raw, names) if o.site in in_scope]
     return BenchMaintenance(
         bench_path=bench_path,
         bench_flags=flags,
         sites=sites,
         down=down,
+        own_flags=own_flags,
+        own_set=own_set,
         served_as=served_as,
         owners=owners,
         busy=list(busy or []),
@@ -544,12 +566,16 @@ def _busy(container, raw: dict, report: BenchMaintenance) -> list[str]:
 
 
 def _forget_stale_owners(container, raw: dict, report: BenchMaintenance) -> None:
-    """Drop cwcli's record for every site whose config reads maintenance OFF, so a
+    """Drop cwcli's record for every site whose OWN flag reads maintenance OFF, so a
     record left by a flag turned off another way never names a later, deliberate
     maintenance window as cwcli's leftover."""
     held = {s.site for s in report.sites} | ({report.served_as} if report.served_as else set())
-    for owner in _owners(raw, set((raw.get("sites") or {}).keys())):
-        if owner.site not in held and owner.running is not True:
+    for owner in _owners(raw, set(report.own_flags)):
+        if (
+            report.own_flags.get(owner.site) is False
+            and owner.site not in held
+            and owner.running is not True
+        ):
             bench_ops.forget_maintenance_owner(container, report.bench_path, owner.site)
 
 
@@ -572,8 +598,8 @@ def describe(report: BenchMaintenance) -> str:
         if not report.down:
             text += "; every site overrides it today, but a new site would inherit it"
         parts.append(text + ".")
-    if "site" in causes:
-        own = [s.site for s in report.sites if s.on and s.cause == "site"]
+    own = sorted({s.site for s in report.sites if s.on and s.cause == "site"} | set(report.own_set))
+    if own:
         parts.append(f"Set in the site's own site_config.json: {', '.join(own)}.")
     if report.served_as and "served_as" in causes:
         parts.append(
@@ -620,13 +646,14 @@ def plan(report: BenchMaintenance, site: str | None = None) -> dict:
     """
     scope = [s for s in report.sites if s.on and (site is None or s.site == site)]
     if site is not None:
+        writes = [site] if site in report.own_set else []
         return {
             "bench_flags": [],
-            "sites": [s.site for s in scope if s.cause == "site"],
-            "scope": [s.site for s in scope],
+            "sites": writes,
+            "scope": sorted({s.site for s in scope} | set(writes)),
             "held": [s.site for s in scope if s.cause in ("bench", "served_as")],
         }
-    own: set[str] = set()
+    own: set[str] = set(report.own_set)
     bench_wide = site is None and "maintenance_mode" in report.bench_flags
     for entry in scope:
         if entry.cause == "site":
@@ -647,7 +674,7 @@ def plan(report: BenchMaintenance, site: str | None = None) -> dict:
     return {
         "bench_flags": flags,
         "sites": sorted(own),
-        "scope": [s.site for s in scope],
+        "scope": sorted({s.site for s in scope} | own),
         "held": [],
     }
 
@@ -655,9 +682,10 @@ def plan(report: BenchMaintenance, site: str | None = None) -> dict:
 def prompt_text(report: BenchMaintenance) -> str:
     """The question every frontend asks, built from the same plan the clear runs."""
     steps = plan(report)
+    named = sorted(set(report.down) | set(report.own_set))
     what = (
-        f"Take {', '.join(report.down)} out of maintenance mode"
-        if report.down
+        f"Take {', '.join(named)} out of maintenance mode"
+        if named
         else "Clear the bench-wide maintenance_mode flag"
     )
     if "pause_scheduler" in steps["bench_flags"]:
@@ -718,6 +746,14 @@ def clear(
             ErrorKind.PRECONDITION,
             "maintenance.unreadable",
             f"cwcli could not read the site configs of {bench_path}.",
+        )
+    if site is not None and site not in report.own_flags:
+        emit(MaintenanceStepEnd(phase="check", status="failed", message=f"No site '{site}'"))
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "site.not_found",
+            f"There is no site '{site}' on {bench_path}.",
+            hint=f"List the bench's sites with 'cwcli inspect {project}'.",
         )
     steps = plan(report, site)
     unknown = [s for s in report.unknown if site is None or s == site]
