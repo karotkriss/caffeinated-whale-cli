@@ -56,6 +56,8 @@ function hint(e) {
   return text(e?.hint ? `${e.message} ${e.hint}` : e?.message)
 }
 
+const PUBLICATION_DIALOGS = new Set(['site.remove', 'site.publish', 'site.unpublish'])
+
 // Why an action on a remote host cannot run right now, or null.
 export function hostRefusal(hostId) {
   if (!hostId || actionsAllowed(hostId)) return null
@@ -81,13 +83,14 @@ export async function openAction(id, ctx = {}) {
     toast.error(refused.reason, { description: refused.detail })
     return null
   }
-  // Publications are each machine's own store. A remote site's drop dialog reads its
-  // host's once, through the hub's forward, as it opens (the hub never keeps it); a read
-  // that fails, or a bench whose path is not known yet, leaves `published` null, and the
-  // dialog says it could not tell.
+  // Publications are each machine's own store. A remote site's drop, publish and
+  // unpublish dialogs read its host's once, through the hub's forward, as they open (the
+  // hub never keeps it), so the dialog names that host's own integrations; a read that
+  // fails, or (for a drop) a bench whose path is not known yet, leaves `published` null,
+  // and the dialog says it could not tell.
   const bench = detailOf(ctx.project, ctx.host)?.data?.benches?.find((b) => String(b.index) === String(ctx.bench))
   let store = ctx.host ? {} : publications
-  if (ctx.host && id === 'site.remove') store = bench?.path ? await getJson(`${apiBase(ctx.host)}/publications`).catch(() => null) : null
+  if (ctx.host && PUBLICATION_DIALOGS.has(id)) store = bench?.path || id !== 'site.remove' ? await getJson(`${apiBase(ctx.host)}/publications`).catch(() => null) : null
   const full = {
     benchName: ctx.bench,
     host: null,

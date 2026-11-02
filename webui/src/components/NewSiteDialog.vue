@@ -21,11 +21,11 @@ import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { newSiteDialog } from '../data/new-site-dialog'
 import { fleet, instances, detailOf, loadDetail, benchName, instance as findInstance, ikey, needsDbRootPassword, dbRootPasswordHelp } from '../data/fleet'
-import { onHost } from '../data/hosts'
+import { hostName, onHost } from '../data/hosts'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
-import { canPublish, loadPublications, preflightPublish, publishOptions } from '../data/publish'
+import { canPublish, loadPublications, preflightPublish, publicationsFor, publishOptions, publishPlan } from '../data/publish'
 import { can } from '../data/session'
 
 const project = ref(null)
@@ -97,6 +97,10 @@ watch(() => newSiteDialog.open, (open) => {
   publishing.value = !!a.publish && publishable.value
 })
 watch([project, host], ([p, h]) => { if (p) loadDetail(p, { host: h, force: true }) })
+// A remote instance publishes with its host's own integrations: read that host's store
+// (its DNS and proxy, if on), and start the Publish section over, since its options and
+// preflight are that host's too.
+watch(host, (h) => { if (h) loadPublications(h); publishing.value = false; options.value = null; optionsError.value = null; rows.value = null }, { immediate: true })
 // The picker's value is the instance key, so two machines' same-named instances stay apart.
 const pick = computed({
   get: () => (project.value ? ikey(host.value, project.value) : null),
@@ -136,8 +140,11 @@ const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
 
-// Publish only for this machine's instances: publish.js talks to this daemon's integrations.
-const publishable = computed(() => !host.value && canPublish())
+// Publish with the integrations of the machine the instance is on: this daemon's, or
+// the remote host's own through the hub.
+const publishable = computed(() => canPublish(host.value))
+const machine = computed(() => (host.value ? hostName(host.value) : null))
+const remotePubError = computed(() => (host.value && publicationsFor(host.value)?.error) || null)
 watch(publishable, (ok) => { if (!ok) publishing.value = false })
 // The zone picker applies only while publishing with a DNS integration on.
 const zones = computed(() => options.value?.dns?.zones || [])
@@ -149,7 +156,7 @@ watch(publishing, async (on) => {
     return
   }
   if (!options.value) {
-    try { options.value = await publishOptions() } catch (e) { optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
+    try { options.value = await publishOptions(host.value) } catch (e) { optionsError.value = e.hint ? `${e.message} ${e.hint}` : e.message; return }
   }
   proxied.value = !!(options.value.proxied_allowed && options.value.dns?.proxied_default)
   const typed = site.value.trim()
@@ -162,15 +169,7 @@ const accessOptions = computed(() => [{ label: 'Anyone (no access list)', value:
 const portRow = computed(() => (rows.value || []).find((r) => r.part === 'port' && r.port))
 const publicUrl = computed(() => (options.value?.proxy ? `https://${fullName.value}` : `http://${fullName.value}:${portRow.value?.port ?? '<bench port>'}`))
 const deep = computed(() => proxied.value && zoned.value && label.value.includes('.'))
-const publishSays = computed(() => {
-  const dns = options.value?.dns?.name || 'Cloudflare'
-  const proxy = options.value?.proxy?.name || 'Nginx Proxy Manager'
-  const both = !!options.value?.dns && !!options.value?.proxy
-  if (!options.value) return 'After the site is created, a second job publishes it at its own domain.'
-  if (both) return `After the site is created, a second job (Publish site) writes its ${dns} A record, makes its ${proxy} proxy host, requests its Let's Encrypt certificate, then checks it answers over HTTPS. Retry repeats only what is missing.`
-  if (options.value.dns) return `After the site is created, a second job writes its ${dns} A record (DNS only), then checks it answers at its bench port. Without a proxy there is no certificate.`
-  return `After the site is created, a second job makes its ${proxy} proxy host and requests its Let's Encrypt certificate. With no DNS integration the name must already point at this machine.`
-})
+const publishSays = computed(() => publishPlan(options.value, machine.value))
 let preflightTimer = null
 let preflightSeq = 0
 watch([publishing, fullName, project, bench, recordAddress, proxied], () => {
@@ -180,7 +179,7 @@ watch([publishing, fullName, project, bench, recordAddress, proxied], () => {
   const seq = ++preflightSeq
   preflightTimer = setTimeout(async () => {
     try {
-      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value })
+      const out = await preflightPublish({ project: project.value, bench: bench.value, site: fullName.value, address: changeAddress.value ? address.value.trim() : '', proxied: proxied.value }, host.value)
       if (seq === preflightSeq) rows.value = out.rows
     } catch (e) {
       if (seq === preflightSeq) rows.value = [{ part: 'name', state: 'fail', text: e.hint ? `${e.message} ${e.hint}` : e.message }]
@@ -318,9 +317,10 @@ async function start() {
         </div>
         <Checkbox v-model="makeDefault" label="Make it the bench's default site" />
         <Checkbox v-model="devMode" label="Turn developer mode on for it" />
+        <p v-if="remotePubError" class="text-p-sm text-ink-amber-6 sm:col-span-2">Whether {{ machine }} can publish sites could not be read ({{ remotePubError.message }}); its own Cloudflare DNS and Nginx Proxy Manager decide that, under Settings > Integrations with {{ machine }} picked.</p>
         <div v-if="publishable" class="space-y-3 rounded-6 border border-outline-gray-1 p-3 sm:col-span-2">
           <div>
-            <Checkbox v-model="publishing" label="Publish it at a public address" />
+            <Checkbox v-model="publishing" :label="`Publish it at a public address${machine ? ` with ${machine}'s own integrations` : ''}`" />
             <p class="mt-1 pl-6 text-p-sm text-ink-gray-5">{{ publishSays }}</p>
           </div>
           <template v-if="publishing">

@@ -1596,6 +1596,10 @@ class HostManager:
             "name": hub_name(),
             "public_key": hub_public_key(),
             "allow_command": allow_command(),
+            # What a remote's owner runs to let this hub set up that host's own
+            # integrations (Settings > Integrations, host picker): the same grant at the
+            # Admin cap, which replaces the earlier line there.
+            "allow_admin_command": allow_command("admin"),
             "transport_on": bool(self._transports),
             "protocol": self._protocol,
         }

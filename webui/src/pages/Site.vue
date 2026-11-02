@@ -21,13 +21,14 @@ import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
 import { can } from '../data/session'
 import { hostName } from '../data/hosts'
+import { loadPublications, publicationAt, publicationsFor } from '../data/publish'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
 // A remote host's site: the same page, every read and action through the hub.
 const host = route.params.host || null
 const where = { project, host }
-onMounted(() => setFocus(project, host))
+onMounted(() => { setFocus(project, host); if (host) loadPublications(host) })
 const inst = computed(() => findInstance(project, host))
 const detail = loadDetail(project, { host })
 const bench = computed(() => detail.data?.benches.find((b) => String(b.index) === String(index)))
@@ -88,8 +89,12 @@ watch(jobList, (list) => {
   }
 })
 const maintenance = computed(() => (health.value?.web_site === siteName ? health.value.maintenance_mode : null))
+// Its public address, from the store of the machine it is on: published with that
+// machine's own integrations, which the fact says.
+const pub = computed(() => (bench.value ? publicationAt(siteName, project, bench.value.path, publicationsFor(host) || {}) : null))
 const heroFacts = computed(() => [
   ...(host ? [{ label: 'Machine', value: hostName(host) }] : []),
+  ...(pub.value ? [{ label: 'Public address', value: `${pub.value.url || 'publishing'} · ${host ? `${hostName(host)}'s own` : "this machine's"} integrations` }] : []),
   { label: 'Instance', value: project },
   { label: 'Bench', value: bench.value ? `${benchName(bench.value)} (--bench ${bench.value.index})` : `#${index}` },
   { label: 'Installed apps', value: String(apps.value.length) },

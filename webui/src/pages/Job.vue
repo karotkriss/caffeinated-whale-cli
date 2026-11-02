@@ -30,6 +30,8 @@ const loading = ref(false)
 const view = ref('steps')
 const actionError = ref(null)
 const record = computed(() => jobRecord(id, host))
+// A publish runs with the integrations of the machine the site is on, never the hub's.
+const publishJob = computed(() => ['publish-site', 'unpublish-site'].includes(record.value?.verb) || !!record.value?.args?.publish)
 // Captain decision 5: a core update's safety sets, with 'Roll back to before this'.
 const safetyKeys = computed(() => (record.value?.events || []).filter((e) => e.type === 'safety_backup_done' || e.type === 'backup_first_done').flatMap((e) => e.data?.sets || []))
 const safetySets = computed(() => safetyKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
@@ -312,6 +314,7 @@ async function continueChoice(value) {
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Events</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ record.event_count }}</div></div>
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Started by</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ jobAccount(record) }}</div></div>
         <div v-if="host" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Machine</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ hostName(host) }}</div></div>
+        <div v-if="publishJob" class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Integration settings</div><div class="mt-1.5 truncate text-base text-ink-gray-8">{{ host ? `${hostName(host)}'s own` : "this machine's" }}</div></div>
       </div>
 
       <div v-if="progress" class="rounded-6 border border-outline-gray-1 bg-surface-elevation-1 px-4 py-3">

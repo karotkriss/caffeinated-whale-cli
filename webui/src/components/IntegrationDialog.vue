@@ -6,9 +6,13 @@
 import { computed, ref, watch } from 'vue'
 import { Alert, Badge, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, Select, TextInput } from 'frappe-ui'
 import { configureIntegration, HOOK_POINT, integrationAction, integrationDialog, integrations, loadIntegrations, PUBLISHER, STATE, testIntegration } from '../data/integrations'
+import { hostName } from '../data/hosts'
 
 const d = integrationDialog
 const integ = computed(() => integrations.list.find((i) => i.id === d.id) || null)
+// The machine this form sets up: a remote host's own integration when the panel's
+// picker names one (every request goes to that host through the hub).
+const machine = computed(() => (integrations.host ? hostName(integrations.host) : 'this machine'))
 const form = ref({})
 const secrets = ref({})
 const check = ref(null)
@@ -138,14 +142,15 @@ const checkedAt = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-di
 </script>
 
 <template>
-  <Dialog v-model:open="d.open" :title="integ ? `${integ.enabled ? '' : 'Turn on '}${integ.name}` : 'Integration'" size="2xl">
+  <Dialog v-model:open="d.open" :title="integ ? `${integ.enabled ? '' : 'Turn on '}${integ.name}${integrations.host ? ` on ${machine}` : ''}` : 'Integration'" size="2xl">
     <div v-if="integ" class="space-y-4">
       <div class="flex flex-wrap items-center gap-2">
         <Badge size="sm" variant="subtle" :theme="PUBLISHER[integ.publisher]?.theme" :label="PUBLISHER[integ.publisher]?.label" />
         <Badge size="sm" variant="subtle" :theme="STATE[integ.state]?.theme" :label="STATE[integ.state]?.label" />
         <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">{{ integ.description }}</p>
       </div>
-      <Alert v-if="detected?.found" theme="blue" :title="`Found Nginx Proxy Manager${detected.version ? ' ' + detected.version : ''} on this machine`" :description="`Container ${detected.container}, admin port ${detected.admin_port ?? 'not published'}. The admin URL and forward address are filled from it; cwcli talks to it over 127.0.0.1, so its admin port can stay closed to the network.`" />
+      <p v-if="integrations.host" class="text-p-sm text-ink-gray-6">Set up on {{ machine }} through this hub: the test, Detect and the save all run there, and the secrets you type are stored encrypted on {{ machine }}, never on this hub.</p>
+      <Alert v-if="detected?.found" theme="blue" :title="`Found Nginx Proxy Manager${detected.version ? ' ' + detected.version : ''} on ${machine}`" :description="`Container ${detected.container}, admin port ${detected.admin_port ?? 'not published'}. The admin URL and forward address are filled from it; cwcli talks to it over 127.0.0.1 there, so its admin port can stay closed to the network.`" />
       <form class="grid gap-3 sm:grid-cols-2" autocomplete="off" @submit.prevent="save(false)">
         <template v-for="f in visible" :key="f.key">
           <div v-if="f.kind === 'group_roles'" class="space-y-2 sm:col-span-2">
@@ -166,7 +171,7 @@ const checkedAt = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-di
               <TextInput v-model="form.ipv4" class="min-w-0 flex-1" :placeholder="f.placeholder" :aria-label="f.label" spellcheck="false" />
               <Button icon-left="lucide-radar" label="Detect" :loading="busy === 'detect'" @click="detectIp" />
             </div>
-            <p class="text-p-sm" :class="detectedIp && detectedIp === form.ipv4 ? 'text-ink-amber-6' : 'text-ink-gray-5'">{{ detectedIp && detectedIp === form.ipv4 ? `Cloudflare sees this machine as ${detectedIp}. Behind NAT, a VPN or two uplinks that may not be the address visitors reach; saving confirms it.` : f.help }}</p>
+            <p class="text-p-sm" :class="detectedIp && detectedIp === form.ipv4 ? 'text-ink-amber-6' : 'text-ink-gray-5'">{{ detectedIp && detectedIp === form.ipv4 ? `Cloudflare sees ${machine} as ${detectedIp}. Behind NAT, a VPN or two uplinks that may not be the address visitors reach; saving confirms it.` : f.help }}</p>
           </div>
           <div v-else-if="f.kind === 'bool'" :class="HALF_BOOL.has(f.key) ? '' : 'sm:col-span-2'">
             <Checkbox v-model="form[f.key]" :label="f.label" />

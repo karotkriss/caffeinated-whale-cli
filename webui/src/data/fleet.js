@@ -130,6 +130,7 @@ function openStream() {
     if (event === 'metrics') applyMetricsFrame(data, host)
     else if (event === 'site_icons') siteIconsLanded(data, host)
     else if (event === 'backups') backupsLanded(data, host)
+    else if (event === 'publications') publicationsLanded(data, host)
   })
   source.addEventListener('docker', (e) => dockerLanded(JSON.parse(e.data)))
   source.addEventListener('job', (e) => applyJob(JSON.parse(e.data)))
