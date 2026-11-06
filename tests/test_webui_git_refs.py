@@ -84,23 +84,57 @@ def node(tmp_path):
 def test_repository_follows_the_one_app_or_url_the_field_acts_on(node):
     result = node(
         f"const refs = await import({json.dumps((DATA / 'git-refs.js').as_uri())})\n"
-        "const bench = { app_remotes: { frappe: ['https://git.example/frappe.git'] } }\n"
         "const apps = [{ name: 'payments', source: { url: 'https://git.example/payments' } }]\n"
         "return {\n"
-        "  direct: refs.repoForAppInput('https://git.example/direct', { bench, apps }),\n"
-        "  installed: refs.repoForAppInput('frappe', { bench, apps }),\n"
-        "  catalog: refs.repoForAppInput('payments', { bench, apps }),\n"
-        "  several: refs.repoForAppInput('frappe, payments', { bench, apps }),\n"
-        "  missing: refs.repoForAppInput('missing', { bench, apps }),\n"
+        "  direct: refs.repoForAppInput('https://git.example/direct', apps),\n"
+        "  catalog: refs.repoForAppInput('payments', apps),\n"
+        "  several: refs.repoForAppInput('frappe, payments', apps),\n"
+        "  missing: refs.repoForAppInput('missing', apps),\n"
         "}"
     )
     assert result == {
         "direct": "https://git.example/direct",
-        "installed": "https://git.example/frappe.git",
         "catalog": "https://git.example/payments",
         "several": None,
         "missing": None,
     }
+
+
+@pytest.mark.parametrize(
+    "apps, held",
+    [
+        ("payments", True),
+        ("payments, frappe", True),
+        ("https://git.example/org/payments", True),
+        ("https://git.example/org/payments.git", True),
+        ("https://git.example/org/payments/", True),
+        ("https://git.example/org/payments.git/", True),
+        ("https://git.example/org/mirror", True),
+        ("https://git.example/org/other", False),
+        ("git@git.example:org/payments.git", False),
+        ("payments, other", False),
+        ("other", False),
+        ("", False),
+    ],
+)
+def test_an_app_on_the_bench_is_found_by_its_name_or_remote_url(node, apps, held):
+    result = node(
+        f"const refs = await import({json.dumps((DATA / 'git-refs.js').as_uri())})\n"
+        "const bench = {\n"
+        "  available_apps: ['frappe', 'payments'],\n"
+        "  app_remotes: { payments: ['https://git.example/org/payments', 'https://git.example/org/mirror'] },\n"
+        "}\n"
+        f"return refs.appsOnBench({json.dumps(apps)}, bench)"
+    )
+    assert result is held
+
+
+def test_an_unread_bench_holds_nothing(node):
+    result = node(
+        f"const refs = await import({json.dumps((DATA / 'git-refs.js').as_uri())})\n"
+        "return [refs.appsOnBench('payments', undefined), refs.appsOnBench('payments', {})]"
+    )
+    assert result == [False, False]
 
 
 def test_refs_come_from_the_acting_host_and_keep_a_commit_hash_row(node):

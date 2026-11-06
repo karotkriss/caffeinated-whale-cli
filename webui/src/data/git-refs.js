@@ -10,14 +10,21 @@ const clean = (value) => String(value || '').trim()
 
 export const isRepositoryUrl = (value) => /^(https?:\/\/|git@|ssh:\/\/)[^\s'"]+$/.test(clean(value))
 
-export function repoForAppInput(value, { bench = null, apps = [] } = {}) {
-  const specs = clean(value).split(',').map((item) => item.trim()).filter(Boolean)
+const appSpecs = (value) => clean(value).split(',').map((item) => item.trim()).filter(Boolean)
+const trimRepoUrl = (url) => url.replace(/(\.git)?\/*$/, '')
+
+export function repoForAppInput(value, apps = []) {
+  const specs = appSpecs(value)
   if (specs.length !== 1) return null
   const spec = specs[0]
   if (isRepositoryUrl(spec)) return spec
-  return bench?.app_remotes?.[spec]?.[0]
-    || apps.find((app) => app.name === spec && app.source?.url)?.source.url
-    || null
+  return apps.find((app) => app.name === spec && app.source?.url)?.source.url || null
+}
+
+export function appsOnBench(value, bench) {
+  const specs = appSpecs(value)
+  const remotes = Object.values(bench?.app_remotes || {}).flat().map(trimRepoUrl)
+  return specs.length > 0 && specs.every((spec) => bench?.available_apps?.includes(spec) || remotes.includes(trimRepoUrl(spec)))
 }
 
 const initial = () => ({ branches: [], tags: [], loading: false, error: null })

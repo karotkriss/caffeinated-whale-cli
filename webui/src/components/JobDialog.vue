@@ -4,7 +4,7 @@ import { Alert, Button, Checkbox, Combobox, Dialog, ErrorMessage, FormControl, S
 import { apiBase, getJson } from '../data/api'
 import { apps as catalogApps } from '../data/catalog'
 import { detailOf, loadDetail } from '../data/fleet'
-import { repoForAppInput, useGitRefs } from '../data/git-refs'
+import { appsOnBench, repoForAppInput, useGitRefs } from '../data/git-refs'
 import { jobDialog, jobDialogTitle, submitJob } from '../data/job-dialog'
 import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
 import { onHost } from '../data/hosts'
@@ -44,13 +44,9 @@ watch(
 )
 const installBench = computed(() => detailOf(jobDialog.context.project, jobDialog.context.host)?.data?.benches?.find((bench) => String(bench.index) === String(jobDialog.context.bench)))
 const installCatalog = computed(() => (jobDialog.context.host ? (remoteCatalog.value.host === jobDialog.context.host ? remoteCatalog.value.apps : []) : catalogApps.value))
-const installRepo = computed(() => repoForAppInput(v.value.apps, { bench: installBench.value, apps: installCatalog.value }))
+const installRepo = computed(() => repoForAppInput(v.value.apps, installCatalog.value))
 const setInstallRef = (query) => (v.value.branch = query || '')
-const installHeld = computed(() => {
-  if (jobDialog.verb !== 'apps-install') return false
-  const named = String(v.value.apps || '').split(',').map((name) => name.trim()).filter(Boolean)
-  return named.length > 0 && named.every((name) => installBench.value?.available_apps?.includes(name))
-})
+const installHeld = computed(() => jobDialog.verb === 'apps-install' && appsOnBench(v.value.apps, installBench.value))
 watch(installHeld, (held) => {
   if (held) setInstallRef('')
 })
