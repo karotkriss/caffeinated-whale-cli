@@ -223,11 +223,12 @@ def _fetch_rank(remote: str) -> tuple[int, str]:
 def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | None:
     """``apps/<dir> -> [normalized remote, ...]`` for every git checkout on the bench.
 
-    Each list starts with the remote ``apps checkout`` fetches from. Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
-    would refuse as "dubious ownership" still answers. Only ``[remote ...]`` sections
-    count: a ``[submodule ...]`` url is another repository, not this checkout. One exec
-    for the whole bench; a failed read is None, never an empty map that would read as
-    "no remotes" (the fetch then falls back to the directory name).
+    Each list starts with the url ``apps checkout`` fetches from, and holds every url of
+    every remote. Read from each ``.git/config`` as a file, not through ``git``, so a
+    checkout git would refuse as "dubious ownership" still answers. Only ``[remote ...]``
+    sections count: a ``[submodule ...]`` url is another repository, not this checkout.
+    One exec for the whole bench; a failed read is None, never an empty map that would
+    read as "no remotes" (the fetch then falls back to the directory name).
     """
     script = (
         'for f in apps/*/.git/config; do [ -f "$f" ] && '
@@ -237,15 +238,15 @@ def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | Non
     exit_code, output = frappe_container.exec_run(["sh", "-c", script], workdir=bench_path)
     if exit_code not in (0, None):
         return None
-    remotes: dict[str, dict[str, str]] = {}
+    remotes: dict[str, dict[str, list[str]]] = {}
     for line in _decode(output).splitlines():
         path, name, url = (line.split("\t", 2) + ["", ""])[:3]
         parts = path.split("/")
         key = remote_key(url)
         if len(parts) == 4 and key:
-            remotes.setdefault(parts[1], {}).setdefault(name.strip('"]'), key)
+            remotes.setdefault(parts[1], {}).setdefault(name.strip('"]'), []).append(key)
     return {
-        app: list(dict.fromkeys(named[n] for n in sorted(named, key=_fetch_rank)))
+        app: list(dict.fromkeys(k for n in sorted(named, key=_fetch_rank) for k in named[n]))
         for app, named in remotes.items()
     }
 

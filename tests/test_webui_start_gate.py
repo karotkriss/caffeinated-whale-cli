@@ -626,3 +626,21 @@ def test_the_no_address_toast_keeps_the_suggested_commands_placeholder(run):
     out = _open(run, {"url": None, "reachable": False, "reason": reason}, answer=True)
 
     assert [_as_rendered(t["options"]["description"]) for t in out["toasts"]] == [reason]
+
+
+@pytest.mark.parametrize("action", ["app.checkout", "app.checkout_reset"])
+def test_a_checkout_field_lists_the_refs_of_the_benchs_own_remote(run, action):
+    out = run(
+        f"const source = ACTIONS[{json.dumps(action)}].fields[0].source\n"
+        "const bench = { app_remotes: { payments: ['https://git.example/upstream', 'https://git.example/fork'] } }\n"
+        "return {\n"
+        "  live: source({ app: 'payments' }, bench) ?? null,\n"
+        "  unread: source({ app: 'payments' }, {}) ?? null,\n"
+        "  noDetail: source({ app: 'payments' }, undefined) ?? null,\n"
+        "}"
+    )
+    assert (out["live"], out["unread"], out["noDetail"]) == (
+        "https://git.example/upstream",
+        None,
+        None,
+    )

@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Combobox, Dialog, FormControl, ErrorMessage } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { ACTIONS, availability } from '../data/actions'
-import { instance } from '../data/fleet'
+import { detailOf, instance, loadDetail } from '../data/fleet'
 import { useGitRefs } from '../data/git-refs'
 import { dialogState, runAction } from '../data/dialog'
 import { onHost } from '../data/hosts'
@@ -37,7 +37,11 @@ const shown = computed(() => (action.value?.fields || []).filter((f) => !f.show 
 const textFields = computed(() => shown.value.filter((f) => f.type !== 'checkbox'))
 const checkboxes = computed(() => shown.value.filter((f) => f.type === 'checkbox'))
 const refField = computed(() => textFields.value.find((f) => f.type === 'ref') || null)
-const refSource = computed(() => refField.value?.source?.(ctx.value) || null)
+const refBench = computed(() => detailOf(ctx.value.project, ctx.value.host)?.data?.benches?.find((b) => String(b.index) === String(ctx.value.bench)))
+const refSource = computed(() => refField.value?.source?.(ctx.value, refBench.value) || null)
+watch(() => dialogState.open && !!refField.value, (open) => {
+  if (open) loadDetail(ctx.value.project, { force: true, host: ctx.value.host })
+})
 const setRef = (query) => {
   if (refField.value) dialogState.values[refField.value.name] = query || ''
 }

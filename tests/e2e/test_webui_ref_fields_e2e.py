@@ -67,6 +67,11 @@ def test_ref_fields_keep_a_typed_commit(chrome, ui_with_instance):
     chrome.click("[aria-label='Actions for frappe']")
     press(chrome, "[role=menuitem]", "Check out ref")
     _field_open(chrome, "Check out ref")
+    chrome.wait(
+        "performance.getEntriesByType('resource')"
+        ".some((e) => e.name.includes('/apps/refs?url='))",
+        desc="the field asked for the refs of the app's remote",
+    )
     assert not _button_enabled(chrome, "Check out ref")
     assert _type_and_leave(chrome, COMMIT) == COMMIT
     assert f"frappe {COMMIT}" in _dialog_text(chrome)

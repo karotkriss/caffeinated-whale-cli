@@ -60,14 +60,7 @@ function appMenu(name) {
   const open = appOpener(host, name)
   const groups = open ? [{ group: 'App', options: [{ label: 'Open details', icon: 'lucide-panel-right-open', onClick: open }] }] : []
   for (const b of benches) {
-    const c = {
-      project,
-      host,
-      bench: String(b.index),
-      benchName: benchName(b),
-      app: name,
-      appRemote: b.app_remotes?.[name]?.[0],
-    }
+    const c = { project, host, bench: String(b.index), benchName: benchName(b), app: name }
     groups.push({ group: benchName(b), options: [
       { label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...c, args: { apps: name, sites: '' } }) },
       menuOption('app.checkout', c, inst.value?.benches?.find((h) => String(h.index) === String(b.index))),

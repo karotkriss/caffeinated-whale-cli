@@ -11,7 +11,7 @@ import { appPanel, openInstall } from '../data/app-panel'
 import { ensureRunning } from '../data/start-gate'
 import EditorIcon from './EditorIcon.vue'
 import { installText, namespaceOf, sourceLabel, STATE_LABEL, STATE_THEME } from '../data/catalog'
-import { detailOf, instance as findInstance } from '../data/fleet'
+import { instance as findInstance } from '../data/fleet'
 import { openAction } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { postJson } from '../data/api'
@@ -39,16 +39,7 @@ const canInstall = computed(() => !!app.value?.source?.url || installed.value)
 const running = (project) => !!findInstance(project)?.container_running
 const present = (i) => i.project_state === 'present'
 const benchName = (i) => i.bench_label || (i.bench_path || '').split('/').filter(Boolean).pop()
-const ctx = (i) => {
-  const bench = detailOf(i.project)?.data?.benches?.find((item) => String(item.index) === String(i.bench_index))
-  return {
-    project: i.project,
-    bench: String(i.bench_index),
-    benchName: benchName(i),
-    app: app.value.name,
-    appRemote: bench?.app_remotes?.[app.value.name]?.[0],
-  }
-}
+const ctx = (i) => ({ project: i.project, bench: String(i.bench_index), benchName: benchName(i), app: app.value.name })
 
 function update(i) {
   appPanel.open = false

@@ -598,6 +598,22 @@ def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodu
     assert remotes == {"field_service": [core_apps.remote_key(SW_URL)]}
 
 
+def test_the_remotes_read_keeps_every_url_of_a_remote(tmp_path):
+    """Any url can be the one an install names, so a mirror still matches the checkout."""
+    app = tmp_path / "apps" / "field_service"
+    app.mkdir(parents=True)
+    git("init", "-q", cwd=app)
+    git("remote", "add", "origin", "https://a.example/fork/field-service", cwd=app)
+    git("remote", "add", "upstream", SW_URL, cwd=app)
+    git("remote", "set-url", "--add", "upstream", "https://z.example/org/mirror", cwd=app)
+
+    assert core_apps.app_remotes(_LocalContainer(), str(tmp_path))["field_service"] == [
+        core_apps.remote_key(SW_URL),
+        "z.example/org/mirror",
+        "a.example/fork/field-service",
+    ]
+
+
 @pytest.mark.parametrize(
     "named, fetched",
     [
