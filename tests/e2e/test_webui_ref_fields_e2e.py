@@ -20,6 +20,7 @@ pytestmark = [pytest.mark.e2e]
 
 COMMIT = "0123abc"
 _INPUT = "document.querySelector('[role=dialog] input[role=combobox]')"
+_APPS = "document.querySelector('[role=dialog] input[placeholder^=payments]')"
 _LIST_CLOSED = "!document.querySelector('[role=listbox]')"
 
 
@@ -34,13 +35,17 @@ def _field_open(chrome, what: str) -> None:
     settled(chrome)
 
 
-def _type_and_leave(chrome, text: str) -> str:
-    """Replace the field's text, Tab out of it, and return what the field then holds."""
+def _replace_text(chrome, field: str, text: str) -> None:
     chrome.eval(
-        f"(() => {{ const i = {_INPUT}; i.focus(); i.select();"
+        f"(() => {{ const i = {field}; i.focus(); i.select();"
         f" return document.execCommand({'insertText' if text else 'delete'!r}, false,"
         f" {json.dumps(text)}) }})()"
     )
+
+
+def _type_and_leave(chrome, text: str) -> str:
+    """Replace the field's text, Tab out of it, and return what the field then holds."""
+    _replace_text(chrome, _INPUT, text)
     chrome.press("Tab")
     chrome.wait(_LIST_CLOSED, desc="the ref list closed")
     return chrome.eval(f"{_INPUT}.value")
@@ -87,3 +92,9 @@ def test_ref_fields_keep_a_typed_commit(chrome, ui_with_instance):
     press(chrome, "[role=menuitem]", "Install apps")
     _field_open(chrome, "Install apps")
     assert _type_and_leave(chrome, COMMIT) == COMMIT
+    # The install ignores a branch for an app the bench holds: no field, no value sent.
+    _replace_text(chrome, _APPS, "frappe")
+    chrome.wait(f"!{_INPUT}", desc="the branch field hidden for an app on the bench")
+    _replace_text(chrome, _APPS, "")
+    _field_open(chrome, "Install apps again")
+    assert chrome.eval(f"{_INPUT}.value") == ""
