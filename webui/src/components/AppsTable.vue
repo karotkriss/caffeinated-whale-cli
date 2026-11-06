@@ -30,7 +30,14 @@ const rows = computed(() =>
     return { name, installs, versions, branches }
   }),
 )
-const ctx = (name) => ({ project: props.project, host: props.host, bench: String(props.bench.index), benchName: props.bench.label, app: name })
+const ctx = (name) => ({
+  project: props.project,
+  host: props.host,
+  bench: String(props.bench.index),
+  benchName: props.bench.label,
+  app: name,
+  appRemote: props.bench.app_remotes?.[name]?.[0] || (!props.host ? catalogApp(name).source?.url : null),
+})
 // Per-app menu: the plain checkout, then the reset form behind its own typed confirm.
 const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...ctx(name), args: { apps: name, sites: '' } }) }] }, menuOption('app.checkout', ctx(name)), dangerGroup(['app.checkout_reset'], ctx(name))]
 </script>

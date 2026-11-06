@@ -306,7 +306,7 @@ export const ACTIONS = {
     label: 'Check out ref',
     icon: 'lucide-git-branch',
     confirm: 'confirm',
-    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
+    fields: [{ name: 'ref', type: 'ref', label: 'Branch, tag or commit', placeholder: 'develop', source: (c) => c.appRemote }],
     cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')}${benchFlag(c)}`,
     says: (c) =>
       `Fetches and checks out a ref into ${c.app}, then restarts the bench's processes. A dirty working tree is refused; nothing is reset.`,
@@ -321,7 +321,7 @@ export const ACTIONS = {
     icon: 'lucide-git-branch',
     confirm: 'typed',
     confirmTarget: (c) => c.app,
-    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
+    fields: [{ name: 'ref', type: 'ref', label: 'Branch, tag or commit', placeholder: 'develop', source: (c) => c.appRemote }],
     cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')} --reset${benchFlag(c)}`,
     says: (c) =>
       `Fetches the ref, then resets ${c.app}'s working tree to it: uncommitted changes to tracked files are discarded. Untracked files are left in place (nothing runs git clean). The bench's processes restart afterwards.`,

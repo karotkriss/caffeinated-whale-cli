@@ -61,6 +61,10 @@ html { background: var(--surface-base); }
 .dialog-content > * { max-width: 100%; }
 .dialog-content [role='tabpanel'] { min-width: 0; }
 
+/* A ref list holds names up to 100+ characters. frappe-ui sizes the Combobox list to
+   its longest row, which ran past the dialog and off a phone; the rows truncate. */
+[data-slot='content'][data-selection] { max-width: var(--reka-combobox-trigger-width); }
+
 /* frappe-ui's SettingsHeader and SettingsBody keep px-[4.4rem] (70 px each side) at
    every width, which left a 217 px content column inside a 358 px phone dialog. The
    panel's first child is the header; the scroll viewport is the body. */

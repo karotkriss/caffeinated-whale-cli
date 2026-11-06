@@ -1,9 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Alert, Button, Checkbox, Dialog, FormControl, ErrorMessage } from 'frappe-ui'
+import { Alert, Button, Checkbox, Combobox, Dialog, FormControl, ErrorMessage } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { ACTIONS, availability } from '../data/actions'
 import { instance } from '../data/fleet'
+import { useGitRefs } from '../data/git-refs'
 import { dialogState, runAction } from '../data/dialog'
 import { onHost } from '../data/hosts'
 
@@ -35,6 +36,16 @@ const needsTyped = computed(() => action.value?.confirm === 'typed')
 const shown = computed(() => (action.value?.fields || []).filter((f) => !f.show || f.show(ctx.value)))
 const textFields = computed(() => shown.value.filter((f) => f.type !== 'checkbox'))
 const checkboxes = computed(() => shown.value.filter((f) => f.type === 'checkbox'))
+const refField = computed(() => textFields.value.find((f) => f.type === 'ref') || null)
+const refSource = computed(() => refField.value?.source?.(ctx.value) || null)
+const setRef = (query) => {
+  if (refField.value) dialogState.values[refField.value.name] = query || ''
+}
+const { refs, options: refOptions, emptyText: refEmptyText } = useGitRefs(
+  refSource,
+  setRef,
+  { active: () => dialogState.open && !!refField.value, host: () => ctx.value.host },
+)
 const command = computed(() => (action.value ? action.value.cli(ctx.value, dialogState.values) : null))
 watch(() => [dialogState.open, ...checkboxes.value.map((f) => !!dialogState.values[f.name])], () => (typed.value = ''))
 // Every non-password text field is required; a password field left blank means its default.
@@ -62,15 +73,28 @@ function confirm() {
   <Dialog v-model:open="dialogState.open" :title="title" size="lg">
     <div v-if="action" class="space-y-4">
       <p class="text-p-base text-ink-gray-7">{{ action.says(ctx, dialogState.values) }}</p>
-      <FormControl
-        v-for="f in textFields"
-        :key="f.name"
-        v-model="dialogState.values[f.name]"
-        :type="f.type || 'text'"
-        :label="f.label"
-        :placeholder="f.placeholder"
-        :autocomplete="f.type === 'password' ? 'new-password' : 'off'"
-      />
+      <template v-for="f in textFields" :key="f.name">
+        <Combobox
+          v-if="f.type === 'ref'"
+          :model-value="dialogState.values[f.name]"
+          :label="f.label"
+          :placeholder="f.placeholder"
+          :options="refOptions"
+          :loading="refs.loading"
+          :empty-text="refEmptyText"
+          spellcheck="false"
+          @update:model-value="setRef"
+          @update:query="setRef"
+        />
+        <FormControl
+          v-else
+          v-model="dialogState.values[f.name]"
+          :type="f.type || 'text'"
+          :label="f.label"
+          :placeholder="f.placeholder"
+          :autocomplete="f.type === 'password' ? 'new-password' : 'off'"
+        />
+      </template>
       <Checkbox v-for="f in checkboxes" :key="f.name" v-model="dialogState.values[f.name]" :label="f.label" :description="f.note?.(ctx)" />
       <Alert
         v-if="action.danger_when && action.danger_when(dialogState.values)"

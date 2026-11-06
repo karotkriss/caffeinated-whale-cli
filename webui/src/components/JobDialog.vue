@@ -1,6 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
+import { Alert, Button, Checkbox, Combobox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
+import { apiBase, getJson } from '../data/api'
+import { apps as catalogApps } from '../data/catalog'
+import { detailOf } from '../data/fleet'
+import { repoForAppInput, useGitRefs } from '../data/git-refs'
 import { jobDialog, jobDialogTitle, submitJob } from '../data/job-dialog'
 import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
 import { onHost } from '../data/hosts'
@@ -22,6 +26,29 @@ const isInit = computed(() => jobDialog.verb === 'init')
 const title = computed(jobDialogTitle)
 const typed = ref('')
 watch(() => jobDialog.open, () => (typed.value = ''))
+const remoteCatalog = ref({ host: null, apps: [] })
+watch(
+  () => [jobDialog.open, jobDialog.verb, jobDialog.context.host],
+  async ([open, verb, host]) => {
+    if (!open || verb !== 'apps-install' || !host) return
+    remoteCatalog.value = { host, apps: [] }
+    try {
+      const data = await getJson(`${apiBase(host)}/apps`)
+      if (jobDialog.open && jobDialog.context.host === host) remoteCatalog.value = { host, apps: data.apps || [] }
+    } catch {
+      // A catalog failure only removes suggestions; the free-text field still works.
+    }
+  },
+)
+const installBench = computed(() => detailOf(jobDialog.context.project, jobDialog.context.host)?.data?.benches?.find((bench) => String(bench.index) === String(jobDialog.context.bench)))
+const installCatalog = computed(() => (jobDialog.context.host ? (remoteCatalog.value.host === jobDialog.context.host ? remoteCatalog.value.apps : []) : catalogApps.value))
+const installRepo = computed(() => repoForAppInput(v.value.apps, { bench: installBench.value, apps: installCatalog.value }))
+const setInstallRef = (query) => (v.value.branch = query || '')
+const { refs: installRefs, options: installRefOptions, emptyText: installRefEmptyText } = useGitRefs(
+  installRepo,
+  setInstallRef,
+  { active: () => jobDialog.open && jobDialog.verb === 'apps-install', host: () => jobDialog.context.host, delay: 350 },
+)
 const forceTarget = computed(() => (jobDialog.verb === 'apps-update' ? forceConfirmTarget(v.value, jobDialog.context) : ''))
 const canContinue = computed(() => {
   if (['apps-update', 'apps-install'].includes(jobDialog.verb) && !String(v.value.apps || '').trim()) return false
@@ -88,7 +115,7 @@ function next() {
         <div v-if="jobDialog.verb === 'apps-install'" class="grid gap-4 sm:grid-cols-2">
           <FormControl v-model="v.apps" class="sm:col-span-2" label="Apps" placeholder="payments, https://github.com/acme/custom-app" />
           <FormControl v-model="v.sites" label="Sites (optional)" placeholder="site.localhost" />
-          <FormControl v-model="v.branch" label="Branch (optional)" placeholder="develop" />
+          <Combobox :model-value="v.branch" label="Branch (optional)" placeholder="develop" :options="installRefOptions" :loading="installRefs.loading" :empty-text="installRefEmptyText" spellcheck="false" @update:model-value="setInstallRef" @update:query="setInstallRef" />
           <Checkbox v-model="v.fetch_only" label="Fetch only; do not install on sites" />
           <Checkbox v-model="v.backup_first" label="Back up the sites first (a verified set per site; a failed one stops the install)" />
         </div>

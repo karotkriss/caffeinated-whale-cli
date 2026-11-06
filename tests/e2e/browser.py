@@ -175,8 +175,8 @@ class Chrome:
         self.press_at(self.stable_point(selector))
 
     def press(self, key: str) -> None:
-        """One key press (``Escape`` closes the topmost dialog)."""
-        code = {"Escape": 27}[key]
+        """One key press (``Escape`` closes the topmost dialog, ``Tab`` moves focus on)."""
+        code = {"Escape": 27, "Tab": 9}[key]
         for kind in ("keyDown", "keyUp"):
             self.send(
                 "Input.dispatchKeyEvent",
