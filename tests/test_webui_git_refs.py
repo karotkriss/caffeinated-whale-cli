@@ -158,3 +158,16 @@ def test_failed_lookup_still_accepts_free_text(node):
         "empty": "refs not listed: repository is offline",
         "chosen": "0123456789abcdef",
     }
+
+
+@pytest.mark.parametrize(
+    "options, accepted",
+    [("{}", "branch or tag"), ("{ commit: true }", "branch, tag or commit")],
+)
+def test_the_hint_names_only_what_the_field_accepts(node, options, accepted):
+    result = node(
+        f"const refsModule = await import({json.dumps((DATA / 'git-refs.js').as_uri())})\n"
+        f"const model = refsModule.useGitRefs(() => '', () => {{}}, {options})\n"
+        "return { empty: model.emptyText.value, status: model.statusText.value }"
+    )
+    assert result == {"empty": f"type a {accepted}", "status": f"free text; enter a {accepted}"}

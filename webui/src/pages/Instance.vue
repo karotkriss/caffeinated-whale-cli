@@ -66,7 +66,7 @@ function appMenu(name) {
       bench: String(b.index),
       benchName: benchName(b),
       app: name,
-      appRemote: b.app_remotes?.[name]?.[0] || (!host ? catalogApp(name).source?.url : null),
+      appRemote: b.app_remotes?.[name]?.[0],
     }
     groups.push({ group: benchName(b), options: [
       { label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...c, args: { apps: name, sites: '' } }) },

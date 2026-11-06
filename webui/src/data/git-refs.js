@@ -20,10 +20,11 @@ export function repoForAppInput(value, { bench = null, apps = [] } = {}) {
     || null
 }
 
-const initial = () => ({ key: '', url: '', branches: [], tags: [], loading: false, error: null })
+const initial = () => ({ branches: [], tags: [], loading: false, error: null })
 
-export function useGitRefs(source, commitTyped, { active = true, host = null, delay = 0 } = {}) {
+export function useGitRefs(source, commitTyped, { active = true, host = null, delay = 0, commit = false } = {}) {
   const refs = ref(initial())
+  const accepted = commit ? 'branch, tag or commit' : 'branch or tag'
   let timer = null
   let request = 0
 
@@ -37,15 +38,12 @@ export function useGitRefs(source, commitTyped, { active = true, host = null, de
         return
       }
 
-      const key = `${hostId}\n${url}`
-      refs.value = { key, url, branches: [], tags: [], loading: true, error: null }
+      refs.value = { ...initial(), loading: true }
       const load = async () => {
         try {
           const data = await getJson(`${apiBase(hostId || null)}/apps/refs?url=${encodeURIComponent(url)}`)
           if (request !== current) return
           refs.value = {
-            key,
-            url,
             branches: data.branches || [],
             tags: data.tags || [],
             loading: false,
@@ -53,7 +51,7 @@ export function useGitRefs(source, commitTyped, { active = true, host = null, de
           }
         } catch (error) {
           if (request !== current) return
-          refs.value = { key, url, branches: [], tags: [], loading: false, error: error.message }
+          refs.value = { ...initial(), error: error.message }
         }
       }
       if (delay) timer = setTimeout(load, delay)
@@ -80,12 +78,12 @@ export function useGitRefs(source, commitTyped, { active = true, host = null, de
       onClick: ({ query }) => commitTyped(query),
     },
   ])
-  const emptyText = computed(() => (refs.value.error ? `refs not listed: ${refs.value.error}` : 'type a branch, tag or commit'))
+  const emptyText = computed(() => (refs.value.error ? `refs not listed: ${refs.value.error}` : `type a ${accepted}`))
   const statusText = computed(() => {
     if (refs.value.loading) return 'listing branches and tags…'
     if (refs.value.branches.length || refs.value.tags.length) return `${refs.value.branches.length} branches, ${refs.value.tags.length} tags from the repository`
     if (refs.value.error) return 'free text; the list could not be read'
-    return 'free text; enter a branch, tag or commit'
+    return `free text; enter a ${accepted}`
   })
 
   return { refs, options, emptyText, statusText }

@@ -215,10 +215,15 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
-def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]] | None:
-    """``apps/<dir> -> {normalized remote, ...}`` for every git checkout on the bench.
+def _fetch_rank(remote: str) -> tuple[int, str]:
+    """Sort key of a checkout's remote names: the one ``apps checkout`` fetches from first."""
+    return {"upstream": 0, "origin": 1}.get(remote, 2), remote
 
-    Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
+
+def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | None:
+    """``apps/<dir> -> [normalized remote, ...]`` for every git checkout on the bench.
+
+    Each list starts with the remote ``apps checkout`` fetches from. Read from each ``.git/config`` as a file, not through ``git``, so a checkout git
     would refuse as "dubious ownership" still answers. Only ``[remote ...]`` sections
     count: a ``[submodule ...]`` url is another repository, not this checkout. One exec
     for the whole bench; a failed read is None, never an empty map that would read as
@@ -226,20 +231,23 @@ def app_remotes(frappe_container, bench_path: str) -> dict[str, set[str]] | None
     """
     script = (
         'for f in apps/*/.git/config; do [ -f "$f" ] && '
-        'awk -v f="$f" \'/^[ \t]*\\[/ { inr = ($0 ~ /^[ \t]*\\[remote /) } '
-        'inr && $1 == "url" && $2 == "=" { print f "\\t" $3 }\' "$f"; done; true'
+        'awk -v f="$f" \'/^[ \t]*\\[/ { inr = ($0 ~ /^[ \t]*\\[remote /); name = $2 } '
+        'inr && $1 == "url" && $2 == "=" { print f "\\t" name "\\t" $3 }\' "$f"; done; true'
     )
     exit_code, output = frappe_container.exec_run(["sh", "-c", script], workdir=bench_path)
     if exit_code not in (0, None):
         return None
-    remotes: dict[str, set[str]] = {}
+    remotes: dict[str, dict[str, str]] = {}
     for line in _decode(output).splitlines():
-        path, _, url = line.partition("\t")
+        path, name, url = (line.split("\t", 2) + ["", ""])[:3]
         parts = path.split("/")
         key = remote_key(url)
         if len(parts) == 4 and key:
-            remotes.setdefault(parts[1], set()).add(key)
-    return remotes
+            remotes.setdefault(parts[1], {}).setdefault(name.strip('"]'), key)
+    return {
+        app: list(dict.fromkeys(named[n] for n in sorted(named, key=_fetch_rank)))
+        for app, named in remotes.items()
+    }
 
 
 def _bench_copy_of(frappe_container, bench_path: str, target: str, before: set[str]) -> str | None:
@@ -1032,11 +1040,8 @@ def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
             hint="Target an app already installed in the bench (see 'cwcli apps list').",
         )
     remotes = _decode(output).split()
-    for preferred in ("upstream", "origin"):
-        if preferred in remotes:
-            return preferred
     if remotes:
-        return remotes[0]
+        return min(remotes, key=_fetch_rank)
     raise CwcliError(
         ErrorKind.PRECONDITION,
         "app.no_remote",

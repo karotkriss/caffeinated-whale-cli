@@ -46,7 +46,7 @@ const ctx = (i) => {
     bench: String(i.bench_index),
     benchName: benchName(i),
     app: app.value.name,
-    appRemote: bench?.app_remotes?.[app.value.name]?.[0] || app.value.source?.url || null,
+    appRemote: bench?.app_remotes?.[app.value.name]?.[0],
   }
 }
 

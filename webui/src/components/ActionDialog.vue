@@ -44,7 +44,7 @@ const setRef = (query) => {
 const { refs, options: refOptions, emptyText: refEmptyText } = useGitRefs(
   refSource,
   setRef,
-  { active: () => dialogState.open && !!refField.value, host: () => ctx.value.host },
+  { active: () => dialogState.open && !!refField.value, host: () => ctx.value.host, commit: true },
 )
 const command = computed(() => (action.value ? action.value.cli(ctx.value, dialogState.values) : null))
 watch(() => [dialogState.open, ...checkboxes.value.map((f) => !!dialogState.values[f.name])], () => (typed.value = ''))

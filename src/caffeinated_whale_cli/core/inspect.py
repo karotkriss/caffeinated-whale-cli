@@ -103,8 +103,8 @@ class BenchInfo:
     # is a symlink, or whose imported copy differs from apps/<app>. Empty on a
     # cache-served read - the same verified-or-not honesty as installed_apps_verified.
     app_copies: list[resolvers.AppImport] = field(default_factory=list)
-    # Each app checkout's git remotes (``[remote ...]`` urls, credentials dropped),
-    # read live only when the caller asks (``inspect(app_remotes=True)``) and the
+    # Each app checkout's git remotes (``[remote ...]`` urls, credentials dropped), the
+    # one ``apps checkout`` fetches from first, read live only when the caller asks (``inspect(app_remotes=True)``) and the
     # container answered; never cached. None whenever they were not read (not asked,
     # a cache-served read, or a failed exec), so "no remotes" is only ever a real answer.
     app_remotes: dict[str, list[str]] | None = None
@@ -926,10 +926,7 @@ def _with_app_remotes(project_name: str, benches: list[BenchInfo]) -> list[Bench
             app_remotes=(
                 None
                 if remotes is None
-                else {
-                    app: sorted(f"https://{k}" for k in keys)
-                    for app, keys in sorted(remotes.items())
-                }
+                else {app: [f"https://{k}" for k in keys] for app, keys in sorted(remotes.items())}
             ),
         )
         for b, remotes in zip(benches, read, strict=True)
