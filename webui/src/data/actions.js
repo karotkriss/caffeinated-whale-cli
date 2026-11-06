@@ -5,7 +5,8 @@
 //          'confirm' a dialog with the consequence and the equivalent cwcli line
 //          'typed'   the dialog's confirm stays disabled until the exact name of the
 //                    target is typed back (confirmTarget, else site > bench > instance)
-// fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox',
+// fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox' | 'ref',
+//          source?: (ctx, bench) => the repository a ref field lists, from the bench's live detail,
 //          show?: (ctx) => bool (only then is it shown and sent), default?: its value when shown (or (ctx) => value),
 //          note?: (ctx) => a one-line note under a checkbox, or nothing }
 // danger:  a destructive verb - the confirm button and the menu entry render red
@@ -21,6 +22,7 @@ import { hostName } from './hosts'
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
+const checkoutRepo = (c, bench) => bench?.app_remotes?.[c.app]?.[0]
 // `bench drop-site` needs the MariaDB root password; blank means the one cwcli
 // remembered at init (else the compose default, 123). It travels in the job's
 // secrets, never its spec.
@@ -306,7 +308,7 @@ export const ACTIONS = {
     label: 'Check out ref',
     icon: 'lucide-git-branch',
     confirm: 'confirm',
-    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
+    fields: [{ name: 'ref', type: 'ref', label: 'Branch, tag or commit', placeholder: 'develop', source: checkoutRepo }],
     cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')}${benchFlag(c)}`,
     says: (c) =>
       `Fetches and checks out a ref into ${c.app}, then restarts the bench's processes. A dirty working tree is refused; nothing is reset.`,
@@ -321,7 +323,7 @@ export const ACTIONS = {
     icon: 'lucide-git-branch',
     confirm: 'typed',
     confirmTarget: (c) => c.app,
-    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
+    fields: [{ name: 'ref', type: 'ref', label: 'Branch, tag or commit', placeholder: 'develop', source: checkoutRepo }],
     cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')} --reset${benchFlag(c)}`,
     says: (c) =>
       `Fetches the ref, then resets ${c.app}'s working tree to it: uncommitted changes to tracked files are discarded. Untracked files are left in place (nothing runs git clean). The bench's processes restart afterwards.`,

@@ -831,14 +831,21 @@ class TestAppCopiesFlags:
 
 
 class _RemotesContainer(FakeFrappeContainer):
-    """Also answers the app-remotes read: one ``apps/<dir>/.git/config<TAB>url`` line
-    per ``[remote ...]`` url, here carrying a credential and a ``.git`` suffix."""
+    """Also answers the app-remotes read: one ``apps/<dir>/.git/config<TAB>name<TAB>url``
+    line per ``[remote ...]`` url, by default carrying a credential and a ``.git`` suffix."""
+
+    remotes = {
+        "upstream": "https://oauth2:tok@gitlab.example.com/Example-Group/Sub-Group/field-service.git"
+    }
 
     def exec_run(self, cmd, workdir=None):
         if isinstance(cmd, list) and "/.git/config" in cmd[-1]:
             self.calls.append(cmd)
-            url = "https://oauth2:tok@gitlab.example.com/Example-Group/Sub-Group/field-service.git"
-            return (0, f"apps/field_service/.git/config\t{url}\n".encode())
+            lines = (
+                f'apps/field_service/.git/config\t"{name}"]\t{url}\n'
+                for name, url in self.remotes.items()
+            )
+            return (0, "".join(lines).encode())
         return super().exec_run(cmd, workdir)
 
     def read_remotes(self) -> bool:
@@ -857,6 +864,25 @@ class TestAppRemotes:
         assert result.data.served_from == "partial"
         assert result.data.benches[0].app_remotes == {
             "field_service": ["https://gitlab.example.com/example-group/sub-group/field-service"]
+        }
+
+    def test_the_remote_a_checkout_fetches_from_comes_first(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        container = _RemotesContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0"]})
+        container.remotes = {
+            "origin": "https://github.com/acme/field_service",
+            "upstream": "https://github.com/frappe/field_service",
+        }
+        install(container)
+
+        result = core_inspect.inspect("proj", app_remotes=True)
+
+        assert result.data.benches[0].app_remotes == {
+            "field_service": [
+                "https://github.com/frappe/field_service",
+                "https://github.com/acme/field_service",
+            ]
         }
 
     def test_it_is_read_only_when_asked(self, wired):

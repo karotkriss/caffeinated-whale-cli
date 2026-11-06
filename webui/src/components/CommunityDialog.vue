@@ -5,8 +5,9 @@
 // Install installs that commit. An update shows the installed and the latest commit
 // the same way before anything changes. Removing asks for the id typed back.
 import { computed, ref, watch } from 'vue'
-import { Alert, Badge, Button, Dialog, ErrorMessage, FormControl, LoadingText } from 'frappe-ui'
+import { Alert, Badge, Button, Combobox, Dialog, ErrorMessage, FormControl, LoadingText } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
+import { useGitRefs } from '../data/git-refs'
 import { addCommunity, checkCommunity, communityDialog, HOOK_POINT, integrations, loadIntegrations, previewCommunity, removeCommunity, updateCommunity } from '../data/integrations'
 
 const d = communityDialog
@@ -17,6 +18,12 @@ const check = ref(null) // update: { current, latest, update_available, declarat
 const typed = ref('')
 const busy = ref(null) // 'review' | 'install' | 'check' | 'update' | 'remove'
 const error = ref(null)
+const setRef = (query) => (refName.value = query || '')
+const { refs, options: refOptions, emptyText: refEmptyText } = useGitRefs(
+  () => url.value,
+  setRef,
+  { active: () => d.open && d.mode === 'add' && !preview.value, delay: 350 },
+)
 
 const installed = computed(() => integrations.list.find((i) => i.id === d.id) || null)
 
@@ -91,7 +98,7 @@ const errorText = computed(() => (error.value ? (error.value.hint ? `${error.val
       <form v-if="d.mode === 'add' && !preview" class="space-y-3" autocomplete="off" @submit.prevent="review">
         <p class="text-p-base text-ink-gray-7">Paste a GitHub, GitLab.com or self-hosted GitLab repository. cwcli reads what it declares before anything is installed. A public repository needs no sign-in; a private one uses this machine's <span class="font-mono text-p-sm">gh</span> or <span class="font-mono text-p-sm">glab</span> sign-in.</p>
         <FormControl v-model="url" label="Repository URL" placeholder="https://github.com/owner/repo" spellcheck="false" />
-        <FormControl v-model="refName" label="Branch or tag" placeholder="Default branch" description="Optional. cwcli installs the commit it points at now, and updates only when you ask." spellcheck="false" />
+        <Combobox :model-value="refName" label="Branch or tag" placeholder="Default branch" description="Optional. cwcli installs the commit it points at now, and updates only when you ask." :options="refOptions" :loading="refs.loading" :empty-text="refEmptyText" spellcheck="false" @update:model-value="setRef" @update:query="setRef" />
         <button type="submit" class="hidden" />
       </form>
 

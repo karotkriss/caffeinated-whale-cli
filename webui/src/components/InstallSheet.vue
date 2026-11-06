@@ -8,12 +8,12 @@ import { computed, ref, watch } from 'vue'
 import { trackJob } from '../data/job-toasts'
 import { Alert, Button, Checkbox, Combobox, Dialog, ErrorMessage, MultiSelect, Select } from 'frappe-ui'
 import { benchRunning, ensureRunning } from '../data/start-gate'
-import { getJson } from '../data/api'
 import CommandLine from './CommandLine.vue'
 import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
 import { installSheet } from '../data/app-panel'
 import { localInstances, details, loadDetail, parseApp, benchName } from '../data/fleet'
+import { useGitRefs } from '../data/git-refs'
 import { createJob } from '../data/jobs'
 
 const app = computed(() => installSheet.app)
@@ -66,23 +66,12 @@ const siteOptions = computed(() => (theBench.value?.sites || []).filter((s) => !
 // The bench already holds the app's source: install by name. Otherwise fetch the repo.
 const onBench = computed(() => !!theBench.value?.available_apps?.includes(app.value?.name))
 // Captain note 47: the branch field offers the repository's branches and tags.
-const refs = ref({ url: null, branches: [], tags: [], loading: false, error: null })
-watch(() => [installSheet.open, app.value?.source?.url], async ([open, url]) => {
-  if (!open || !url || refs.value.url === url) return
-  refs.value = { url, branches: [], tags: [], loading: true, error: null }
-  try {
-    const data = await getJson(`/api/v1/apps/refs?url=${encodeURIComponent(url)}`)
-    if (refs.value.url !== url) return
-    refs.value = { url, branches: data.branches || [], tags: data.tags || [], loading: false, error: data.ok ? null : data.error || 'could not list refs' }
-  } catch (e) {
-    if (refs.value.url === url) refs.value = { url, branches: [], tags: [], loading: false, error: e.message }
-  }
-}, { immediate: true })
-const refOptions = computed(() => [
-  ...(refs.value.branches.length ? [{ group: 'Branches', options: refs.value.branches.map((b) => ({ label: b, value: b })) }] : []),
-  ...(refs.value.tags.length ? [{ group: 'Tags', options: refs.value.tags.map((t) => ({ label: t, value: t })) }] : []),
-  { type: 'custom', key: 'typed', label: 'Use what I typed', description: 'a ref the list does not show', condition: ({ query }) => !!query && !refs.value.branches.includes(query) && !refs.value.tags.includes(query), onClick: ({ query }) => (branch.value = query) },
-])
+const setRef = (query) => (branch.value = query || '')
+const { refs, options: refOptions, emptyText: refEmptyText, statusText: refStatusText } = useGitRefs(
+  () => app.value?.source?.url,
+  setRef,
+  { active: () => installSheet.open && !onBench.value },
+)
 const spec = computed(() => (onBench.value ? app.value?.name : app.value?.source?.url ? `${app.value.source.url}${app.value.source.url.endsWith('.git') ? '' : '.git'}` : null))
 const { plan, loading: planLoading, error: planError } = usePlan(() => (installSheet.open && project.value && bench.value != null && spec.value && instRunning.value
   ? { project: project.value, bench: String(bench.value), target: [spec.value], ref: onBench.value ? '' : branch.value.trim(), site: fetchOnly.value ? [] : sites.value, fetch_only: fetchOnly.value || !sites.value.length, dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
@@ -166,8 +155,8 @@ async function start() {
           <p v-if="already.length" class="mt-1 text-xs text-ink-gray-5">Already installed on {{ already.join(', ') }}; those sites are not offered.</p>
         </div>
         <div v-if="!onBench">
-            <Combobox v-model="branch" label="Branch or tag (optional)" :options="refOptions" :loading="refs.loading" :placeholder="app.source?.default_branch || 'default branch'" :empty-text="refs.error ? `refs not listed: ${refs.error}` : 'type a branch or tag'" class="w-full" />
-            <p class="mt-1 text-xs text-ink-gray-5">{{ refs.loading ? 'listing branches and tags…' : refs.branches.length || refs.tags.length ? `${refs.branches.length} branches, ${refs.tags.length} tags from the repository` : 'free text; the list could not be read' }}</p>
+            <Combobox :model-value="branch" label="Branch or tag (optional)" :options="refOptions" :loading="refs.loading" :placeholder="app.source?.default_branch || 'default branch'" :empty-text="refEmptyText" class="w-full" spellcheck="false" @update:model-value="setRef" @update:query="setRef" />
+            <p class="mt-1 text-xs text-ink-gray-5">{{ refStatusText }}</p>
           </div>
         <Checkbox v-model="fetchOnly" label="Fetch only; do not install on sites" />
       </div>

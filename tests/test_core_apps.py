@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import shlex
+import subprocess
 
 import pytest
 
@@ -130,10 +131,10 @@ class FakeContainer:
         if cmd_str.strip() == "git remote":
             return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
         if "/.git/config" in cmd_str:
-            # The remotes read: one "apps/<dir>/.git/config<TAB>url" line per remote.
+            # The remotes read: one "apps/<dir>/.git/config<TAB>name<TAB>url" line per remote.
             remotes = getattr(self, "app_remotes", {})
             return 0, "".join(
-                f"apps/{d}/.git/config\t{url}\n"
+                f'apps/{d}/.git/config\t"upstream"]\t{url}\n'
                 for d, urls in remotes.items()
                 if d in self.available
                 for url in urls
@@ -572,28 +573,72 @@ def test_the_already_installed_refusal_checks_a_remote_matched_app_by_its_real_n
     assert not any("install-app" in c for c in container.calls)
 
 
+def git(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+class _LocalContainer:
+    def exec_run(self, cmd, workdir):
+        cmd = cmd.split() if isinstance(cmd, str) else cmd
+        done = subprocess.run(cmd, cwd=workdir, capture_output=True)
+        return done.returncode, done.stdout
+
+
 def test_the_remotes_read_credits_a_checkout_with_its_own_remote_not_its_submodules(tmp_path):
     """Runs the real read against real git checkouts: a vendored submodule's url sits
     in the same .git/config, and must not make that checkout answer for its repo."""
-    import subprocess
-
-    def git(*args, cwd):
-        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
-
     app = tmp_path / "apps" / "field_service"
     app.mkdir(parents=True)
     git("init", "-q", cwd=app)
     git("remote", "add", "upstream", SW_URL, cwd=app)
     git("config", "submodule.vendor.url", "https://example.com/org/vendored-app", cwd=app)
 
-    class LocalContainer:
-        def exec_run(self, cmd, workdir):
-            done = subprocess.run(cmd, cwd=workdir, capture_output=True)
-            return done.returncode, done.stdout
+    remotes = core_apps.app_remotes(_LocalContainer(), str(tmp_path))
 
-    remotes = core_apps.app_remotes(LocalContainer(), str(tmp_path))
+    assert remotes == {"field_service": [core_apps.remote_key(SW_URL)]}
 
-    assert remotes == {"field_service": {core_apps.remote_key(SW_URL)}}
+
+def test_the_remotes_read_keeps_every_url_of_a_remote(tmp_path):
+    """Any url can be the one an install names, so a mirror still matches the checkout."""
+    app = tmp_path / "apps" / "field_service"
+    app.mkdir(parents=True)
+    git("init", "-q", cwd=app)
+    git("remote", "add", "origin", "https://a.example/fork/field-service", cwd=app)
+    git("remote", "add", "upstream", SW_URL, cwd=app)
+    git("remote", "set-url", "--add", "upstream", "https://z.example/org/mirror", cwd=app)
+
+    assert core_apps.app_remotes(_LocalContainer(), str(tmp_path))["field_service"] == [
+        core_apps.remote_key(SW_URL),
+        "z.example/org/mirror",
+        "a.example/fork/field-service",
+    ]
+
+
+@pytest.mark.parametrize(
+    "named, fetched",
+    [
+        (
+            {"origin": "https://a.example/fork/app", "upstream": "https://z.example/org/app"},
+            "upstream",
+        ),
+        ({"fork": "https://a.example/fork/app", "origin": "https://z.example/org/app"}, "origin"),
+        ({"zeta": "https://a.example/fork/app", "alpha": "https://z.example/org/app"}, "alpha"),
+    ],
+)
+def test_the_first_remote_listed_is_the_one_a_checkout_fetches_from(tmp_path, named, fetched):
+    """The web UI lists refs from the first remote, so it must be ``apps checkout``'s."""
+    app = tmp_path / "apps" / "field_service"
+    app.mkdir(parents=True)
+    git("init", "-q", cwd=app)
+    for name, url in named.items():
+        git("remote", "add", name, url, cwd=app)
+
+    container = _LocalContainer()
+    remotes = core_apps.app_remotes(container, str(tmp_path))["field_service"]
+
+    assert core_apps._resolve_remote(container, str(app), "field_service") == fetched
+    assert remotes[0] == core_apps.remote_key(named[fetched])
+    assert len(remotes) == 2
 
 
 def test_without_the_remote_match_bench_fails_on_the_rename(monkeypatch, container):
