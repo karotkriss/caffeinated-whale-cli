@@ -104,9 +104,10 @@ class BenchInfo:
     # cache-served read - the same verified-or-not honesty as installed_apps_verified.
     app_copies: list[resolvers.AppImport] = field(default_factory=list)
     # Each app checkout's git remotes (``[remote ...]`` urls, credentials dropped), the
-    # one ``apps checkout`` fetches from first, read live only when the caller asks (``inspect(app_remotes=True)``) and the
-    # container answered; never cached. None whenever they were not read (not asked,
-    # a cache-served read, or a failed exec), so "no remotes" is only ever a real answer.
+    # one ``apps checkout`` fetches from first, read live only when the caller asks
+    # (``inspect(app_remotes=True)``) and the container answered; never cached. None
+    # whenever they were not read (not asked, a cache-served read, or a failed exec),
+    # so "no remotes" is only ever a real answer.
     app_remotes: dict[str, list[str]] | None = None
 
 
