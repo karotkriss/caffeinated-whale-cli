@@ -228,7 +228,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--auto-start` | Automatically start containers if not running |
 | `--start` / `--no-start` | After creating the bench+site, start its dev services (supervisord over `bench start`) so init leaves a running dev environment (default: `--start`). `--no-start` creates without starting, for automation/CI. Distinct from `--auto-start`, which only controls Docker container startup |
 | `--reuse-bench` / `--no-reuse-bench` | Pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`; `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists. Default: ask interactively (a non-TTY without either flag refuses). Distinct from `--auto-start`, which controls container startup |
-| `--uid INTEGER` | Override the uid/gid the container's `frappe` user is aligned to, instead of the host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0), where a root host already falls back to a safe default automatically (see step 7 below); pass `--uid` to choose a specific uid instead. Must be a positive, non-root integer (`--uid 0`, negatives, and non-numeric values are rejected with a usage error before any container or file work). Applies only to this init invocation, including its end-of-init auto-start; it is never persisted, so later `cwcli start`/`restart` do not take it |
+| `--uid INTEGER` | Override the uid/gid the container's `frappe` user is aligned to, instead of `CWCLI_UID` or the host's own uid/gid. A root host (uid 0, e.g. a CI runner) or a uid that a system account in the image already holds falls back to a safe default automatically (see step 7 below); pass `--uid` to choose a specific uid instead. Must be a positive, non-root integer (`--uid 0`, negatives, and non-numeric values are rejected with a usage error before any container or file work). Applies only to this init invocation, including its end-of-init auto-start; it is never persisted, so later `cwcli start`/`restart` do not take it. To make every command use the same uid, set [`CWCLI_UID`](#running-as-root-or-in-ci-cwcli_uid) instead |
 | `-v`, `--verbose` | Show verbose output with streaming command execution |
 
 **What It Does:**
@@ -239,7 +239,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 4. Binds the bench workspace to a host `~/.cwcli/projects/{project_name}/data/` directory at `--bench-parent` inside the container (default `/workspace`), so bench files stay directly accessible on the host and survive container recreation
 5. Resolves the `frappe/bench` image tag to pin (never uses `:latest`): `--bench-image-tag` is used verbatim and skips the lookup; otherwise a short-lived on-disk cache serves repeated inits and only a cache miss queries Docker Hub for the latest stable tag
 6. Pulls Docker images and starts containers
-7. On hosts that expose uid/gid information, aligns the container's `frappe` user to the host user so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` (no-op when the ids already match; platforms without `os.getuid`, such as Windows, cleanly skip alignment because Docker Desktop handles bind-mount ownership; a failed attempted remap degrades to a warning and bench creation still proceeds). On a **root host** (uid 0, a common CI-runner shape) the container `frappe` user is **not** remapped to 0 - that would collide with the container's own root user and break bench's `PATH` (`bench init` fails with exit 127) - so it falls back to the image's default uid (1000) and says so once in a warning; root can still remove those files, so `cwcli rm` keeps working. Pass `--uid <n>` to align to a specific uid instead
+7. On hosts that expose uid/gid information, aligns the container's `frappe` user to the host user so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` (no-op when the ids already match; platforms without `os.getuid`, such as Windows, cleanly skip alignment because Docker Desktop handles bind-mount ownership; a failed attempted remap degrades to a warning and bench creation still proceeds). The `frappe` user is **never** given a uid that another account in the image already holds: not 0 on a **root host** (uid 0, a common CI-runner shape), and not a system account's uid such as `systemd-network`'s 998, which is where a shared install's service account or a runner's system user can land. Either would give bench that account's home and drop its `PATH` (`bench init` fails with exit 127, and the workspace fills with files owned by a system account), so cwcli uses the image's default uid (1000) instead, makes the workspace directory owned by it, and says so once in a warning; root can still remove those files, so `cwcli rm` keeps working. Set `CWCLI_UID=<n>` or pass `--uid <n>` to align to a specific uid instead (see [Running as root or in CI](#running-as-root-or-in-ci-cwcli_uid))
 8. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
 9. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
 10. Installs `yarn` globally for the activated Node.js version (older branches only)
@@ -3014,6 +3014,34 @@ cwcli ls --json | jq '.[] | select(.status=="running")'
 # Parse inspect output (each bench carries its numeric "index" for --bench)
 cwcli inspect frappe-one --json | jq '.bench_instances[0].sites'
 ```
+
+### Running as root or in CI (`CWCLI_UID`)
+
+Bench commands run inside the container as its `frappe` user, and every file they write to the bind-mounted workspace is owned by that user's uid on the host.
+`cwcli init`, `start`, `restart`, `scale`, and `new-bench` align that uid to the user running cwcli, so the workspace stays owned by you and `cwcli rm` can delete it.
+In two cases that uid would break bench, so cwcli uses uid 1000 (the image's own `frappe` uid) instead, with a one-time warning from `init`:
+
+- The invoking user is root (uid 0), as on a GitLab shell runner or another root CI job.
+- The uid already belongs to another account in the image, such as `systemd-network` (998) or `redis` (100). A shared install's `cwcli` service account and a runner's system user often have a uid in this range.
+
+Both cases need no configuration.
+To choose the uid yourself, set `CWCLI_UID`.
+Every command that aligns the user honours it, so set it in the environment of every cwcli command for that instance, for example in the CI job's variables:
+
+```bash
+export CWCLI_UID=1000
+cwcli init my-ci-bench --admin-password "$ADMIN_PASSWORD"
+cwcli start my-ci-bench
+```
+
+`CWCLI_UID` must be a positive integer; any other value is refused with a usage error before cwcli changes anything.
+`cwcli init --uid <n>` does the same for one `init` run only, and wins over `CWCLI_UID`.
+A uid that an image account holds still falls back to 1000, even when you set it.
+
+**Repairing an instance an older cwcli left broken:** older releases could give `frappe` uid 0 (before 3.2.0, on a root host) or a system account's uid, so `bench` was not on its `PATH` and the bench files were owned by that account.
+Upgrade cwcli and run `cwcli start <project>` as the same user as before.
+When `frappe` is aligned to a uid other than yours (a root host, a fallback, or `CWCLI_UID`), `start` moves `frappe` to the usable uid and gives it ownership of every bench it starts, with `chown -R`, so no file is deleted.
+A bench whose `bench init` never finished must still be created again with `cwcli init`.
 
 ### For agents: the `cwcli axi` surface
 

@@ -598,10 +598,10 @@ def init(
         None,
         "--uid",
         help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
-        "host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0): "
-        "aligning to 0 would collide with the container's own root user and break bench's PATH, "
-        "so that case already falls back to a safe default automatically; pass --uid to choose a "
-        "specific uid instead. Must be a positive, non-root integer.",
+        "host's own uid/gid (or CWCLI_UID). A root host (uid 0) or a uid that a system account "
+        "in the image already holds falls back to 1000 automatically, since either would break "
+        "bench's PATH; pass --uid to choose a specific uid instead. Applies to this init only: "
+        "set CWCLI_UID=<n> to make later start/restart use it too. Must be a positive integer.",
     ),
 ) -> None:
     """
@@ -650,7 +650,9 @@ def init(
     try:
         core_init.check_uid_override(uid)
     except CwcliError as e:
-        raise typer.BadParameter(e.message, param_hint="--uid") from None
+        raise typer.BadParameter(
+            e.message, param_hint="--uid" if uid is not None else None
+        ) from None
 
     # Resolve the Frappe git ref first so a malformed --version fails fast,
     # before any project dir / container work.
@@ -716,7 +718,6 @@ def init(
                 bench_parent=bench_parent,
                 bench_image_tag=bench_image_tag,
                 stream_output=verbose,
-                uid=uid,
                 db_root_password=db_root_password,
                 on_event=renderer,
             )
@@ -732,7 +733,6 @@ def init(
                     bench_image_tag=bench_image_tag,
                     auto_start=True,
                     stream_output=verbose,
-                    uid=uid,
                     db_root_password=db_root_password,
                     on_event=renderer,
                 )

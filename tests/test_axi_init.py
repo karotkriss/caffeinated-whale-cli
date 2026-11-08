@@ -653,10 +653,11 @@ class TestUidOverride:
         assert result.exit_code == 2
         assert calls["instance"] == []
 
-    def test_valid_uid_threads_into_both_stages_and_the_auto_start(self, monkeypatch):
-        """A valid --uid is passed to init_instance, init_bench, AND the end-of-init
-        auto-start (the same invocation), so the auto-start aligns to the SAME id the
-        bench was built under rather than re-aligning to the host uid."""
+    def test_valid_uid_threads_into_the_bench_stage_and_the_auto_start(self, monkeypatch):
+        """A valid --uid is passed to init_bench (which aligns frappe and owns the
+        workspace dir) AND the end-of-init auto-start (the same invocation), so the
+        auto-start aligns to the SAME id the bench was built under rather than
+        re-aligning to the host uid. Stage 1 no longer needs it."""
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
 
@@ -666,7 +667,7 @@ class TestUidOverride:
         )
 
         assert result.exit_code == 0
-        assert calls["instance"][0]["uid"] == 1005
+        assert "uid" not in calls["instance"][0]
         assert calls["bench"][0]["uid"] == 1005
         assert calls["start"][0]["uid_override"] == 1005
 

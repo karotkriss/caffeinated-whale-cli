@@ -1306,7 +1306,6 @@ def _run_init(
         bench_parent=bench_parent,
         bench_image_tag=args.get("bench_image_tag") or None,
         auto_start=auto_start,
-        uid=uid,
         db_root_password=_db_root_password(secret_values),
         stream_output=True,
         on_event=emit,

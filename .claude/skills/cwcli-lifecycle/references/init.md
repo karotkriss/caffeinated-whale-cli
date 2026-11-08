@@ -67,26 +67,33 @@ On a capable host, an unreadable uid/gid or a failed remap exec is a soft warnin
 
 Regression coverage: `tests/test_core_docker.py` (the no-op path for matching ids without home repair, matching ids with the narrowed home repair, the platform no-op without `os.getuid`, uid/gid remapping, root-user exec, and failures degrading to soft warnings); the `id -u`/`id -g frappe` probe fake plumbing added to `tests/test_core_init.py`/`tests/test_core_supervision.py`'s `FakeContainer` reports the host's own ids.
 
-### `init`/`start`: never align `frappe` to uid 0 on a root host (#229, `fm/cwcli-root-uid-229`)
+### `init`/`start`: never align `frappe` onto a uid another image account holds (#229)
 
 A host running as uid 0 (a common CI-runner shape) used to make the alignment above remap the container `frappe` user to 0, which aliases the container's OWN `root` row in `/etc/passwd`.
-`docker exec -u frappe` then resolves `$HOME` via `getpwuid(0)`, which returns the FIRST row at uid 0 (`root`, listed before `frappe`), so the exec lands with `HOME=/root`, silently drops every PATH entry bench needs (which live under `/home/frappe`), and `bench init` fails with exit 127 (`bench: not found`).
-Root already deletes any file, so it never needed the remap and the "host can remove the workspace" invariant still holds.
+`docker exec -u frappe` resolves the user to a NUMBER, and the HOME lookup for that number returns the FIRST passwd row holding it (`root`, listed before `frappe`), so the exec lands with `HOME=/root`, silently drops every PATH entry bench needs (which live under `/home/frappe`), and `bench init` fails with exit 127 (`bench: not found`).
+The same happens for ANY uid another account in the image already holds, not just 0: on the `frappe/bench` image, `systemd-network` is 998 and `redis` is 100, so `frappe` at 998 gets `HOME=/`, and the workspace fills with files the host names as a system account.
+That is where a shared install's service account lands (`cwcli setup shared` creates it with `useradd --system`), and where a CI runner whose own user is a system account lands.
+The v3.2.0 fix guarded only the number 0, so a root CI job on a shared-mode host still broke.
 
-The align TARGET is now the single source of truth `core.docker.resolve_frappe_alignment_ids(uid_override) -> (uid, gid, note)`, shared by `align_container_user_to_host` AND `init_instance`'s data-dir chown so the two can never disagree.
-Precedence: an explicit `uid_override` (the `--uid <n>` escape hatch) wins over everything; else the shared-mode service uid (a provisioned shared install on a root host keeps its non-zero service uid, so the service uid wins over root and the fallback is never reached); else the host uid.
-A resolved target of 0 (a root host with no override, or a shared box whose service account is unprovisioned) falls back to `ROOT_HOST_FALLBACK_UID`/`_GID` (the image default 1000) with a `note`.
-Because the fallback lives inside align, `core.start`/`core.scale` on a root host fall back too - otherwise the end-of-init/next start would re-remap `frappe` to 0 and re-break it.
+The align TARGET is `core.docker.frappe_alignment_target(container, uid_override) -> (uid, gid, note)`: the pure decision `resolve_frappe_alignment_ids(uid_override, taken=...)` checked against `container_account_uids(container)` (every passwd row except `frappe`'s own, one `cat /etc/passwd` exec, `{}` when unreadable, which leaves the uid-0 guard in force).
+Precedence: init's explicit `--uid` wins over everything; then `CWCLI_UID` (`env_uid_override()`, validated positive or a `USAGE` error, never silently ignored); then the shared-mode service uid; else the host uid.
+A resolved uid that is 0 or in `taken` falls back to `DEFAULT_FRAPPE_UID` (the image's own 1000) with a `note`; the gid is kept unless it is 0, because a duplicate gid is harmless and keeps a shared install's group access.
+An override is not exempt: `--uid 100` on the image above falls back too, and the web UI's job path, which passes `uid` through unvalidated, can never put 0 into the container.
+Because the decision lives inside align, `core.start`/`core.scale`/`new-bench` fall back too, so the next start never re-breaks what init fixed.
 
-`--uid` is on `cwcli init` and `cwcli axi init` ONLY, validated `>0` (0/negative are usage errors; non-numeric is Typer's own parse error) by `core.init.check_uid_override` BEFORE any project dir or container work.
-It is threaded only within the one init invocation, INCLUDING its end-of-init auto-start (`_start_services` -> `core.start(uid_override=)`); `cwcli start`/`scale`/`restart` never take a `--uid` and never persist one, so a later start with no override re-resolves normally (and the v3.1.1 owner-mismatch re-own self-heals any workspace an override left behind).
-The root-host fallback is surfaced ONCE, non-silently, as `InitNotice(code="init.uid_align_root_host")` in `init_bench` (rendered as a yellow warning by `commands/init.py`; folded into the `axi init` TOON `warnings`).
+`CWCLI_UID` exists because alignment re-runs on every start: init's `--uid` is threaded only within the one init invocation (including its end-of-init auto-start), so a later `cwcli start` without the env var re-resolves to the host uid.
+`--uid` stays init-only and unpersisted; `CWCLI_UID` is the durable form, honoured by every aligning command.
+`core.init.check_uid_override` validates both (the flag, else the env var) BEFORE any project dir or container work.
+The fallback is surfaced ONCE, non-silently, as `InitNotice(code="init.uid_align_root_host")` in `init_bench` (the code name predates the collision case; rendered as a yellow warning by `commands/init.py`, folded into the `axi init` TOON `warnings`).
 
-`init_instance` also keeps the host-side bind-mount source dir writable by the aligned user: `core.docker.align_bind_mount_source_owner(project_dir/"data", uid_override)` chowns it to the same target when it differs from this process's uid (a root host, or a non-root `--uid`).
-It runs on every init after the compose is written - so a retry after a prior failed init left the dir root-owned is fixed too - is idempotent, no-ops on a normal host and for an old `..:/workspace` instance with no `data/` dir, and is skipped in shared mode (its group-writable model owns bind-mount permissions).
-Non-root hosts with no `--uid` are byte-identical to before.
+Workspace ownership follows the target whenever it is not the invoking user's own uid/gid (`_syncs_workspace_owner`: a root host, a collision, or an override), as well as in shared mode.
+Then align stats each bench path and re-owns (`chown -R`) any whose owner differs; this is the repair path for an instance an older cwcli broke (`frappe` on uid 0 or a system account, bench owned by it): a plain `cwcli start` moves `frappe` to a usable uid and re-owns the bench, deleting nothing.
+On a normal box (aligned to the invoking user, who owns the workspace) no owner probe runs at all, so it stays byte-identical to before.
+`init_bench` also hands the workspace dir benches are created in (`bench_parent`) to the target via `align_workspace_dir_owner` (a non-recursive, owner-mismatch-gated chown run as root INSIDE the container), right after align and before `_ensure_directory`.
+It replaced the host-side `align_bind_mount_source_owner` in `init_instance`: stage 1 runs before the container exists and so could not know the effective target, and a host-side `os.chown` to another uid is EPERM for a non-root `--uid`.
+Skipped in shared mode, whose 2770 state tree owns bind-mount permissions.
 
-Regression coverage: `tests/test_core_docker.py` (`TestResolveFrappeAlignmentIds` decision table, `TestAlignNeverRemapsFrappeToRoot`, `TestAlignBindMountSourceOwner`), `tests/test_init_root_uid.py` (the core validator, the human CLI rejection before any work, the `init_bench` warn-once, and the init seams), `tests/test_axi_init.py::TestUidOverride` (the axi surface + thread-through), and real-Docker E2E `tests/e2e/test_root_host_init_e2e.py` (reproduces the uid-0 `HOME=/root` exit-127 mechanism and proves the fix keeps `frappe` usable, plus the `--uid` remap).
+Regression coverage: `tests/test_core_docker.py` (`TestResolveFrappeAlignmentIds`, `TestUnusableUidsFallBack`, `TestCwcliUidEnv`, `TestContainerAccountUids`, `TestAlignRepairsAWorkspaceOwnedByTheWrongUid`, `TestAlignWorkspaceDirOwner`, `TestAlignNeverRemapsFrappeToRoot`), `tests/test_init_root_uid.py` (the validator for the flag and the env var, the human CLI rejection before any work, the warn-once, the workspace-dir seam), `tests/test_axi_init.py::TestUidOverride`, real-Docker `tests/e2e/test_root_host_init_e2e.py` (the HOME mechanism on a stand-in container), and `tests/e2e/test_root_host_cwcli_e2e.py`, which runs the real cwcli AS ROOT in a runner container sharing the Docker socket and the session home at the same path: init + site, `apps list`, `backup`, then breaks the instance the old way (`frappe` on 998, bench owned by 998, `bench` off PATH) and proves a plain `cwcli start` repairs it.
 
 ### `init` phases must announce themselves BEFORE they run, not just on completion (`fm/cwcli-init-silent-longphase`)
 
