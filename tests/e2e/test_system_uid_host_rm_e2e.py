@@ -30,6 +30,7 @@ version-agnostic, and one more bench build per leg buys nothing.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -189,7 +190,9 @@ def test_cwcli_as_a_system_account_uid_removes_its_instance_with_a_backup(
 
         # 2. the credential-bridged verbs work as uid 998.
         _ok(_as_system_user(image, home, "run", name, "--version"), "run --version")
-        assert "frappe" in _ok(_as_system_user(image, home, "apps", "list", name), "apps list")
+        listed = _as_system_user(image, home, "apps", "list", name, "--json")
+        _ok(listed, "apps list")
+        assert "frappe" in json.loads(listed.stdout)["available_apps"], listed.stdout
 
         # 3. real data in the site's database.
         _seed_marker(name)
