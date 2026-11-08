@@ -1593,18 +1593,6 @@ def _dispatch(
                     "The site was not created, because it could not be published: "
                     + " ".join(refused),
                 )
-        if args.get("fetch"):
-            # The root password is checked before the fetch, not minutes later at new-site.
-            prologue = core_resolvers.resolve_container_and_bench(project, bench, None)
-            if isinstance(prologue, tuple):
-                unverified = core_db_access.verify_root_password(
-                    prologue[0],
-                    project,
-                    _db_root_password(secret_values),
-                    bench_path=prologue[1],
-                )
-                if unverified is not None:
-                    emit.lifecycle("db_password_unverified", unverified.text)
         # A remote pick is fetched onto the bench FIRST (no site install
         # yet), after the dependency plan of every pick; a refusal or a failed fetch stops
         # the job before any site exists.

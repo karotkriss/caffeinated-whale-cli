@@ -19,7 +19,7 @@ import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
-import { alignedRefs, benchBranchOf, branchChangeNote } from '../data/app-refs'
+import { alignedRefs, branchChangeNote, liveBranchOf } from '../data/app-refs'
 import CommandLine from './CommandLine.vue'
 import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
@@ -131,13 +131,14 @@ const remoteApps = computed(() => split.value.remote)
 const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
 const remoteApp = (v) => (String(v).startsWith('remote:') ? remoteApps.value.find((a) => a.key === v.slice(7)) : null)
 // A bench app's ref field lists its own remote's refs and defaults to the branch the copy
-// sits at; another ref is a checkout that moves it for every site on the bench. A remote
-// pick's field lists the repository's refs; empty leaves the branch to the plan.
+// sits at; another ref is a checkout that moves it for every site on the bench. Both are
+// read from the live plan (declared below), when the picker shows them. A remote pick's
+// field lists the repository's refs; empty leaves the branch to the plan.
 const pickerOptions = computed(() => [
   ...benchApps.value.map((a) => ({
     value: a, label: catalogApp(a).title, app: catalogApp(a), hint: catalogApp(a).description || '', section: 'On this bench',
     repo: (held.value.benchRemotes[a] || [])[0] || null, refLabel: 'Branch, tag or commit', refCommit: true,
-    refPlaceholder: benchBranchOf(theBench.value, a) || 'the branch the bench has', refNote: (r) => branchChangeNote(a, r, theBench.value),
+    get refPlaceholder() { return liveBranchOf(plan.value, a) || 'the branch the bench has' }, refNote: (r) => branchChangeNote(a, r, theBench.value, plan.value),
   })),
   ...remoteApps.value.map((a) => ({
     value: `remote:${a.key}`, name: a.name, label: a.title, app: a, hint: `fetched from ${hostLabel(a.source.host)} first · ${a.source.url}`, section: 'From app sources',
@@ -163,8 +164,6 @@ const appNames = computed(() => apps.value.map((v) => pickedRemote(v)?.name || v
 const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url).filter(Boolean))
 // The refs keyed as the job and the plan name their targets: a remote pick by its URL, a bench app by name.
 const refByTarget = computed(() => Object.fromEntries(apps.value.filter((v) => refs.value[v]).map((v) => [remoteApp(v)?.source?.url || v, refs.value[v]])))
-// Bench apps given a ref other than the one the bench has: Create site moves them first.
-const movedApps = computed(() => apps.value.filter((v) => !remoteApp(v) && refs.value[v] && refs.value[v] !== benchBranchOf(theBench.value, v)))
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
 
@@ -253,6 +252,8 @@ const nameState = computed(() => {
 })
 const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value && !(apps.value.length && instUp.value && (planLoading.value || planBlocked.value)))
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
+// Bench apps the plan checks out at their picked ref: Create site moves them first.
+const movedApps = computed(() => benchApp.value.filter((v) => branchChangeNote(v, refs.value[v], theBench.value, plan.value)))
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
   let deps = joined.value.length ? ' --with-deps' : ''
@@ -349,7 +350,7 @@ async function start() {
             <span v-else-if="inventory !== 'live'" class="text-xs text-ink-gray-5">the bench's apps could not be read live; an app it already holds is not fetched again</span>
             <span v-else-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
           </div>
-          <p v-for="a in movedApps" :key="`moved-${a}`" class="mt-2 text-xs text-ink-amber-6">{{ branchChangeNote(a, refs[a], theBench) }}</p>
+          <p v-for="a in movedApps" :key="`moved-${a}`" class="mt-2 text-xs text-ink-amber-6">{{ branchChangeNote(a, refs[a], theBench, plan) }}</p>
           <DependencyTree v-if="apps.length && instUp" class="mt-3" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" consent-note="Picking an app adds the apps it requires; they go away when it does." />
           <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" :refs="refs" :host="host" @update:model-value="(v) => (apps = v)" @update:refs="(v) => (refs = v)" @update:open="pickerOpen = $event" />
         </div>

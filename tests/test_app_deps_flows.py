@@ -244,7 +244,8 @@ def _stop_before_the_site(monkeypatch, new_site):
     def stop(*_a, **_k):
         raise CwcliError(ErrorKind.PRECONDITION, "test.reached_site_creation", "stop")
 
-    monkeypatch.setattr(db_access, "verify_root_password", stop)
+    monkeypatch.setattr(db_access, "verify_root_password", lambda *_a, **_k: None)
+    monkeypatch.setattr(new_site, "frappe_major", stop)
 
 
 def test_new_site_does_not_refuse_an_app_on_a_bench_whose_apps_cannot_be_read(
@@ -419,6 +420,35 @@ def test_a_failed_checkout_creates_no_site(world, container, monkeypatch):  # no
         )
     assert raised.value.code == "new_site.checkout_failed"
     assert "new-site" not in " ".join(container.calls)
+
+
+def test_a_wrong_root_password_stops_before_the_bench_app_moves(
+    world, container, monkeypatch  # noqa: F811
+):
+    """The checkout moves the app for every site on the bench, so MariaDB rejecting the
+    root password must stop the job before it, not after with the app already moved."""
+    from caffeinated_whale_cli.core import db_access
+
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch)
+    checkouts = _record_checkouts(monkeypatch, new_site)
+
+    def rejected(*_a, **_k):
+        raise CwcliError(ErrorKind.PRECONDITION, "db.root_password_wrong", "rejected")
+
+    monkeypatch.setattr(db_access, "verify_root_password", rejected)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            refs={"toolkit": "develop"},
+        )
+    assert raised.value.code == "db.root_password_wrong"
+    assert checkouts == [] and _gets(container) == []
 
 
 def test_new_site_refuses_a_ref_that_is_not_a_git_ref(world, container, monkeypatch):  # noqa: F811

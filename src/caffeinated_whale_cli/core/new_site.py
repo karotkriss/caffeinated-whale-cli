@@ -188,6 +188,14 @@ def new_site(
             for n in plan.nodes
             if n.app != "frappe" and (n.readable or n.requested_as not in urls)
         ]
+    # A wrong root password fails here in seconds, before anything on the bench moves.
+    from . import db_access
+
+    unverified = db_access.verify_root_password(
+        container, project, db_root_password, bench_path=bench_path
+    )
+    if unverified is not None:
+        warnings.append(unverified)
     for a, at in to_checkout:
         # An app the bench holds at another ref moves there BEFORE the site exists (and
         # with it every site on the bench that has it); a refused or failed checkout
@@ -220,15 +228,6 @@ def new_site(
     for a in wanted:
         if not _directory_exists(container, f"{bench_path}/apps/{a}"):
             raise _app_missing(project, bench_path, a)
-
-    # A wrong root password fails here in seconds, not at bench new-site.
-    from . import db_access
-
-    unverified = db_access.verify_root_password(
-        container, project, db_root_password, bench_path=bench_path
-    )
-    if unverified is not None:
-        warnings.append(unverified)
 
     major = frappe_major(container, bench_path)
     mariadb_flag = _select_mariadb_flag(f"version-{major}" if major else "version-16")

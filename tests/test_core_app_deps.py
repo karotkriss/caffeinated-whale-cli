@@ -684,3 +684,37 @@ def test_a_pinned_required_app_comes_from_the_catalog_only(monkeypatch):
     assert found.url == TOOLKIT and found.default_branch == "develop"
     assert app_deps.find_sources("toolkit", f"{TOOLKIT}.git") == [found]
     assert app_deps.find_sources("toolkit", "https://github.com/someone/toolkit") == []
+
+
+# --------------------------------------------------------------------- bench reader
+
+
+class _LocalBench:
+    """Runs the bench reader's exec on this host, against a bench laid out in tmp_path."""
+
+    def exec_run(self, cmd, **_kw):
+        import subprocess
+
+        done = subprocess.run(cmd, capture_output=True)
+        return done.returncode, done.stdout
+
+
+def test_a_bench_copys_remotes_start_with_the_one_apps_checkout_fetches_from(tmp_path):
+    """bench get-app clones with ``--origin upstream`` and ``apps checkout`` fetches from
+    upstream, then origin: a hand-cloned fork listed first in .git/config must not be the
+    remote the plan reads a checkout's ref from."""
+    git = tmp_path / "apps" / "toolkit" / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/master\n")
+    (git / "config").write_text(
+        '[core]\n\tbare = false\n[remote "mine"]\n\turl = https://github.com/me/toolkit-mine\n'
+        '[remote "origin"]\n\turl = https://github.com/me/toolkit\n'
+        '[remote "upstream"]\n\turl = https://gitlab.example.com/tools/toolkit.git\n'
+    )
+    found = app_deps.read_bench_apps(_LocalBench(), str(tmp_path))
+    assert found["toolkit"].remotes == [
+        "gitlab.example.com/tools/toolkit",
+        "github.com/me/toolkit",
+        "github.com/me/toolkit-mine",
+    ]
+    assert found["toolkit"].branch == "master"

@@ -43,7 +43,7 @@ from docker.errors import DockerException
 
 from ..utils import bench_sites
 from . import app_deps, bench_read, credbridge, resolvers, supervision
-from .app_catalog import remote_key
+from .app_catalog import fetch_rank, remote_key
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -215,11 +215,6 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
-def _fetch_rank(remote: str) -> tuple[int, str]:
-    """Sort key of a checkout's remote names: the one ``apps checkout`` fetches from first."""
-    return {"upstream": 0, "origin": 1}.get(remote, 2), remote
-
-
 def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | None:
     """``apps/<dir> -> [normalized remote, ...]`` for every git checkout on the bench.
 
@@ -246,7 +241,7 @@ def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | Non
         if len(parts) == 4 and key:
             remotes.setdefault(parts[1], {}).setdefault(name.strip('"]'), []).append(key)
     return {
-        app: list(dict.fromkeys(k for n in sorted(named, key=_fetch_rank) for k in named[n]))
+        app: list(dict.fromkeys(k for n in sorted(named, key=fetch_rank) for k in named[n]))
         for app, named in remotes.items()
     }
 
@@ -1042,7 +1037,7 @@ def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
         )
     remotes = _decode(output).split()
     if remotes:
-        return min(remotes, key=_fetch_rank)
+        return min(remotes, key=fetch_rank)
     raise CwcliError(
         ErrorKind.PRECONDITION,
         "app.no_remote",

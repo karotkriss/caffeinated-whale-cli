@@ -1514,11 +1514,6 @@ def test_publish_site_passes_an_explicit_empty_choice_as_a_choice(monkeypatch):
 def test_new_site_passes_each_picked_apps_ref_to_the_core(monkeypatch):
     seen = {}
     monkeypatch.setattr(
-        jobs.core_resolvers,
-        "resolve_container_and_bench",
-        lambda *a, **k: Result(status=Status.OK),  # the pre-fetch root-password check skipped
-    )
-    monkeypatch.setattr(
         jobs.core_new_site,
         "new_site",
         lambda *a, **k: seen.update(k) or Result(status=Status.OK, data=None),

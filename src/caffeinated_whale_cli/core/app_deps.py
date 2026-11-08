@@ -345,13 +345,13 @@ for name in names:
     m = re.match(r"ref: refs/heads/(\S+)", head)
     urls = []
     conf = read(os.path.join(d, ".git", "config")) or ""
-    inr = False
+    remote = None
     for line in conf.splitlines():
         s = line.strip()
         if s.startswith("["):
-            inr = s.startswith("[remote ")
-        elif inr and s.startswith("url"):
-            urls.append(s.split("=", 1)[-1].strip())
+            remote = s[8:].strip('" ]') if s.startswith("[remote ") else None
+        elif remote is not None and s.startswith("url"):
+            urls.append([remote, s.split("=", 1)[-1].strip()])
     out[name] = {
         "pyproject": read(os.path.join(d, "pyproject.toml")),
         "hooks": read(os.path.join(d, name, "hooks.py")),
@@ -402,7 +402,8 @@ def read_bench_apps(container, bench_path: str) -> dict[str, Declarations] | Non
     for name, files in record.items():
         if not isinstance(files, dict):
             continue
-        keys = [k for k in (app_catalog.remote_key(u) for u in files.get("urls") or []) if k]
+        named = sorted(files.get("urls") or [], key=lambda pair: app_catalog.fetch_rank(pair[0]))
+        keys = [k for k in (app_catalog.remote_key(url) for _, url in named) if k]
         found[name] = declarations_from(
             name,
             pyproject=files.get("pyproject"),
