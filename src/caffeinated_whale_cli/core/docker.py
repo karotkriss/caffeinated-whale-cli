@@ -536,6 +536,7 @@ _CHOWN_HOME_SHALLOW_DIRS = (
 DEFAULT_FRAPPE_UID = 1000
 DEFAULT_FRAPPE_GID = 1000
 
+
 def container_account_uids(container) -> dict[int, str]:
     """uid -> name of every account in the container's ``/etc/passwd`` except ``frappe``.
 
