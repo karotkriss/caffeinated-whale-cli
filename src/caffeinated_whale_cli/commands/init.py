@@ -644,7 +644,7 @@ def init(
         cwcli init my-project --version 16.26.3
         cwcli init my-project --frappe-branch version-16 --admin-password mypass
         cwcli init my-project --frappe-url https://github.com/me/frappe --frappe-branch my-feature
-        cwcli init my-project --uid 1001
+        sudo cwcli init my-project --uid 1001
     """
     # Reject an invalid --uid before ANY project dir / container work. A usage
     # error (exit 2), the same shape Typer gives a non-numeric --uid at parse time.
