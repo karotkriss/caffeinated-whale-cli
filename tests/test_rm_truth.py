@@ -422,17 +422,20 @@ class TestRemoveProjectEndToEnd:
         # The project directory is still removed regardless of --no-volumes.
         assert not project_dir.exists()
 
+    @pytest.mark.parametrize("layout", [("data",), ()], ids=["data-mount", "legacy-mount"])
     @pytest.mark.parametrize("remove_volumes", [True, False], ids=["rm", "rm-no-volumes"])
     def test_a_bench_a_sudo_start_reowned_finishes_through_the_root_helper(
-        self, cwcli_home, monkeypatch, remove_volumes
+        self, cwcli_home, monkeypatch, remove_volumes, layout
     ):
         """The invoker built the instance, so ``data/`` is theirs, but one `sudo cwcli
         start` handed the bench to root's alignment target (uid 1000). A later plain
         `cwcli rm`, with or without --no-volumes, hits EACCES inside that bench and
-        must finish the verified delete through the root helper, not leave it behind."""
+        must finish the verified delete through the root helper, not leave it behind.
+        Holds for the legacy `..:/workspace` layout (bench directly in the project
+        dir) and when rmtree names only the bare entry, as Python 3.10/3.11 do."""
         self._patch_docker(monkeypatch)
         project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
-        bench = project_dir / "data" / "frappe-bench"
+        bench = project_dir.joinpath(*layout, "frappe-bench")
         (bench / "logs").mkdir(parents=True)
         (bench / "logs" / "bench.log").write_text("log\n")
         invoker = os.getuid()
@@ -454,7 +457,7 @@ class TestRemoveProjectEndToEnd:
         def rmtree(path):
             calls.append(path)
             if len(calls) == 1:
-                raise PermissionError(13, "Permission denied", str(bench / "logs" / "bench.log"))
+                raise PermissionError(13, "Permission denied", "bench.log")
             real_rmtree(path)
 
         monkeypatch.setattr(core_rm.shutil, "rmtree", rmtree)

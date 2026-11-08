@@ -710,19 +710,22 @@ def _workspace_aligned_away(project_dir: Path, failed: str | None = None) -> boo
     the invoking user when an image account already holds the host uid (a fallback
     to 1000), when root's ``init --uid`` chose another uid, or after a one-off
     ``sudo cwcli start`` re-owned the benches to root's target (see
-    ``core.docker.align_container_user_to_host``). Checks the ``data/`` workspace,
-    each bench dir in it, and the path ``rmtree`` failed on with its parent, when
-    those lie inside ``project_dir``; any of them owned by another uid means the
-    remaining files are not the invoking user's to delete.
+    ``core.docker.align_container_user_to_host``). Checks each entry of
+    ``project_dir`` (the ``data/`` workspace, or a bench itself on the legacy
+    ``..:/workspace`` layout), each bench dir in ``data/``, and the path ``rmtree``
+    failed on with its parent, when those lie inside ``project_dir`` (Python 3.10
+    and 3.11 report only the bare entry name, so the entry checks do not depend
+    on it); any of them owned by another uid means the remaining files are not the
+    invoking user's to delete.
     """
     if not hasattr(os, "getuid"):
         return False
-    data = project_dir / "data"
-    candidates = [data]
-    try:
-        candidates.extend(data.iterdir())
-    except OSError:
-        pass
+    candidates: list[Path] = []
+    for parent in (project_dir, project_dir / "data"):
+        try:
+            candidates.extend(parent.iterdir())
+        except OSError:
+            pass
     if failed:
         path = Path(failed)
         candidates.extend(
