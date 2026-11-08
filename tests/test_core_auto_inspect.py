@@ -376,7 +376,7 @@ class TestStaleBootUnitWarnings:
             ),
         )
 
-    def test_an_enabled_feature_is_fixed_by_its_start_verb(self, cfg, monkeypatch):
+    def test_an_enabled_feature_is_fixed_by_its_idempotent_enable(self, cfg, monkeypatch):
         self._stale(monkeypatch, startup.AUTO_INSPECT)
         config_utils.set_auto_inspect_enabled(True)
 
@@ -386,9 +386,9 @@ class TestStaleBootUnitWarnings:
         assert warning.detail == {
             "unit": "cwcli-auto-inspect.service",
             "reason": "it runs /gone/cwcli, which no longer exists",
-            "fix": "cwcli config auto-inspect start",
+            "fix": "cwcli config auto-inspect enable",
         }
-        assert "Run `cwcli config auto-inspect start` to rewrite it." in warning.text
+        assert "Run `cwcli config auto-inspect enable` to rewrite it." in warning.text
 
     def test_a_disabled_feature_is_fixed_by_removing_the_unit(self, cfg, monkeypatch):
         self._stale(monkeypatch, startup.CRED_BRIDGE)
@@ -397,6 +397,14 @@ class TestStaleBootUnitWarnings:
 
         assert warning.detail["fix"] == "cwcli config cred-bridge disable"
         assert "to remove it." in warning.text
+
+    def test_an_enabled_bridge_is_fixed_by_its_start_verb(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.CRED_BRIDGE)
+        config_utils.set_cred_bridge_enabled(True)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.detail["fix"] == "cwcli config cred-bridge start"
 
     def test_current_units_warn_nothing(self, cfg, monkeypatch):
         self._stale(monkeypatch)

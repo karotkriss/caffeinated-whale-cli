@@ -376,14 +376,14 @@ def test_a_stale_boot_unit_is_named_with_its_fix_without_verbose(monkeypatch, ca
     warning = Message(
         "startup.unit_stale",
         "The auto-inspect start-on-boot unit cwcli-auto-inspect.service is stale: it runs "
-        "/gone/cwcli, which no longer exists. Run `cwcli config auto-inspect start` to "
+        "/gone/cwcli, which no longer exists. Run `cwcli config auto-inspect enable` to "
         "rewrite it.",
     )
     captured = _run(monkeypatch, capsys, _report("offline"), warnings=[warning])
     err = harness_collapse(captured.err)
 
     assert "cwcli-auto-inspect.service is stale" in err
-    assert "cwcli config auto-inspect start" in err
+    assert "cwcli config auto-inspect enable" in err
     assert captured.out.strip() == "offline"
 
 

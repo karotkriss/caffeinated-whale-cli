@@ -170,17 +170,19 @@ def repair_boot_hook(
 def stale_boot_unit_warnings() -> list[Message]:
     """One ``startup.unit_stale`` warning per installed boot unit that needs rewriting.
 
-    Read-only, for ``status`` and ``doctor``. Each names the exact fix: the unit's
-    own ``start`` verb rewrites it while its feature is enabled, and ``disable``
-    removes a unit left behind for a disabled feature.
+    Read-only, for ``status`` and ``doctor``. Each names the exact fix: while its
+    feature is enabled, the verb that rewrites it without changing anything else
+    (auto-inspect's idempotent ``enable``; its ``start`` is a deprecated alias, and
+    the bridge's ``start``, since its ``enable`` also wires running instances), and
+    ``disable``, which removes a unit left behind for a disabled feature.
     """
     units = (
-        (startup.AUTO_INSPECT, config_utils.read_auto_inspect_config),
-        (startup.CRED_BRIDGE, config_utils.read_cred_bridge_config),
+        (startup.AUTO_INSPECT, config_utils.read_auto_inspect_config, "enable"),
+        (startup.CRED_BRIDGE, config_utils.read_cred_bridge_config, "start"),
     )
     names = {"linux": "service_name", "darwin": "label", "windows": "task_name"}
     warnings = []
-    for unit, read_config in units:
+    for unit, read_config, rewrite in units:
         reason = startup.stale_reason(unit)
         if reason is None:
             continue
@@ -189,7 +191,7 @@ def stale_boot_unit_warnings() -> list[Message]:
         except (OSError, ValueError):  # unreadable config: `start` still rewrites it
             enabled = True
         group = unit.start_args[1]
-        fix = f"cwcli config {group} {'start' if enabled else 'disable'}"
+        fix = f"cwcli config {group} {rewrite if enabled else 'disable'}"
         name = getattr(unit, names.get(startup.get_platform(), "service_name"))
         warnings.append(
             Message(

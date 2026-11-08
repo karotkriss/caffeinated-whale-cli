@@ -2864,7 +2864,7 @@ The `start` alias keeps BOTH that argv and its refuse-when-disabled guard, so an
 The auto-inspect and credential-bridge units run `/usr/bin/env cwcli` on a PATH that starts with the directory of the cwcli that wrote the unit, then `~/.local/bin`, `/usr/local/bin` and the system directories, so a reinstall or a move between a per-user and the shared install keeps the unit working (Windows tasks keep the absolute path, because a task action does not search PATH).
 A systemd unit whose start keeps failing retries at most 3 times in 10 minutes and then stays failed until the next login or a manual start, so a removed cwcli cannot fill the journal; launchd and Task Scheduler run the unit once per login and never retry.
 A unit is stale when its cwcli no longer exists, when it runs a different cwcli from the one you are running, or when an older cwcli wrote it (no systemd restart limit, or a macOS absolute path).
-`cwcli status` and `cwcli doctor` name a stale unit and the command that fixes it: `cwcli config auto-inspect start` (or `cwcli config cred-bridge start`) rewrites it while the feature is enabled, and `disable` removes it otherwise.
+`cwcli status` and `cwcli doctor` name a stale unit and the command that fixes it: `cwcli config auto-inspect enable` (or `cwcli config cred-bridge start`) rewrites it while the feature is enabled, and `disable` removes it otherwise.
 `enable`, `start` and `restart` rewrite a stale unit of their own daemon automatically, without starting the unit, and an old unit whose cwcli still exists rewrites itself at the next boot because the `start` it runs does the same.
 
 ### `self-update` - Upgrade cwcli Itself
