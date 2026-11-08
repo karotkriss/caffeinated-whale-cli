@@ -838,6 +838,7 @@ class TestUnusableUidsFallBack:
         assert (uid, gid) == (1000, 998)
         assert note is not None
         assert "systemd-network" in note
+        assert "--uid" not in note  # a non-root user may not pass another uid
 
     def test_a_shared_service_uid_a_system_account_holds_falls_back(self, monkeypatch):
         """`cwcli setup shared` creates its service account with `useradd --system`,

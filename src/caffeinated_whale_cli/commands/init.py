@@ -600,8 +600,9 @@ def init(
         help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
         "host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0): "
         "aligning to 0 would collide with the container's own root user and break bench's PATH, "
-        "so that case already falls back to a safe default automatically; pass --uid to choose a "
-        "specific uid instead. Must be a positive, non-root integer.",
+        "so that case already falls back to a safe default automatically; as root, pass --uid to "
+        "choose a specific uid instead. Must be a positive, non-root integer; a non-root user may "
+        "pass only their own uid.",
     ),
 ) -> None:
     """

@@ -622,9 +622,10 @@ def resolve_frappe_alignment_ids(
     note = (
         f"Using uid {DEFAULT_FRAPPE_UID} for the container 'frappe' user because {why}; "
         f"giving 'frappe' that uid would hand bench the {owner} account's home and break "
-        "its PATH (`bench init` exits 127). Pass --uid <n> to init to align to a specific "
-        "uid instead."
+        "its PATH (`bench init` exits 127)."
     )
+    if os.getuid() == 0:
+        note += " As root, pass --uid <n> to init to align to a specific uid instead."
     return (DEFAULT_FRAPPE_UID, DEFAULT_FRAPPE_GID if gid == 0 else gid, note)
 
 
