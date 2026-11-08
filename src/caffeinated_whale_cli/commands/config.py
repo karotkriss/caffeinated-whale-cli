@@ -456,7 +456,7 @@ _ACTION_LINES = {
         "[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
     ),
     "hook.removed": "[green]Startup configuration removed.[/green]",
-    "hook.repaired": "[dim]Repaired the boot unit so it no longer stops a running daemon.[/dim]",
+    "hook.repaired": "[dim]Rewrote the stale start-on-boot unit against this cwcli.[/dim]",
 }
 
 
@@ -617,7 +617,7 @@ _CRED_ACTION_LINES = {
     "projects.hardened": "[dim]Tightened the projects directory to owner-only (0700).[/dim]",
     "hook.installed": "[green]Boot startup installed.[/green]",
     "hook.removed": "[green]Boot startup removed.[/green]",
-    "hook.repaired": "[dim]Repaired the boot unit so it no longer stops a running daemon.[/dim]",
+    "hook.repaired": "[dim]Rewrote the stale start-on-boot unit against this cwcli.[/dim]",
     "daemon.restarted": "[green]Credential bridge daemon restarted.[/green]",
 }
 
