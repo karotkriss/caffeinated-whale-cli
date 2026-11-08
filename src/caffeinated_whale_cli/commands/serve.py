@@ -259,6 +259,7 @@ from ..core import daemon_recovery
 from ..core import db_password as core_db_password
 from ..core import dev_mode as core_dev_mode
 from ..core import directory as core_directory
+from ..core import docker as core_docker
 from ..core import doctor as core_doctor
 from ..core import editors as core_editors
 from ..core import fleet as core_fleet
@@ -1951,6 +1952,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self.action_locks[hash(project) % len(self.action_locks)]
 
     def _restart_instance(self, project: str, bench: str | None) -> tuple[int, dict]:
+        core_docker.env_uid_override()
         core_jobs.check_start_port_conflicts(project)
         bench_result = core_resolvers.resolve_bench(project, bench, None)
         if bench_result is None:
