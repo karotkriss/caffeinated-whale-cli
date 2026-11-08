@@ -2867,6 +2867,9 @@ A unit is stale when its cwcli no longer exists or when an older cwcli wrote it 
 `cwcli status` and `cwcli doctor` name a stale unit and the command that fixes it: `cwcli config auto-inspect enable` (or `cwcli config cred-bridge start`) rewrites it while the feature is enabled, and `disable` removes it otherwise.
 `enable`, `start` and `restart` rewrite a stale unit of their own daemon automatically, without starting the unit, and an old unit whose cwcli still exists rewrites itself at the next boot because the `start` it runs does the same.
 On a shared install, `cwcli status` and `cwcli doctor` also check the credential-bridge and scheduler system units in `/etc/systemd/system`; a stale one, or one only root can read (an older cwcli wrote it `0660` under the shared umask, so a member cannot check it), is named with `sudo cwcli setup shared`, which rewrites it in place with the restart limit (and the running cwcli when its own is gone) and makes it readable to every user (`0644`), keeping its service account, and `sudo cwcli self-update` does the same before it restarts a running one.
+After you upgrade a host whose boot unit is already failing (its cwcli was removed, so the unit cannot run the `start` that would rewrite it), the unit keeps failing until you fix it by hand.
+Run `cwcli doctor` on that host, then run the command it names: `cwcli config auto-inspect enable` or `cwcli config auto-inspect disable` for auto-inspect, and `cwcli config cred-bridge start` or `cwcli config cred-bridge disable` for the credential bridge.
+For a shared install's credential-bridge or scheduler system unit, run `sudo cwcli setup shared`, which is the command doctor names for those units (`cwcli self-update` repairs only a system unit that is running).
 
 ### `self-update` - Upgrade cwcli Itself
 
