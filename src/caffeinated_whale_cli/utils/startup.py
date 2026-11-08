@@ -118,6 +118,16 @@ def running_cwcli_dir() -> str:
     return str(Path(sys.executable).parent)
 
 
+def running_cwcli() -> str:
+    """The running cwcli's absolute path, for units that name one (system units and
+    Windows tasks); :func:`get_cwcli_path` when it cannot be found beside it."""
+    for name in ("cwcli", "cwcli.exe"):
+        candidate = os.path.join(running_cwcli_dir(), name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return get_cwcli_path()
+
+
 def unit_search_path() -> str:
     """The PATH a boot unit finds ``cwcli`` on.
 
@@ -141,7 +151,8 @@ def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
 
     Stale means its program no longer exists, or it was written by an older cwcli
     (no systemd restart limit, or a macOS absolute path). Read-only; an unreadable
-    unit is never claimed stale. An old unit whose cwcli still exists repairs
+    or malformed per-user unit is never claimed stale (a shared system unit this
+    user cannot read is, see :func:`system_unit_stale_reason`). An old unit whose cwcli still exists repairs
     itself at the next boot, because the ``start`` verb it runs rewrites it.
     """
     inspect = {
@@ -155,8 +166,11 @@ def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
 def system_unit_stale_reason(unit: BootUnit) -> str | None:
     """:func:`stale_reason` for the shared-mode system unit in ``/etc/systemd/system``.
 
-    Read-only, so any user can run it; rewriting the unit needs root (see
-    :func:`repair_system_unit`).
+    Unlike a per-user unit, a system unit this user cannot read IS reported (an
+    older cwcli wrote it 0660 under the shared umask), because a member's
+    ``status``/``doctor`` must not call a unit it never checked current;
+    :func:`repair_system_unit` makes it world-readable. Read-only, so any user
+    can run it; rewriting the unit needs root.
     """
     if get_platform() != "linux":
         return None
@@ -535,7 +549,7 @@ def _windows_unit_program(unit: BootUnit) -> tuple[str, str | None, str | None] 
 
 def _install_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Install Windows Task Scheduler task."""
-    cwcli_path = get_cwcli_path()
+    cwcli_path = running_cwcli()
 
     # Create a scheduled task that runs at logon
     command = [
@@ -607,7 +621,7 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
     if get_platform() != "linux":
         raise OSError("system units are only supported on Linux (systemd)")
 
-    cwcli_path = get_cwcli_path()
+    cwcli_path = running_cwcli()
     service_path = system_unit_path(unit)
     # No ExecStop, for the reason given above _write_linux_unit.
     kind = f"Type=forking\nUser={user}\nGroup={group}\nPIDFile={pid_file}"
@@ -671,7 +685,7 @@ def repair_system_unit(unit: BootUnit) -> bool:
         if not unit.forks and line.strip() == "Type=forking":
             line = "Type=simple\n"
         if missing and line.startswith("ExecStart="):
-            line = f'ExecStart="{get_cwcli_path()}" {" ".join(unit.start_args)}\n'
+            line = f'ExecStart="{running_cwcli()}" {" ".join(unit.start_args)}\n'
         lines.append(line)
         if line.strip() == "[Unit]" and "StartLimitBurst=" not in original:
             lines.append(f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n")

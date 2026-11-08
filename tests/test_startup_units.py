@@ -406,6 +406,15 @@ class TestStaleUnits:
         assert startup.repair_startup(unit) is False
         assert plist.read_bytes() == body
 
+    def test_a_windows_task_runs_the_running_cwcli_not_the_path_first_one(
+        self, home, monkeypatch, unit
+    ):
+        monkeypatch.setattr(startup, "get_platform", lambda: "windows")
+        home.current["path"] = str(_fake_cwcli(home.root / "path-first" / "cwcli"))
+        assert startup.install_startup(unit) == (True, None)
+        [create] = [c for c in home.calls if "/Create" in c]
+        assert create[create.index("/TR") + 1] == f'"{home.cwcli}" {" ".join(unit.start_args)}'
+
     def test_a_windows_task_whose_program_is_gone_is_recreated(self, home, monkeypatch, unit):
         monkeypatch.setattr(startup, "get_platform", lambda: "windows")
         program = {"path": "C:\\gone\\cwcli.exe"}
@@ -588,11 +597,15 @@ def test_an_old_system_unit_without_a_restart_limit_is_stale_and_repaired(
     assert startup.repair_system_unit(unit) is False
 
 
-def test_a_system_unit_whose_cwcli_is_gone_runs_the_current_cwcli(tmp_path, monkeypatch):
+def test_a_system_unit_whose_cwcli_is_gone_runs_the_running_cwcli(tmp_path, monkeypatch):
+    """`sudo /usr/local/bin/cwcli setup shared` writes the cwcli it runs, never
+    whichever cwcli comes first on sudo's PATH."""
     monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
     monkeypatch.setattr(startup, "get_platform", lambda: "linux")
     current = _fake_cwcli(tmp_path / "usr-local-bin" / "cwcli")
-    monkeypatch.setattr(startup, "get_cwcli_path", lambda: str(current))
+    path_first = _fake_cwcli(tmp_path / "path-first" / "cwcli")
+    monkeypatch.setattr(startup, "get_cwcli_path", lambda: str(path_first))
+    monkeypatch.setattr(startup.sys, "argv", [str(current), "setup", "shared"])
     path = startup.system_unit_path(startup.CRED_BRIDGE)
     path.write_text(_OLD_SHARED_BRIDGE_UNIT.format(cwcli="/home/frappe/.pyenv/bin/cwcli"))
 

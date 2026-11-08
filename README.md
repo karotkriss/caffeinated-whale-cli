@@ -2615,7 +2615,7 @@ when the tool is signed in to none of them; a signed-out host beside a
 signed-in one is listed with its `auth login --hostname` command.
 An enabled but stopped auto-inspect or credential-bridge daemon is a `warn`
 naming its start command; the web UI's Doctor view offers a Start button for it.
-A start-on-boot unit (or a shared install's system unit) that runs a removed cwcli, or that an older cwcli wrote without a restart limit, is a `warn` naming the unit and the command that rewrites or removes it (see the boot-unit note under `config`).
+A start-on-boot unit (or a shared install's system unit) that runs a removed cwcli, or that an older cwcli wrote without a restart limit, is a `warn` naming the unit and the command that rewrites or removes it, and so is a shared system unit only root can read, which doctor could not check (see the boot-unit note under `config`).
 
 **Exit codes:** `0` when every check is pass/warn (a warning never blocks -
 doctor is a chainable preflight gate), `1` when any check fails.
@@ -2866,7 +2866,7 @@ A systemd unit whose start keeps failing retries at most 3 times in 10 minutes a
 A unit is stale when its cwcli no longer exists or when an older cwcli wrote it (no systemd restart limit, or a macOS absolute path); a unit that runs a different cwcli that still exists is left alone.
 `cwcli status` and `cwcli doctor` name a stale unit and the command that fixes it: `cwcli config auto-inspect enable` (or `cwcli config cred-bridge start`) rewrites it while the feature is enabled, and `disable` removes it otherwise.
 `enable`, `start` and `restart` rewrite a stale unit of their own daemon automatically, without starting the unit, and an old unit whose cwcli still exists rewrites itself at the next boot because the `start` it runs does the same.
-On a shared install, `cwcli status` and `cwcli doctor` also check the credential-bridge and scheduler system units in `/etc/systemd/system`; a stale one is named with `sudo cwcli setup shared`, which rewrites it in place with the restart limit (and the current cwcli when its own is gone), keeping its service account, and `sudo cwcli self-update` does the same before it restarts a running one.
+On a shared install, `cwcli status` and `cwcli doctor` also check the credential-bridge and scheduler system units in `/etc/systemd/system`; a stale one, or one only root can read (an older cwcli wrote it `0660` under the shared umask, so a member cannot check it), is named with `sudo cwcli setup shared`, which rewrites it in place with the restart limit (and the running cwcli when its own is gone) and makes it readable to every user (`0644`), keeping its service account, and `sudo cwcli self-update` does the same before it restarts a running one.
 
 ### `self-update` - Upgrade cwcli Itself
 
