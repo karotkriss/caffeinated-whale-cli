@@ -104,16 +104,27 @@ def get_cwcli_path() -> str:
     return "cwcli"
 
 
+def _cwcli_in(directory: str) -> str | None:
+    """The executable ``cwcli`` (or Windows ``cwcli.exe``) in ``directory``, if any."""
+    for name in ("cwcli", "cwcli.exe"):
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def running_cwcli_dir() -> str:
     """The directory of the cwcli executing now: the script ``sys.argv[0]`` names
-    when that directory holds a ``cwcli``, else the interpreter's own directory.
+    when that directory holds a ``cwcli`` (or ``cwcli.exe``, which also covers the
+    frozen standalone build, whose ``sys.executable`` is a temporary unpack
+    directory), else the interpreter's own directory.
 
     Unlike :func:`get_cwcli_path`, this never consults the caller's PATH, so a
     unit written by one install never points at another one that happens to come
     first on PATH.
     """
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv[0] else ""
-    if script_dir and os.access(os.path.join(script_dir, "cwcli"), os.X_OK):
+    if script_dir and _cwcli_in(script_dir):
         return script_dir
     return str(Path(sys.executable).parent)
 
@@ -121,11 +132,7 @@ def running_cwcli_dir() -> str:
 def running_cwcli() -> str:
     """The running cwcli's absolute path, for units that name one (system units and
     Windows tasks); :func:`get_cwcli_path` when it cannot be found beside it."""
-    for name in ("cwcli", "cwcli.exe"):
-        candidate = os.path.join(running_cwcli_dir(), name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return get_cwcli_path()
+    return _cwcli_in(running_cwcli_dir()) or get_cwcli_path()
 
 
 def unit_search_path() -> str:

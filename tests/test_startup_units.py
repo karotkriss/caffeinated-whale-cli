@@ -406,6 +406,22 @@ class TestStaleUnits:
         assert startup.repair_startup(unit) is False
         assert plist.read_bytes() == body
 
+    def test_a_frozen_windows_exe_task_runs_its_install_not_the_unpack_dir(
+        self, home, monkeypatch, unit
+    ):
+        """The Nuitka onefile exe unpacks to a temp dir that becomes sys.executable
+        and is deleted on exit; the task must run the installed cwcli.exe."""
+        monkeypatch.setattr(startup, "get_platform", lambda: "windows")
+        installed = _fake_cwcli(home.root / "WinGet" / "cwcli.exe")
+        _fake_cwcli(home.root / "onefile-temp" / "cwcli.exe")
+        monkeypatch.setattr(startup.sys, "argv", [str(installed), "config"])
+        monkeypatch.setattr(
+            startup.sys, "executable", str(home.root / "onefile-temp" / "cwcli.exe")
+        )
+        assert startup.install_startup(unit) == (True, None)
+        [create] = [c for c in home.calls if "/Create" in c]
+        assert create[create.index("/TR") + 1] == f'"{installed}" {" ".join(unit.start_args)}'
+
     def test_a_windows_task_runs_the_running_cwcli_not_the_path_first_one(
         self, home, monkeypatch, unit
     ):
