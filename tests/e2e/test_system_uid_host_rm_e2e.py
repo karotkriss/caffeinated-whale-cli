@@ -30,7 +30,6 @@ version-agnostic, and one more bench build per leg buys nothing.
 
 from __future__ import annotations
 
-import gzip
 import os
 import shlex
 import subprocess
@@ -57,6 +56,15 @@ def _as_system_user(
     image: str, home: Path, *args: str, timeout: int = 600
 ) -> subprocess.CompletedProcess:
     """``cwcli <args>`` as uid 998 (gid 998), against this machine's Docker."""
+    return _python_as_system_user(
+        image, home, "-m", "caffeinated_whale_cli", *args, timeout=timeout
+    )
+
+
+def _python_as_system_user(
+    image: str, home: Path, *args: str, timeout: int = 600
+) -> subprocess.CompletedProcess:
+    """``python <args>`` as uid 998 (gid 998), with the runner's mounts and env."""
     sock_gid = os.stat(DOCKER_SOCK).st_gid
     cmd = [
         "docker",
@@ -84,8 +92,6 @@ def _as_system_user(
         "PYTHONDONTWRITEBYTECODE=1",
         image,
         "python",
-        "-m",
-        "caffeinated_whale_cli",
         *args,
     ]
     return subprocess.run(
@@ -110,6 +116,27 @@ def _seed_marker(project: str) -> None:
     assert code == 0, f"seeding the marker record failed: {out}"
 
 
+# The backup store is 0700 and owned by uid 998, so the pytest uid cannot list it:
+# read the kept set from inside the runner, as the uid that owns it. Mirrors
+# ``harness.removal_backup_files``: the newest set's manifest, then its parts.
+_READ_KEPT_DUMPS = """
+import gzip, json, os, sys
+from pathlib import Path
+project, site, marker = sys.argv[1:]
+site_dir = Path(os.environ["CWCLI_HOME"]) / "backups" / project / site
+sets = sorted(d for d in site_dir.glob("*") if (d / "set.json").is_file())
+assert sets, f"no backup-store set for {site!r} of {project!r} under {site_dir}"
+manifest = json.loads((sets[-1] / "set.json").read_text(encoding="utf-8"))
+assert manifest["reason"] == "before-removal", manifest
+dumps = [sets[-1] / p["filename"] for p in manifest["parts"] if p["filename"].endswith(".sql.gz")]
+assert dumps, "no database dump in the kept backup"
+assert any(
+    marker.encode() in gzip.decompress(f.read_bytes()) for f in dumps
+), "the kept backup does not hold the seeded record"
+print("kept-backup-ok")
+"""
+
+
 def _remove_as_root(image: str, home: Path) -> None:
     """Delete ``home``, whatever uid owns what is left in it (the frappe user, the
     Docker daemon, or the runner's 0700 cache dir)."""
@@ -121,7 +148,7 @@ def _remove_as_root(image: str, home: Path) -> None:
 
 @v16_only
 def test_cwcli_as_a_system_account_uid_removes_its_instance_with_a_backup(
-    isolated_home, port_allocator, monkeypatch
+    isolated_home, port_allocator
 ):
     harness.enforce_isolation()
     name = harness.project_name("sysuid")
@@ -173,16 +200,10 @@ def test_cwcli_as_a_system_account_uid_removes_its_instance_with_a_backup(
         assert not harness.project_volumes(name), "a named volume survived removal"
         assert not project_dir.exists(), "the project directory survived removal"
 
-        monkeypatch.setenv("CWCLI_HOME", str(home / ".cwcli"))
-        dumps = [
-            f
-            for f in harness.removal_backup_files(name, harness.DEFAULT_SITE)
-            if f.name.endswith(".sql.gz")
-        ]
-        assert dumps, "no database dump in the kept backup"
-        assert any(
-            MARKER.encode() in gzip.decompress(f.read_bytes()) for f in dumps
-        ), "the kept backup does not hold the seeded record"
+        kept = _python_as_system_user(
+            image, home, "-c", _READ_KEPT_DUMPS, name, harness.DEFAULT_SITE, MARKER
+        )
+        assert "kept-backup-ok" in _ok(kept, "reading the kept backup"), kept.stdout
     finally:
         _as_system_user(image, home, "rm", name, "--yes", "--volumes", "--no-backup")
         harness.sweep_cwe2e(only=name)
