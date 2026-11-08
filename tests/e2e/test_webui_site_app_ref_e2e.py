@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import time
 from pathlib import Path
 
 import pytest
@@ -40,14 +41,17 @@ def _ref_field(value: str) -> str:
 
 
 def _seed_catalog_with_payments() -> None:
-    """The session's isolated home has no app sources (no scan runs here): record the one
-    remote app the picker needs, in the catalog's own on-disk format."""
+    """The session's isolated home has no app sources: record the one remote app the picker
+    needs, in the catalog's own on-disk format. A fresh ``scanned_at`` keeps the daemon from
+    starting its startup scan, which would replace this entry mid-test with whatever the
+    runner's GitHub token can see."""
     path = Path(os.environ["CWCLI_HOME"]) / "cache" / "app-catalog" / "catalog.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "version": app_catalog.CATALOG_VERSION,
+                "scanned_at": time.time(),
                 "remote": {
                     KEY: {
                         "name": APP,
