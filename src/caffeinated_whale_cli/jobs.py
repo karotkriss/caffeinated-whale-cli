@@ -1458,12 +1458,17 @@ def _run_self_update(args: dict[str, Any], emit: _Recorder) -> Result:
     )
 
 
-def _dep_sources(args: dict[str, Any]) -> dict[str, str] | None:
-    """``args.dep_sources``: the repository picked for each ambiguous required app."""
-    raw = args.get("dep_sources")
+def _str_map(args: dict[str, Any], key: str) -> dict[str, str] | None:
+    """``args[key]`` as ``{str: non-empty str}``, None when it is not a mapping."""
+    raw = args.get(key)
     if not isinstance(raw, dict):
         return None
     return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+
+
+def _dep_sources(args: dict[str, Any]) -> dict[str, str] | None:
+    """``args.dep_sources``: the repository picked for each ambiguous required app."""
+    return _str_map(args, "dep_sources")
 
 
 def _dispatch(
@@ -1613,6 +1618,7 @@ def _dispatch(
             developer_mode=bool(args.get("developer_mode")),
             db_root_password=_db_root_password(secret_values),
             fetch=[str(u) for u in (args.get("fetch") or []) if u],
+            refs=_str_map(args, "refs"),
             with_deps=args.get("with_deps") is True,
             dep_sources=_dep_sources(args),
             ignore_frappe_range=args.get("ignore_frappe_range") is True,

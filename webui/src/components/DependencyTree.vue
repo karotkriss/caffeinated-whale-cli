@@ -39,8 +39,8 @@ watch(choices, (cs) => {
 
 const frappeRange = (n) => (n.ranges || []).find((r) => r.dep === 'frappe')
 const otherRanges = (n) => (n.ranges || []).filter((r) => r.dep !== 'frappe' && r.ok === false)
-const ACTION_THEME = { 'fetch+install': 'blue', fetch: 'blue', install: 'blue', none: 'gray' }
-const ACTION_LABEL = { 'fetch+install': 'fetch + install', fetch: 'fetch', install: 'install', none: 'on the bench' }
+const ACTION_THEME = { 'fetch+install': 'blue', fetch: 'blue', install: 'blue', 'checkout+install': 'orange', checkout: 'orange', none: 'gray' }
+const ACTION_LABEL = { 'fetch+install': 'fetch + install', fetch: 'fetch', install: 'install', 'checkout+install': 'check out + install', checkout: 'check out', none: 'on the bench' }
 const order = computed(() => nodes.value.filter((n) => n.action !== 'none' && n.action !== 'fetch').map((n) => n.app))
 const sitesText = computed(() => (props.plan?.sites || []).join(', '))
 const readAt = computed(() => requested.value.map((n) => n.ref).filter(Boolean)[0] || '')
@@ -76,6 +76,8 @@ const readAt = computed(() => requested.value.map((n) => n.ref).filter(Boolean)[
               <span v-else>declarations not read</span>
             </div>
             <p v-if="!n.requested || (n.source && !n.on_bench)" class="mt-0.5 break-words text-xs text-ink-gray-5">{{ [n.requested ? '' : `required by ${n.parent}`, n.source && !n.on_bench ? `from ${n.source}` : ''].filter(Boolean).join(' · ') }}</p>
+            <!-- A bench app picked at another ref: the move happens first and reaches every site on the bench. -->
+            <p v-if="n.checkout" class="mt-0.5 break-words text-xs text-ink-amber-6">the bench's copy is checked out at {{ n.ref }} first, which moves {{ n.app }} for every site on this bench</p>
             <p v-for="r in otherRanges(n)" :key="r.dep" class="mt-0.5 font-mono text-xs text-ink-red-6">needs {{ r.dep }} {{ r.spec }}, bench has {{ r.have }}</p>
           </div>
         </li>

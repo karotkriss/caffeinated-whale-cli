@@ -86,6 +86,7 @@ def new_site(
     developer_mode: bool = False,
     db_root_password: str | None = None,
     fetch: list[str] | None = None,
+    refs: dict[str, str] | None = None,
     with_deps: bool = False,
     dep_sources: dict[str, str] | None = None,
     ignore_frappe_range: bool = False,
@@ -93,7 +94,11 @@ def new_site(
 ) -> Result[NewSiteReport]:
     """Create ``site`` and install ``apps`` on it (each a bench app name).
 
-    ``fetch`` names repositories to fetch onto the bench first. Every pick is planned
+    ``fetch`` names repositories to fetch onto the bench first. ``refs`` maps a
+    repository in ``fetch`` or an app in ``apps`` to the branch, tag or commit wanted:
+    a repository is fetched at it, and an app the bench already holds at another ref is
+    checked out there FIRST (``core.apps.checkout_app``, with its dirty-tree refusal),
+    which moves that app for every site on the bench. Every pick is planned
     by :mod:`core.app_deps` BEFORE the site exists: a Frappe range that does not fit
     the bench raises, missing required apps return ``NEEDS_CHOICE``/
     ``confirm_required_apps`` unless ``with_deps``, and the apps are installed in the
@@ -112,6 +117,12 @@ def new_site(
     for a in wanted:
         if not APP_NAME_RE.match(a):
             raise CwcliError(ErrorKind.USAGE, "new_site.app_invalid", f"'{a}' is not an app name.")
+    refs = {k: v for k, v in (refs or {}).items() if k and v}
+    for wanted_ref in refs.values():
+        if wanted_ref.startswith("-") or any(c.isspace() for c in wanted_ref):
+            raise CwcliError(
+                ErrorKind.USAGE, "new_site.ref_invalid", f"'{wanted_ref}' is not a git ref."
+            )
 
     container = core_docker.get_frappe_container(project)
     state = resolvers.resolve_container_state(project, container, offer_choice=True)
@@ -148,9 +159,10 @@ def new_site(
             {s.key for s in app_deps.find_sources(a)} & fetch_keys
         ):
             raise _app_missing(project, bench_path, a)
-    picks: list[tuple[str, str | None]] = [(u, None) for u in urls]
-    picks += [(a, None) for a in wanted]
+    picks: list[tuple[str, str | None]] = [(u, refs.get(u)) for u in urls]
+    picks += [(a, refs.get(a)) for a in wanted]
     to_fetch: list[tuple[str, str | None]] = []
+    to_checkout: list[tuple[str, str]] = []
     if picks:
         on_bench = app_deps.read_bench_state(container, bench_path, sites=[site], new_site=site)
         plan = app_deps.build_plan(
@@ -159,6 +171,7 @@ def new_site(
             picks,
             dep_sources=dep_sources,
             ignore_frappe_range=ignore_frappe_range,
+            checkout_held=True,
         )
         asked = app_deps.enforce(plan, with_deps=with_deps)
         if asked is not None:
@@ -169,11 +182,23 @@ def new_site(
             for n in plan.nodes
             if not n.on_bench and (not n.requested or n.requested_as in urls)
         ]
+        to_checkout = [(n.app, n.ref or "") for n in plan.nodes if n.checkout and n.ref]
         wanted = [
             n.app
             for n in plan.nodes
             if n.app != "frappe" and (n.readable or n.requested_as not in urls)
         ]
+    for a, at in to_checkout:
+        # An app the bench holds at another ref moves there BEFORE the site exists (and
+        # with it every site on the bench that has it); a refused or failed checkout
+        # stops here with no site left behind.
+        moved = core_apps.checkout_app(project, a, at, bench_path=bench_path, on_event=emit)
+        if moved.data is None or not moved.data.ok:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "new_site.checkout_failed",
+                f"Checking out {at} in {a} failed; the site was not created.",
+            )
     for target, ref in to_fetch:
         # Remote picks and required apps land on the bench BEFORE the site exists: a
         # failed fetch stops here with no site left behind.

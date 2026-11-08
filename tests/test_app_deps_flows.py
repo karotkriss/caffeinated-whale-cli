@@ -296,6 +296,144 @@ def test_new_site_fetches_a_web_pick_whose_repository_name_differs_from_its_app(
     assert fork in get
 
 
+def test_new_site_fetches_a_web_pick_at_the_ref_asked_for(
+    world, container, monkeypatch  # noqa: F811
+):
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(
+        app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
+    )
+    monkeypatch.setattr(
+        new_site, "_directory_exists", lambda _c, path: "/apps/" in path and bool(_gets(container))
+    )
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            fetch=[TOOLKIT],
+            refs={TOOLKIT: "develop"},
+        )
+    assert raised.value.code == "test.reached_site_creation"
+    (get,) = _gets(container)
+    assert TOOLKIT in get and "--branch develop" in get
+
+
+def _bench_holding_toolkit(monkeypatch, *, branch="master"):
+    def state(_container, path, *, sites, new_site=None):
+        return app_deps.BenchState(
+            bench_path=path,
+            apps={
+                "frappe": Declarations(app="frappe", version="15.125.0"),
+                "toolkit": Declarations(
+                    app="toolkit",
+                    version="0.23.3",
+                    branch=branch,
+                    remotes=["gitlab.example.com/tools/toolkit"],
+                ),
+            },
+            sites=list(sites),
+            installed={s: {"frappe"} for s in sites},
+            frappe_version="15.125.0",
+        )
+
+    monkeypatch.setattr(app_deps, "read_bench_state", state)
+
+
+def _record_checkouts(monkeypatch, new_site, *, ok=True):
+    checkouts = []
+
+    def checkout(project, app, ref, **kw):
+        checkouts.append((project, app, ref, kw.get("bench_path")))
+        return Result(
+            status=Status.OK,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=[], ok=ok),
+        )
+
+    monkeypatch.setattr(new_site.core_apps, "checkout_app", checkout)
+    return checkouts
+
+
+def test_new_site_checks_a_bench_app_out_at_the_asked_ref_before_the_site_exists(
+    world, container, monkeypatch  # noqa: F811
+):
+    """An app the bench holds at another branch is moved with the existing checkout
+    verb (its dirty-tree refusal included), before bench new-site runs: that move
+    changes the app for every site on the bench, which the frontends say."""
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch)
+    checkouts = _record_checkouts(monkeypatch, new_site)
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            refs={"toolkit": "develop"},
+        )
+    assert raised.value.code == "test.reached_site_creation"
+    assert checkouts == [("proj", "toolkit", "develop", BENCH)]
+    assert _gets(container) == []  # never re-fetched: it is on the bench
+
+
+def test_new_site_leaves_a_bench_app_alone_at_the_ref_it_already_sits_at(
+    world, container, monkeypatch  # noqa: F811
+):
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch, branch="develop")
+    checkouts = _record_checkouts(monkeypatch, new_site)
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            refs={"toolkit": "develop"},
+        )
+    assert raised.value.code == "test.reached_site_creation"
+    assert checkouts == []
+
+
+def test_a_failed_checkout_creates_no_site(world, container, monkeypatch):  # noqa: F811
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch)
+    _record_checkouts(monkeypatch, new_site, ok=False)
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            refs={"toolkit": "develop"},
+        )
+    assert raised.value.code == "new_site.checkout_failed"
+    assert "new-site" not in " ".join(container.calls)
+
+
+def test_new_site_refuses_a_ref_that_is_not_a_git_ref(world, container, monkeypatch):  # noqa: F811
+    new_site = _wire_new_site(monkeypatch, container)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            refs={"toolkit": "--upload-pack=x"},
+        )
+    assert raised.value.code == "new_site.ref_invalid"
+
+
 def test_human_new_site_passes_app_as_a_bench_app_name_never_a_fetch(monkeypatch):
     from caffeinated_whale_cli import main
     from caffeinated_whale_cli.commands import new_site as new_site_cmd

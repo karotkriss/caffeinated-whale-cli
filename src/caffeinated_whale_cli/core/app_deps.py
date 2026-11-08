@@ -615,9 +615,13 @@ class PlanNode:
     required: list[str]
     on_bench: bool
     missing_sites: list[str]  # target sites that do not have it installed
-    action: str  # none | fetch | install | fetch+install
+    action: str  # none | fetch | install | fetch+install | checkout | checkout+install
     readable: bool = True
     requested_as: str | None = None  # the target string a requested app was asked for by
+    # The bench's copy is to be checked out at ``ref`` first (asked for at a ref other than
+    # the one it sits at). That moves the app for every site on the bench, so the planner
+    # reads the declarations at that ref and the frontends say so before anything runs.
+    checkout: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -772,14 +776,10 @@ class _Planner:
             and app not in (self.state.installed[s] or set())
         ]
 
-    def action(self, on_bench: bool, missing: list[str]) -> str:
-        fetch = not on_bench
-        install = bool(missing)
-        return (
-            "fetch+install"
-            if fetch and install
-            else "fetch" if fetch else "install" if install else "none"
-        )
+    def action(self, on_bench: bool, missing: list[str], *, checkout: bool = False) -> str:
+        first = "fetch" if not on_bench else "checkout" if checkout else None
+        second = "install" if missing else None
+        return "+".join(part for part in (first, second) if part) or "none"
 
     def bench_copy(self, target: str) -> str | None:
         """The bench app that holds ``target`` (a URL matched by remote, or a name)."""
@@ -977,6 +977,7 @@ class _Planner:
         decl: Declarations | None,
         source: str | None,
         stack: list[str],
+        checkout: bool = False,
     ) -> None:
         if module in stack:
             cycle = " -> ".join(stack[stack.index(module) :] + [module])
@@ -1046,9 +1047,10 @@ class _Planner:
             required=[entry_module(e)[0] for e in decl.required],
             on_bench=on_bench,
             missing_sites=missing,
-            action=self.action(on_bench, missing),
+            action=self.action(on_bench, missing, checkout=checkout),
             readable=decl.readable,
             requested_as=self.requesting if requested else None,
+            checkout=checkout,
         )
         self.order.append(module)
         if not requested:
@@ -1169,6 +1171,7 @@ def build_plan(
     dep_sources: dict[str, str] | None = None,
     ignore_frappe_range: bool = False,
     prefer_ref: str | None = None,
+    checkout_held: bool = False,
     reader: Callable[[str, str | None], Declarations] | None = None,
     brancher: Callable[[str], list[str] | None] | None = None,
     sourcer: Callable[[str, str | None], list[Source]] | None = None,
@@ -1176,7 +1179,11 @@ def build_plan(
     """The ordered plan for installing ``targets`` (``(url-or-name, ref)`` pairs).
 
     A requested app already on the bench is read from the bench's copy (what
-    ``install_apps`` installs: it never re-fetches a present app); otherwise the
+    ``install_apps`` installs: it never re-fetches a present app, and its ``--branch``
+    is for the fetch alone). With ``checkout_held``, an app the bench holds that is
+    asked for at a ref other than the one it sits at is a ``checkout`` node read at
+    that ref instead: the verb checks the copy out there first (``new_site``), which
+    moves the app for every site on the bench. Otherwise the
     remote ref is read. A plain name not on the bench is found in the apps catalog
     like a required app. Each node's ``action`` says what cwcli will do; the
     ``problems`` say why it stops or asks.
@@ -1203,6 +1210,29 @@ def build_plan(
         planner.requesting = target
         copy = planner.bench_copy(target)
         if copy is not None:
+            held = planner.bench_apps.get(copy)
+            if checkout_held and ref and held is not None and ref != held.branch:
+                # The bench holds it at another ref: a checkout moves it for every site on
+                # the bench, so the plan reads what that ref declares (from the copy's own
+                # remote) and names the move; nothing moves until the plan is acted on.
+                remote = held.remotes[0] if held.remotes else None
+                decl = (
+                    planner.read(f"https://{remote}", ref)
+                    if remote
+                    else Declarations(app=copy, branch=ref, error="the bench copy has no remote")
+                )
+                planner.visit(
+                    copy,
+                    target=target,
+                    parent=None,
+                    requested=True,
+                    ref=ref,
+                    decl=decl,
+                    source=remote,
+                    stack=[],
+                    checkout=True,
+                )
+                continue
             planner.visit(
                 copy,
                 target=target,
@@ -1434,6 +1464,7 @@ def plan(
     dep_sources: dict[str, str] | None = None,
     ignore_frappe_range: bool = False,
     prefer_ref: str | None = None,
+    checkout_held: bool = False,
 ) -> Result[DependencyPlan]:
     """The read-only plan for installing ``targets`` on a bench (``cwcli axi apps plan``,
     the dialogs' preview). It changes nothing.
@@ -1472,6 +1503,7 @@ def plan(
         dep_sources=dep_sources,
         ignore_frappe_range=ignore_frappe_range,
         prefer_ref=prefer_ref,
+        checkout_held=checkout_held,
     )
     return Result(
         status=Status.WARNING if warnings else Status.OK, data=result, warnings=list(warnings)

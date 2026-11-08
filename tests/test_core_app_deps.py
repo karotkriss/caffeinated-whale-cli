@@ -383,6 +383,64 @@ class TestPlan:
         assert [p.code for p in plan.problems] == ["app.required_app_not_installed"]
         assert world.reads.count((TOOLKIT, "master")) == 0  # the bench copy is read
 
+    def test_a_bench_app_asked_for_at_another_ref_is_a_checkout_planned_at_that_ref(self):
+        """The bench holds toolkit on master; a New site pick of toolkit at develop is
+        not re-read from the bench copy: the plan reads develop from the copy's own
+        remote and names the move (it changes toolkit for every site on the bench)."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "develop")], checkout_held=True)
+        (node,) = plan.nodes
+        assert node.checkout and node.on_bench and node.ref == "develop"
+        assert (
+            node.action == "checkout+install" and node.source == "gitlab.example.com/tools/toolkit"
+        )
+        assert world.reads == [(TOOLKIT, "develop")]  # the remote at the asked ref
+        assert plan.ok
+
+    def test_without_the_opt_in_a_bench_app_at_another_ref_is_still_read_from_the_copy(self):
+        """`apps install --branch x` of an app the bench holds installs the copy as it is
+        (the branch is for a fetch alone); only a caller that will check the copy out,
+        New site, asks for the checkout reading."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "develop")])
+        (node,) = plan.nodes
+        assert not node.checkout and node.action == "install" and world.reads == []
+
+    def test_a_bench_app_asked_for_at_the_ref_it_sits_at_is_not_a_checkout(self):
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit", version="0.23.3", branch="master", remotes=["gitlab.example.com/x"]
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "master")], checkout_held=True)
+        (node,) = plan.nodes
+        assert not node.checkout and node.action == "install" and world.reads == []
+
+    def test_a_checkout_at_a_ref_built_for_another_frappe_is_refused(self):
+        world = _booking_world()
+        world.repos[TOOLKIT]["v17"] = Declarations(
+            app="toolkit", version="9.0.0", ranges={"frappe": ">=17.0.0"}, branch="v17"
+        )
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "v17")], checkout_held=True)
+        assert plan.blocked and [p.code for p in plan.problems] == ["app.frappe_range_mismatch"]
+
     def test_an_installed_required_app_is_never_touched(self):
         world = _booking_world()
         bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
