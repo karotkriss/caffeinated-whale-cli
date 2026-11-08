@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -103,21 +104,32 @@ def get_cwcli_path() -> str:
     return "cwcli"
 
 
+def running_cwcli_dir() -> str:
+    """The directory of the cwcli executing now: the script ``sys.argv[0]`` names
+    when that directory holds a ``cwcli``, else the interpreter's own directory.
+
+    Unlike :func:`get_cwcli_path`, this never consults the caller's PATH, so a
+    unit written by one install never points at another one that happens to come
+    first on PATH.
+    """
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv[0] else ""
+    if script_dir and os.access(os.path.join(script_dir, "cwcli"), os.X_OK):
+        return script_dir
+    return str(Path(sys.executable).parent)
+
+
 def unit_search_path() -> str:
     """The PATH a boot unit finds ``cwcli`` on.
 
     The unit runs ``/usr/bin/env cwcli`` rather than an absolute path, so it
     survives a reinstall or a move between a per-user and the shared install:
-    this cwcli's own directory comes first (the cwcli that wrote the unit is the
-    one it runs), then the usual per-user and shared install directories, so a
-    removed install falls through to whichever cwcli remains. It is a superset of
-    systemd's default PATH, so the daemons still find ``docker``/``gh``/``glab``.
+    the directory of the cwcli writing the unit comes first (see
+    :func:`running_cwcli_dir`), then the usual per-user and shared install
+    directories, so a removed install falls through to whichever cwcli remains.
+    It is a superset of systemd's default PATH, so the daemons still find
+    ``docker``/``gh``/``glab``.
     """
-    dirs = []
-    cwcli = get_cwcli_path()
-    if os.path.isabs(cwcli):
-        dirs.append(os.path.dirname(cwcli))
-    dirs.append(str(Path.home() / ".local" / "bin"))
+    dirs = [running_cwcli_dir(), str(Path.home() / ".local" / "bin")]
     if get_platform() == "darwin":
         dirs.append("/opt/homebrew/bin")
     dirs += ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
@@ -127,19 +139,36 @@ def unit_search_path() -> str:
 def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
     """Why the installed boot unit needs rewriting, or None when absent or current.
 
-    Stale means its program no longer exists, it runs a different cwcli than this
-    one, or it was written by an older cwcli (no systemd restart limit, or a macOS
-    absolute path). Read-only; an unreadable unit is never claimed stale. An old
-    unit whose cwcli still exists repairs itself at the next boot, because the
-    ``start`` verb it runs rewrites it.
+    Stale means its program no longer exists, or it was written by an older cwcli
+    (no systemd restart limit, or a macOS absolute path). Read-only; an unreadable
+    unit is never claimed stale. An old unit whose cwcli still exists repairs
+    itself at the next boot, because the ``start`` verb it runs rewrites it.
     """
     inspect = {
-        "darwin": _macos_unit_program,
-        "linux": _linux_unit_program,
-        "windows": _windows_unit_program,
+        "darwin": lambda: _macos_unit_program(unit),
+        "linux": lambda: _systemd_unit_program(_get_linux_service_path(unit)),
+        "windows": lambda: _windows_unit_program(unit),
     }.get(get_platform())
+    return _stale(inspect) if inspect else None
+
+
+def system_unit_stale_reason(unit: BootUnit) -> str | None:
+    """:func:`stale_reason` for the shared-mode system unit in ``/etc/systemd/system``.
+
+    Read-only, so any user can run it; rewriting the unit needs root (see
+    :func:`repair_system_unit`).
+    """
+    if get_platform() != "linux":
+        return None
+    return _stale(lambda: _systemd_unit_program(system_unit_path(unit)))
+
+
+_UnitProgram = tuple[str, str | None, str | None] | None
+
+
+def _stale(inspect: Callable[[], _UnitProgram]) -> str | None:
     try:
-        found = inspect(unit) if inspect else None
+        found = inspect()
     except Exception:
         return None
     if found is None:
@@ -147,9 +176,6 @@ def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
     named, resolved, outdated = found
     if resolved is None:
         return f"it runs {named}, which no longer exists"
-    current = get_cwcli_path()
-    if os.path.isabs(current) and os.path.realpath(resolved) != os.path.realpath(current):
-        return f"it runs {resolved}, not this cwcli ({current})"
     return outdated
 
 
@@ -397,8 +423,7 @@ def _write_linux_unit(unit: BootUnit) -> None:
     service_path.write_text(_render_linux_unit(unit))
 
 
-def _linux_unit_program(unit: BootUnit) -> tuple[str, str | None, str | None] | None:
-    service_path = _get_linux_service_path(unit)
+def _systemd_unit_program(service_path: Path) -> tuple[str, str | None, str | None] | None:
     if not service_path.exists():
         return None
     text = service_path.read_text()
@@ -613,23 +638,41 @@ WantedBy=multi-user.target
 
 
 def repair_system_unit(unit: BootUnit) -> bool:
-    """Make an installed system unit for a foreground daemon ``Type=simple``.
+    """Fix an installed system unit in place, keeping its ``User=``/``Group=``.
 
-    Units written before :attr:`BootUnit.forks` existed start the scheduler as
-    ``Type=forking`` with a pid file nothing writes, so systemd waits for a fork
-    that never comes, kills the scheduler at the start timeout, and restarts it in
-    a loop. Returns True when the file was rewritten (the caller reloads systemd);
-    a forking unit, a missing file, or an already-correct one is left alone.
+    Three fixes, each for a unit an older cwcli wrote: a foreground daemon (the
+    scheduler) written as ``Type=forking`` with a pid file nothing writes, which
+    systemd kills at the start timeout and restarts in a loop, becomes
+    ``Type=simple``; a unit with no restart limit gets one; and an ``ExecStart``
+    whose cwcli no longer exists runs this cwcli instead. Returns True when the
+    file was rewritten (the caller reloads systemd); a missing or already-correct
+    file is left alone. Needs root.
     """
-    if unit.forks:
-        return False
     path = system_unit_path(unit)
     try:
         original = path.read_text()
-    except OSError:
+        found = _systemd_unit_program(path)
+    except Exception:
         return False
-    lines = [line for line in original.splitlines(keepends=True) if not line.startswith("PIDFile=")]
-    repaired = "".join(lines).replace("Type=forking", "Type=simple")
+    missing = found is not None and found[1] is None
+    lines: list[str] = []
+    for line in original.splitlines(keepends=True):
+        if not unit.forks and line.startswith("PIDFile="):
+            continue
+        if not unit.forks and line.strip() == "Type=forking":
+            line = "Type=simple\n"
+        if missing and line.startswith("ExecStart="):
+            line = f'ExecStart="{get_cwcli_path()}" {" ".join(unit.start_args)}\n'
+        lines.append(line)
+        if line.strip() == "[Unit]" and "StartLimitBurst=" not in original:
+            lines.append(f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n")
+            lines.append(f"StartLimitBurst={START_LIMIT_BURST}\n")
+    repaired = "".join(lines)
+    if "StartLimitBurst=" not in repaired:
+        repaired = (
+            f"[Unit]\nStartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n"
+            f"StartLimitBurst={START_LIMIT_BURST}\n\n{repaired}"
+        )
     if repaired == original:
         return False
     path.write_text(repaired)

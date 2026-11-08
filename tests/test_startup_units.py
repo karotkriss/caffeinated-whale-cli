@@ -59,6 +59,7 @@ def home(tmp_path, monkeypatch):
     cwcli = _fake_cwcli(tmp_path / "install" / "bin" / "cwcli")
     current = {"path": str(cwcli)}
     monkeypatch.setattr(startup, "get_cwcli_path", lambda: current["path"])
+    monkeypatch.setattr(startup.sys, "argv", [str(cwcli), "config"])
     calls: list[list[str]] = []
 
     def _run(cmd, **kwargs):
@@ -310,15 +311,44 @@ class TestStaleUnits:
 
         assert startup.stale_reason(unit) is None
 
-    def test_a_unit_running_another_cwcli_is_stale(self, home, monkeypatch, unit):
+    def test_a_working_unit_is_never_rewritten_by_another_install(self, home, monkeypatch, unit):
+        """A dev checkout's `uv run cwcli` puts its own venv first on PATH; its
+        start or status must not call the installed cwcli's unit stale or rewrite it."""
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
         startup.install_startup(unit)
-        other = _fake_cwcli(home.root / "other" / "cwcli")
+        service = home.root / ".config" / "systemd" / "user" / unit.service_name
+        written = service.read_text()
+        other = _fake_cwcli(home.root / "checkout" / ".venv" / "bin" / "cwcli")
         home.current["path"] = str(other)
+        monkeypatch.setattr(startup.sys, "argv", [str(other)])
+        home.calls.clear()
 
-        assert startup.stale_reason(unit) == f"it runs {home.cwcli}, not this cwcli ({other})"
-        assert startup.repair_startup(unit) is True
         assert startup.stale_reason(unit) is None
+        assert startup.repair_startup(unit) is False
+        assert service.read_text() == written
+        assert home.calls == []
+
+    def test_a_rewrite_leads_the_unit_path_with_the_running_cwcli(self, home, monkeypatch, unit):
+        """The running cwcli writes the unit, not whichever cwcli is first on PATH."""
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        _write_unit(home, unit, f'[Service]\nExecStart="/gone/cwcli" {" ".join(unit.start_args)}\n')
+        home.current["path"] = str(_fake_cwcli(home.root / "path-first" / "cwcli"))
+
+        assert startup.repair_startup(unit) is True
+        parsed = _service(home.root / ".config" / "systemd" / "user" / unit.service_name)
+        assert parsed["Environment"].strip('"').removeprefix("PATH=").split(":")[0] == str(
+            home.cwcli.parent
+        )
+
+    def test_without_a_cwcli_script_the_interpreter_directory_leads(self, home, monkeypatch, unit):
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(startup.sys, "argv", [str(home.root / "pkg" / "__main__.py")])
+        monkeypatch.setattr(startup.sys, "executable", str(home.root / "venv" / "bin" / "python"))
+        startup.install_startup(unit)
+        parsed = _service(home.root / ".config" / "systemd" / "user" / unit.service_name)
+        assert parsed["Environment"].strip('"').removeprefix("PATH=").split(":")[0] == str(
+            home.root / "venv" / "bin"
+        )
 
     def test_no_cwcli_anywhere_on_the_unit_path_is_stale(self, home, monkeypatch, unit):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
@@ -365,9 +395,7 @@ class TestStaleUnits:
         ],
         ids=["truncated", "non-dict-root", "empty-program-arguments"],
     )
-    def test_an_unreadable_macos_plist_is_never_claimed_stale(
-        self, home, monkeypatch, unit, body
-    ):
+    def test_an_unreadable_macos_plist_is_never_claimed_stale(self, home, monkeypatch, unit, body):
         monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
         plist = home.root / "Library" / "LaunchAgents" / f"{unit.label}.plist"
         plist.parent.mkdir(parents=True, exist_ok=True)
@@ -501,9 +529,82 @@ def test_repair_system_unit_fixes_an_old_forking_scheduler_unit(tmp_path, monkey
     assert startup.repair_system_unit(startup.SCHEDULER) is False  # already right
 
 
-def test_repair_system_unit_leaves_forking_units_alone(tmp_path, monkeypatch):
+def test_repair_system_unit_keeps_a_forking_unit_forking(tmp_path, monkeypatch):
     monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
     path = startup.system_unit_path(startup.CRED_BRIDGE)
-    path.write_text("[Service]\nType=forking\nPIDFile=/p\n")
+    path.write_text(
+        "[Unit]\nStartLimitBurst=3\n\n[Service]\nType=forking\nPIDFile=/p\n"
+        f'ExecStart="{_fake_cwcli(tmp_path / "bin" / "cwcli")}" config cred-bridge start\n'
+    )
     assert startup.repair_system_unit(startup.CRED_BRIDGE) is False
-    assert "Type=forking" in path.read_text()
+    service = _service(path)
+    assert (service["Type"], service["PIDFile"]) == ("forking", "/p")
+
+
+# The shared staging server's credential bridge runs as a system unit, so an
+# older `cwcli setup shared` unit (no restart limit) loops the same way when its
+# cwcli moves or the shared config disables the bridge.
+_OLD_SHARED_BRIDGE_UNIT = """[Unit]
+Description=Caffeinated Whale CLI Credential Bridge (shared)
+After=network.target docker.service
+
+[Service]
+Type=forking
+User=cwcli
+Group=cwcli
+PIDFile=/var/lib/cwcli/run/credbridge.pid
+ExecStart="{cwcli}" config cred-bridge start
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+@pytest.mark.parametrize("unit", [startup.CRED_BRIDGE, startup.SCHEDULER])
+def test_an_old_system_unit_without_a_restart_limit_is_stale_and_repaired(
+    tmp_path, monkeypatch, unit
+):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    cwcli = _fake_cwcli(tmp_path / "bin" / "cwcli")
+    path = startup.system_unit_path(unit)
+    path.write_text(_OLD_SHARED_BRIDGE_UNIT.format(cwcli=cwcli))
+
+    assert startup.system_unit_stale_reason(unit) == (
+        "it has no restart limit, so a failing start would retry forever"
+    )
+    assert startup.repair_system_unit(unit) is True
+    parsed = _parse(path)
+    assert parsed["Unit"]["StartLimitIntervalSec"] == "600"
+    assert parsed["Unit"]["StartLimitBurst"] == "3"
+    assert (parsed["Service"]["User"], parsed["Service"]["Group"]) == ("cwcli", "cwcli")
+    assert parsed["Service"]["ExecStart"].startswith(f'"{cwcli}" ')
+    assert startup.system_unit_stale_reason(unit) is None
+    assert startup.repair_system_unit(unit) is False
+
+
+def test_a_system_unit_whose_cwcli_is_gone_runs_the_current_cwcli(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    current = _fake_cwcli(tmp_path / "usr-local-bin" / "cwcli")
+    monkeypatch.setattr(startup, "get_cwcli_path", lambda: str(current))
+    path = startup.system_unit_path(startup.CRED_BRIDGE)
+    path.write_text(_OLD_SHARED_BRIDGE_UNIT.format(cwcli="/home/frappe/.pyenv/bin/cwcli"))
+
+    assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) == (
+        "it runs /home/frappe/.pyenv/bin/cwcli, which no longer exists"
+    )
+    assert startup.repair_system_unit(startup.CRED_BRIDGE) is True
+    assert _service(path)["ExecStart"] == f'"{current}" config cred-bridge start'
+    assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) is None
+
+
+def test_an_absent_or_unreadable_system_unit_is_not_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) is None
+    assert startup.repair_system_unit(startup.CRED_BRIDGE) is False
+    startup.system_unit_path(startup.SCHEDULER).write_text("[Service]\nExecStart='unclosed\n")
+    assert startup.system_unit_stale_reason(startup.SCHEDULER) is None

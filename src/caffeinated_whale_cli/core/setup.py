@@ -260,6 +260,22 @@ def _enable_shared_bridge(state_dir: Path, group: str, gid: int | None, actions:
     )
 
 
+def _repair_system_units(actions: list[str]) -> None:
+    """Rewrite the shared system units an older cwcli wrote (no restart limit, a
+    cwcli that no longer exists), so a failing one cannot flood the journal."""
+    repaired = [
+        unit
+        for unit in (startup.CRED_BRIDGE, startup.SCHEDULER)
+        if startup.repair_system_unit(unit)
+    ]
+    if not repaired:
+        return
+    actions.extend(f"system_unit.repaired:{unit.service_name}" for unit in repaired)
+    result = subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True)
+    if result.returncode != 0:
+        actions.append("system_unit.reload_failed")
+
+
 def provision(
     *,
     group: str = shared_home.DEFAULT_GROUP,
@@ -296,6 +312,8 @@ def provision(
 
     if users:
         _add_users_to_group(users, group, actions)
+
+    _repair_system_units(actions)
 
     if cred_bridge:
         _enable_shared_bridge(target_state_dir, group, gid, actions)

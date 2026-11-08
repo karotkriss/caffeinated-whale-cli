@@ -400,6 +400,30 @@ class TestRestart:
         assert result.ok and result.pid == 20
         assert calls[:2] == [("daemon-reload",), ("restart", "cwcli-scheduler.service")]
 
+    def test_the_bridge_system_unit_is_repaired_before_its_restart(self, monkeypatch):
+        svc = su.Service(
+            kind="cred-bridge", name="bridge", pid=10, unit="cwcli-cred-bridge.service"
+        )
+        calls, repaired = [], []
+        pids = iter([10, 20, 20, 20])
+
+        def fake_systemctl(*args):
+            calls.append(args)
+            out = "active" if args[0] == "is-active" else ""
+            return subprocess.CompletedProcess(args, 0, out, "")
+
+        monkeypatch.setattr(su.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(su, "_systemctl", fake_systemctl)
+        monkeypatch.setattr(su, "_unit_pid", lambda name: next(pids))
+        monkeypatch.setattr(su.time, "sleep", lambda s: None)
+        monkeypatch.setattr(
+            startup, "repair_system_unit", lambda unit: repaired.append(unit) or True
+        )
+        (result,) = su.restart([svc], "1.1.0")
+        assert result.ok
+        assert repaired == [startup.CRED_BRIDGE]
+        assert calls[:2] == [("daemon-reload",), ("restart", "cwcli-cred-bridge.service")]
+
     def test_a_system_unit_without_root_is_reported_not_restarted(self, monkeypatch):
         svc = su.Service(kind="scheduler", name="scheduler", pid=10, unit="x.service")
         monkeypatch.setattr(su.os, "geteuid", lambda: 1000)

@@ -149,9 +149,7 @@ class TestEnable:
         assert _saved()["startup_enabled"] is False
         assert result.data.state.daemon_running is True
 
-    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(
-        self, cfg, monkeypatch
-    ):
+    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(self, cfg, monkeypatch):
         core_ai.enable(at_boot=True)
 
         def _uninstall_kills_daemon(unit=None):
@@ -304,7 +302,6 @@ class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
         core_ai.start()
         assert events == ["repair", "start"]
 
-
     def test_a_refused_start_still_rewrites_the_stale_unit(self, cfg, monkeypatch):
         repaired: list = []
         monkeypatch.setattr(
@@ -423,3 +420,21 @@ class TestStaleBootUnitWarnings:
     def test_current_units_warn_nothing(self, cfg, monkeypatch):
         self._stale(monkeypatch)
         assert core_ai.stale_boot_unit_warnings() == []
+
+    def test_a_stale_shared_system_unit_is_fixed_by_setup_shared(self, cfg, monkeypatch, tmp_path):
+        self._stale(monkeypatch)
+        monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+        unit = tmp_path / startup.CRED_BRIDGE.service_name
+        unit.write_text(
+            "[Service]\nType=forking\nUser=cwcli\n"
+            'ExecStart="/gone/cwcli" config cred-bridge start\nRestart=on-failure\n'
+        )
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.code == "startup.unit_stale"
+        assert warning.detail == {
+            "unit": str(unit),
+            "reason": "it runs /gone/cwcli, which no longer exists",
+            "fix": "sudo cwcli setup shared",
+        }

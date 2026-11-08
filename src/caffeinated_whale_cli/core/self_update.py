@@ -433,7 +433,8 @@ def _restart_unit(svc: Service) -> ServiceRestart:
     assert svc.unit is not None
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         return _result(svc, False, svc.pid, "not restarted: a system service needs sudo")
-    if svc.kind == "scheduler" and startup.repair_system_unit(startup.SCHEDULER):
+    unit = {"scheduler": startup.SCHEDULER, "cred-bridge": startup.CRED_BRIDGE}.get(svc.kind)
+    if unit is not None and startup.repair_system_unit(unit):
         _systemctl("daemon-reload")
     done = _systemctl("restart", svc.unit)
     if done.returncode != 0:

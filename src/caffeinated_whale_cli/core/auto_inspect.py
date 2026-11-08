@@ -174,7 +174,8 @@ def stale_boot_unit_warnings() -> list[Message]:
     feature is enabled, the verb that rewrites it without changing anything else
     (auto-inspect's idempotent ``enable``; its ``start`` is a deprecated alias, and
     the bridge's ``start``, since its ``enable`` also wires running instances), and
-    ``disable``, which removes a unit left behind for a disabled feature.
+    ``disable``, which removes a unit left behind for a disabled feature. A stale
+    shared-mode system unit names ``sudo cwcli setup shared``, which rewrites it.
     """
     units = (
         (startup.AUTO_INSPECT, config_utils.read_auto_inspect_config, "enable"),
@@ -198,6 +199,19 @@ def stale_boot_unit_warnings() -> list[Message]:
                 "startup.unit_stale",
                 f"The {group} start-on-boot unit {name} is stale: {reason}. "
                 f"Run `{fix}` to {'rewrite' if enabled else 'remove'} it.",
+                detail={"unit": name, "reason": reason, "fix": fix},
+            )
+        )
+    fix = "sudo cwcli setup shared"
+    for unit in (startup.CRED_BRIDGE, startup.SCHEDULER):
+        reason = startup.system_unit_stale_reason(unit)
+        if reason is None:
+            continue
+        name = str(startup.system_unit_path(unit))
+        warnings.append(
+            Message(
+                "startup.unit_stale",
+                f"The shared system unit {name} is stale: {reason}. Run `{fix}` to rewrite it.",
                 detail={"unit": name, "reason": reason, "fix": fix},
             )
         )
