@@ -2615,6 +2615,7 @@ when the tool is signed in to none of them; a signed-out host beside a
 signed-in one is listed with its `auth login --hostname` command.
 An enabled but stopped auto-inspect or credential-bridge daemon is a `warn`
 naming its start command; the web UI's Doctor view offers a Start button for it.
+A start-on-boot unit that runs a removed or different cwcli, or that an older cwcli wrote without a restart limit, is a `warn` naming the unit and the command that rewrites or removes it (see the boot-unit note under `config`).
 
 **Exit codes:** `0` when every check is pass/warn (a warning never blocks -
 doctor is a chainable preflight gate), `1` when any check fails.
@@ -2860,7 +2861,11 @@ These verbs remain as hidden aliases with byte-identical behavior plus a one-lin
 
 **Boot-unit note:** startup units installed before this change (systemd/LaunchAgent/schtasks) exec `cwcli config auto-inspect start` verbatim.
 The `start` alias keeps BOTH that argv and its refuse-when-disabled guard, so an existing unit keeps working and a stale hook left behind after `disable` stays inert.
-Re-running `cwcli config auto-inspect enable --startup` rewrites the unit against the current executable path.
+The auto-inspect and credential-bridge units run `/usr/bin/env cwcli` on a PATH that starts with the directory of the cwcli that wrote the unit, then `~/.local/bin`, `/usr/local/bin` and the system directories, so a reinstall or a move between a per-user and the shared install keeps the unit working (Windows tasks keep the absolute path, because a task action does not search PATH).
+A systemd unit whose start keeps failing retries at most 3 times in 10 minutes and then stays failed until the next login or a manual start, so a removed cwcli cannot fill the journal; launchd and Task Scheduler run the unit once per login and never retry.
+A unit is stale when its cwcli no longer exists, when it runs a different cwcli from the one you are running, or when an older cwcli wrote it (no systemd restart limit, or a macOS absolute path).
+`cwcli status` and `cwcli doctor` name a stale unit and the command that fixes it: `cwcli config auto-inspect start` (or `cwcli config cred-bridge start`) rewrites it while the feature is enabled, and `disable` removes it otherwise.
+`enable`, `start` and `restart` rewrite a stale unit of their own daemon automatically, without starting the unit, and an old unit whose cwcli still exists rewrites itself at the next boot because the `start` it runs does the same.
 
 ### `self-update` - Upgrade cwcli Itself
 

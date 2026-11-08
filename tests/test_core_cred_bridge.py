@@ -21,6 +21,7 @@ from caffeinated_whale_cli.utils import cred_daemon as daemon
 
 _REAL_REPAIR_STARTUP = startup.repair_startup
 _REAL_IS_STARTUP_INSTALLED = startup.is_startup_installed
+_REAL_STALE_REASON = startup.stale_reason
 
 
 def _managed(cfg, *names):
@@ -270,12 +271,22 @@ class TestStart:
 
 
 class TestReEnableOverALegacyBootUnit:
-    def test_enable_starts_the_daemon_and_strips_execstop_without_reinstalling(
+    def test_enable_rewrites_a_unit_whose_cwcli_was_removed_without_reinstalling(
         self, cfg, tmp_path, monkeypatch
     ):
+        """The incident: a unit still running a cwcli that was uninstalled (here
+        also carrying the old daemon-killing ExecStop and no restart limit). An
+        enable rewrites it in place against this cwcli, reloads, and never
+        re-enables or starts the unit."""
+        cwcli = tmp_path / "bin" / "cwcli"
+        cwcli.parent.mkdir()
+        cwcli.write_text("#!/bin/sh\n")
+        cwcli.chmod(0o755)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(startup, "get_cwcli_path", lambda: str(cwcli))
         monkeypatch.setattr(startup, "repair_startup", _REAL_REPAIR_STARTUP)
+        monkeypatch.setattr(startup, "stale_reason", _REAL_STALE_REASON)
         monkeypatch.setattr(startup, "is_startup_installed", _REAL_IS_STARTUP_INSTALLED)
         systemctl: list[list[str]] = []
         monkeypatch.setattr(
@@ -306,7 +317,8 @@ class TestReEnableOverALegacyBootUnit:
         parser.optionxform = str
         parser.read(service)
         assert "ExecStop" not in parser["Service"]
-        assert parser["Service"]["ExecStart"] == '"/old/cwcli" config cred-bridge start'
+        assert parser["Service"]["ExecStart"] == "/usr/bin/env cwcli config cred-bridge start"
+        assert parser["Unit"]["StartLimitBurst"] == str(startup.START_LIMIT_BURST)
         assert systemctl == [["systemctl", "--user", "daemon-reload"]]
 
 

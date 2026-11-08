@@ -219,6 +219,40 @@ class TestOffline:
         assert result.data.container_running is False
 
 
+class TestStaleBootUnit:
+    """A boot unit pointing at a removed cwcli is host-wide but surfaces where a
+    user looks first; a repeating poll (the web UI's fused tier) skips the read."""
+
+    @pytest.fixture
+    def stale(self, monkeypatch, tmp_path):
+        from caffeinated_whale_cli.utils import config_utils, startup
+
+        monkeypatch.setattr(config_utils, "CONFIG_FILE", tmp_path / "config.toml")
+        monkeypatch.setattr(
+            startup,
+            "stale_reason",
+            lambda unit=startup.AUTO_INSPECT: (
+                "it runs /gone/cwcli, which no longer exists"
+                if unit is startup.AUTO_INSPECT
+                else None
+            ),
+        )
+
+    def test_the_one_shot_read_warns(self, wire, stale):
+        c = FakeContainer()
+        c.status = "exited"
+        wire(c)
+        result = core_status.status("proj")
+        assert [w.code for w in result.warnings] == ["startup.unit_stale"]
+
+    def test_a_repeating_poll_does_not_read_it(self, wire, stale):
+        c = FakeContainer()
+        c.status = "exited"
+        wire(c)
+        assert core_status.status("proj", fused=True).warnings == []
+        assert core_status.status("proj", probe_web=False).warnings == []
+
+
 class TestNotFound:
     """A truly-nonexistent project is a NOT_FOUND raise, distinct from stopped."""
 

@@ -361,3 +361,43 @@ class TestLogTail:
             core_ai.log_tail()
         assert exc.value.kind is ErrorKind.INTERNAL
         assert exc.value.code == "logs.read_failed"
+
+
+class TestStaleBootUnitWarnings:
+    """``status`` and ``doctor`` name a stale boot unit and the exact command that fixes it."""
+
+    def _stale(self, monkeypatch, *units):
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(
+            startup,
+            "stale_reason",
+            lambda unit=startup.AUTO_INSPECT: (
+                "it runs /gone/cwcli, which no longer exists" if unit in units else None
+            ),
+        )
+
+    def test_an_enabled_feature_is_fixed_by_its_start_verb(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.AUTO_INSPECT)
+        config_utils.set_auto_inspect_enabled(True)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.code == "startup.unit_stale"
+        assert warning.detail == {
+            "unit": "cwcli-auto-inspect.service",
+            "reason": "it runs /gone/cwcli, which no longer exists",
+            "fix": "cwcli config auto-inspect start",
+        }
+        assert "Run `cwcli config auto-inspect start` to rewrite it." in warning.text
+
+    def test_a_disabled_feature_is_fixed_by_removing_the_unit(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.CRED_BRIDGE)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.detail["fix"] == "cwcli config cred-bridge disable"
+        assert "to remove it." in warning.text
+
+    def test_current_units_warn_nothing(self, cfg, monkeypatch):
+        self._stale(monkeypatch)
+        assert core_ai.stale_boot_unit_warnings() == []

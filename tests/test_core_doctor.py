@@ -48,6 +48,7 @@ class TestRegistry:
             "c19",
             "c20",
             "c21",
+            "c22",
         }
 
     def test_is_a_plain_list_not_a_plugin_system(self):
@@ -1036,3 +1037,28 @@ class TestPortCollisions:
         status, detail, _fix = core_doctor._check_port_collisions()
         assert status is CheckStatus.WARN
         assert "unreachable" in detail
+
+
+class TestBootUnits:
+    def test_pass_when_no_unit_is_stale(self):
+        status, _detail, fix = core_doctor._check_boot_units()
+        assert status is CheckStatus.PASS
+        assert fix is None
+
+    def test_warn_names_the_unit_reason_and_fix(self, monkeypatch, tmp_path):
+        from caffeinated_whale_cli.utils import config_utils, startup
+
+        monkeypatch.setattr(config_utils, "CONFIG_FILE", tmp_path / "config.toml")
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(
+            startup,
+            "stale_reason",
+            lambda unit=startup.AUTO_INSPECT: "it runs /gone/cwcli, which no longer exists",
+        )
+        status, detail, fix = core_doctor._check_boot_units()
+        assert status is CheckStatus.WARN
+        assert "cwcli-auto-inspect.service: it runs /gone/cwcli" in detail
+        assert "cwcli-cred-bridge.service" in detail
+        assert fix == (
+            "run `cwcli config auto-inspect disable`; run `cwcli config cred-bridge disable`"
+        )
