@@ -20,6 +20,8 @@ All platform side effects (``systemctl``/``launchctl``/``schtasks``) are faked;
 from __future__ import annotations
 
 import configparser
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -536,6 +538,7 @@ def test_repair_system_unit_keeps_a_forking_unit_forking(tmp_path, monkeypatch):
         "[Unit]\nStartLimitBurst=3\n\n[Service]\nType=forking\nPIDFile=/p\n"
         f'ExecStart="{_fake_cwcli(tmp_path / "bin" / "cwcli")}" config cred-bridge start\n'
     )
+    path.chmod(0o644)
     assert startup.repair_system_unit(startup.CRED_BRIDGE) is False
     service = _service(path)
     assert (service["Type"], service["PIDFile"]) == ("forking", "/p")
@@ -601,7 +604,44 @@ def test_a_system_unit_whose_cwcli_is_gone_runs_the_current_cwcli(tmp_path, monk
     assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) is None
 
 
-def test_an_absent_or_unreadable_system_unit_is_not_stale(tmp_path, monkeypatch):
+def test_a_system_unit_written_under_the_shared_umask_is_readable_by_members(
+    home, tmp_path, monkeypatch
+):
+    """Shared mode runs cwcli under umask 0007, which would leave the unit 0660
+    root:root, so a member's status/doctor could not read it to check it."""
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    (tmp_path / "systemd").mkdir()
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    old = os.umask(0o007)
+    try:
+        startup.install_system_unit(startup.SCHEDULER, user="cwcli", group="cwcli", pid_file="/p")
+    finally:
+        os.umask(old)
+    path = startup.system_unit_path(startup.SCHEDULER)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+    path.chmod(0o660)
+    assert startup.repair_system_unit(startup.SCHEDULER) is True
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert startup.repair_system_unit(startup.SCHEDULER) is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_system_unit_this_user_cannot_read_is_reported_not_passed(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    path = startup.system_unit_path(startup.CRED_BRIDGE)
+    path.write_text(_OLD_SHARED_BRIDGE_UNIT.format(cwcli="/gone/cwcli"))
+    path.chmod(0o000)
+    try:
+        assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) == (
+            "only root can read it, so it could not be checked"
+        )
+    finally:
+        path.chmod(0o644)
+
+
+def test_an_absent_or_malformed_system_unit_is_not_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
     monkeypatch.setattr(startup, "get_platform", lambda: "linux")
     assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) is None

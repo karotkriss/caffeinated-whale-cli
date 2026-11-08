@@ -160,7 +160,10 @@ def system_unit_stale_reason(unit: BootUnit) -> str | None:
     """
     if get_platform() != "linux":
         return None
-    return _stale(lambda: _systemd_unit_program(system_unit_path(unit)))
+    path = system_unit_path(unit)
+    if path.exists() and not os.access(path, os.R_OK):
+        return "only root can read it, so it could not be checked"
+    return _stale(lambda: _systemd_unit_program(path))
 
 
 _UnitProgram = tuple[str, str | None, str | None] | None
@@ -585,6 +588,9 @@ def _uninstall_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
 # Linux-only; setup refuses on Windows and defers macOS (which needs a LaunchDaemon).
 
 SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+# World-readable (a unit holds no secret) so a non-root member's status/doctor can
+# check it; shared mode's 0007 umask would otherwise leave it 0660 root:root.
+SYSTEM_UNIT_MODE = 0o644
 
 
 def system_unit_path(unit: BootUnit) -> Path:
@@ -623,6 +629,7 @@ RestartSec=10
 WantedBy=multi-user.target
 """
     service_path.write_text(service_content)
+    os.chmod(service_path, SYSTEM_UNIT_MODE)
 
     result = subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -644,7 +651,8 @@ def repair_system_unit(unit: BootUnit) -> bool:
     scheduler) written as ``Type=forking`` with a pid file nothing writes, which
     systemd kills at the start timeout and restarts in a loop, becomes
     ``Type=simple``; a unit with no restart limit gets one; and an ``ExecStart``
-    whose cwcli no longer exists runs this cwcli instead. Returns True when the
+    whose cwcli no longer exists runs this cwcli instead. The file is also made
+    readable to every user (:data:`SYSTEM_UNIT_MODE`). Returns True when the
     file was rewritten (the caller reloads systemd); a missing or already-correct
     file is left alone. Needs root.
     """
@@ -652,6 +660,7 @@ def repair_system_unit(unit: BootUnit) -> bool:
     try:
         original = path.read_text()
         found = _systemd_unit_program(path)
+        mode_ok = path.stat().st_mode & 0o777 == SYSTEM_UNIT_MODE
     except Exception:
         return False
     missing = found is not None and found[1] is None
@@ -673,7 +682,8 @@ def repair_system_unit(unit: BootUnit) -> bool:
             f"[Unit]\nStartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n"
             f"StartLimitBurst={START_LIMIT_BURST}\n\n{repaired}"
         )
-    if repaired == original:
+    if repaired == original and mode_ok:
         return False
     path.write_text(repaired)
+    os.chmod(path, SYSTEM_UNIT_MODE)
     return True
