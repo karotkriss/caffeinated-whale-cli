@@ -563,12 +563,15 @@ def container_account_uids(container) -> dict[int, str]:
     return accounts
 
 
-def frappe_alignment_target(container) -> tuple[int | None, int | None, str | None]:
+def frappe_alignment_target(
+    container, uid_override: int | None = None
+) -> tuple[int | None, int | None, str | None]:
     """:func:`resolve_frappe_alignment_ids` checked against this container's own accounts."""
-    return resolve_frappe_alignment_ids(taken=container_account_uids(container))
+    return resolve_frappe_alignment_ids(uid_override, taken=container_account_uids(container))
 
 
 def resolve_frappe_alignment_ids(
+    uid_override: int | None = None,
     *,
     taken: dict[int, str] | None = None,
 ) -> tuple[int | None, int | None, str | None]:
@@ -581,15 +584,21 @@ def resolve_frappe_alignment_ids(
     (Windows), where there is nothing to align to. ``taken`` maps the uids other
     container accounts already hold to their names (:func:`container_account_uids`).
 
-    Precedence: the shared-mode service uid/gid (stable across users; see below);
-    else the host's own uid/gid. A resolved uid that is 0 or already belongs to another container
-    account is unusable (see :data:`DEFAULT_FRAPPE_UID`) and falls back to the image
-    default with a note; the gid is kept unless it is 0, since a shared duplicate
-    gid is harmless and keeps a shared install's group access.
+    Precedence: an explicit ``uid_override`` (init's ``--uid`` escape hatch, already
+    validated positive and non-root by the frontend) wins - it is not persisted, so
+    a later ``start`` re-aligns to the service identity or the host uid; otherwise
+    the shared-mode service uid/gid (stable across users; see below); else the
+    host's own uid/gid. A resolved uid that is 0 or already belongs to another
+    container account is unusable (see :data:`DEFAULT_FRAPPE_UID`) and falls back to
+    the image default with a note, whatever its source; the gid is kept unless it is
+    0, since a shared duplicate gid is harmless and keeps a shared install's group
+    access.
     """
     if not hasattr(os, "getuid"):
         return (None, None, None)
-    if shared_home.shared_mode():
+    if uid_override is not None:
+        uid, gid = uid_override, uid_override
+    elif shared_home.shared_mode():
         # Shared mode: align to the STABLE cwcli service uid/gid, not whoever ran
         # cwcli. With a shared container and two users, aligning to os.getuid()
         # ping-pongs the frappe user's uid on every start - each swing risking a
@@ -613,7 +622,8 @@ def resolve_frappe_alignment_ids(
     note = (
         f"Using uid {DEFAULT_FRAPPE_UID} for the container 'frappe' user because {why}; "
         f"giving 'frappe' that uid would hand bench the {owner} account's home and break "
-        "its PATH (`bench init` exits 127)."
+        "its PATH (`bench init` exits 127). Pass --uid <n> to init to align to a specific "
+        "uid instead."
     )
     return (DEFAULT_FRAPPE_UID, DEFAULT_FRAPPE_GID if gid == 0 else gid, note)
 
@@ -624,7 +634,8 @@ def _syncs_workspace_owner(uid: int, gid: int) -> bool:
     On a normal box ``frappe`` is aligned to the invoking user, who built and owns
     the workspace, so there is nothing to reconcile and no probe runs (byte-identical
     to before this existed). Shared mode aligns to the service account, and a root
-    host or a colliding uid align to a uid other than the invoking user's: there the workspace can be owned by an earlier, different uid
+    host, a colliding uid, or init's ``--uid`` align to a uid other than the
+    invoking user's: there the workspace can be owned by an earlier, different uid
     (an instance an older cwcli built as uid 0 or as a system account), and the
     re-owned ``frappe`` user could not write its own bench.
     """
@@ -634,8 +645,8 @@ def _syncs_workspace_owner(uid: int, gid: int) -> bool:
 def align_workspace_dir_owner(container, path: str, uid: int, gid: int) -> bool:
     """Give the aligned ``frappe`` user the workspace dir ``bench init`` creates benches in.
 
-    When ``frappe`` is aligned to a uid other than the invoking user's (a root host
-    or a colliding uid), the bind-mounted workspace dir this
+    When ``frappe`` is aligned to a uid other than the invoking user's (a root
+    host, a colliding uid, or init's ``--uid``), the bind-mounted workspace dir this
     process created is not writable by ``frappe`` and ``bench init`` cannot create
     the bench inside it. Re-owns ``path`` (not recursively) to ``uid:gid`` from
     inside the container as root, which works on any host uid, and only when its
@@ -676,6 +687,7 @@ def align_container_user_to_host(
     *,
     chown_home: bool = False,
     bench_paths: Sequence[str] = (),
+    uid_override: int | None = None,
 ) -> tuple[bool, str | None]:
     """Align the container's ``frappe`` user's uid/gid with the host user's.
 
@@ -705,8 +717,8 @@ def align_container_user_to_host(
     versus ~3s narrowed.
 
     In SHARED mode (``shared_home.shared_mode()``), and whenever the target is not
-    the invoking user's own uid/gid (a root host or a colliding uid; see
-    ``_syncs_workspace_owner``), each path in
+    the invoking user's own uid/gid (a root host, a colliding uid, or init's
+    ``--uid``; see ``_syncs_workspace_owner``), each path in
     ``bench_paths`` (the resolved bench dirs) AND the real source dir of any app
     symlinked outside a bench
     (``apps/<app> -> /workspace/.hdsrc/<app>`` on a devcontainer bench; see
@@ -727,8 +739,8 @@ def align_container_user_to_host(
     and emits no workspace chown. ``/workspace`` is a bind mount, not the image overlay,
     so ``chown -R`` there is cheap (no copy-up).
 
-    The target and the unusable-uid fallback are resolved by
-    :func:`frappe_alignment_target`, the shared target
+    ``uid_override`` (init's ``--uid`` escape hatch), the target and the unusable-uid
+    fallback are resolved by :func:`frappe_alignment_target`, the shared target
     computation checked against this container's own accounts - so ``frappe`` is
     never given uid 0 or a uid a system account in the image already holds (which
     breaks bench; see :data:`DEFAULT_FRAPPE_UID`), and a properly provisioned shared
@@ -745,7 +757,7 @@ def align_container_user_to_host(
     """
     if not hasattr(os, "getuid"):  # non-POSIX (Windows): nothing to align to.
         return (False, None)
-    host_uid, host_gid, _note = frappe_alignment_target(container)
+    host_uid, host_gid, _note = frappe_alignment_target(container, uid_override)
     if host_uid is None or host_gid is None:
         return (False, None)
     cur_uid = _read_frappe_id(container, "-u")

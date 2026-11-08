@@ -736,7 +736,14 @@ class TestResolveFrappeAlignmentIds:
             core_docker.DEFAULT_FRAPPE_UID,
             core_docker.DEFAULT_FRAPPE_GID,
         )
-        assert note is not None and "root" in note
+        assert note is not None and "root" in note and "--uid" in note
+
+    def test_explicit_override_wins_and_carries_no_note(self, monkeypatch):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        # Even on a root host, an explicit --uid is honoured verbatim (no fallback).
+        assert core_docker.resolve_frappe_alignment_ids(1005) == (1005, 1005, None)
 
     def test_shared_service_uid_wins_over_a_root_host(self, monkeypatch):
         """A properly provisioned shared install on a root host resolves to its
@@ -797,6 +804,18 @@ class TestAlignNeverRemapsFrappeToRoot:
         assert "frappe:\\1:1000:" in script  # sed sets the passwd uid to 1000
         assert ":0:" not in script
 
+    def test_explicit_override_on_a_root_host_remaps_to_that_uid(self, monkeypatch):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+        remapped, err = core_docker.align_container_user_to_host(c, uid_override=1005)
+        assert (remapped, err) == (True, None)
+        script = c.remap_scripts[0]
+        assert "groupmod -o -g 1005 frappe" in script
+        assert "frappe:\\1:1005:" in script
+
+
 def _root_host(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
@@ -835,6 +854,23 @@ class TestUnusableUidsFallBack:
 
     def test_a_free_uid_is_used_verbatim(self, host_1001):
         assert core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN) == (1001, 1001, None)
+
+    def test_an_override_onto_a_system_account_still_falls_back(self, host_1001):
+        """--uid 100 would hand bench redis's home just as a host uid 100 would."""
+        uid, _gid, note = core_docker.resolve_frappe_alignment_ids(100, taken=self.TAKEN)
+        assert uid == 1000
+        assert note is not None and "redis" in note
+
+    def test_an_override_reowns_a_bench_built_under_another_uid(self, host_1001):
+        """--uid aligns frappe away from the invoking user, so a bench owned by the
+        invoking uid is handed to the override too (it is what bench will write as)."""
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        remapped, err = core_docker.align_container_user_to_host(
+            c, bench_paths=["/workspace/frappe-bench"], uid_override=1005
+        )
+        assert (remapped, err) == (True, None)
+        assert "chown -R 1005:1005 /workspace/frappe-bench" in c.remap_scripts[0]
+
 
 class TestContainerAccountUids:
     def test_reads_every_account_but_frappe(self):
@@ -951,6 +987,16 @@ class TestAlignWorkspaceDirOwner:
         monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
         c = self._Recorder()
         assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 998) is True
+
+    def test_a_non_root_uid_override_reowns_the_dir_without_group_write(self, host_1001):
+        """init --uid 1005 as uid 1001: the dir goes to 1005 from inside the container
+        (a host-side chown to another uid would be EPERM), and the override's own gid
+        is not the invoking user's group, so no group write is added."""
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1005, 1005) is True
+        script = c.calls[0][0][2]
+        assert "chown 1005:1005 /workspace" in script
+        assert "chmod" not in script
 
     def test_a_system_account_host_keeps_group_write_on_the_dir_only(self, monkeypatch, tmp_path):
         """The script, run by a real shell on a 0755 dir: the dir gains group write

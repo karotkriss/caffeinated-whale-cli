@@ -244,6 +244,25 @@ def validate_new_site_name(value: str) -> str:
     return cleaned
 
 
+def check_uid_override(uid: int | None) -> None:
+    """Reject an invalid ``--uid`` before any container or file work (init's policy).
+
+    ``0`` reproduces the exact root-host collision the fix exists to avoid (it
+    aliases the container's own root user and breaks bench's PATH), and a negative
+    uid is not a real account; both raise a ``USAGE`` error. A non-numeric value is
+    rejected earlier by Typer's ``int`` coercion at parse time. ``None`` (the flag
+    was not passed) is always fine. The frontends call this before stage 1, so a
+    bad value never leaves a project dir or containers behind.
+    """
+    if uid is not None and uid <= 0:
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "uid.invalid",
+            "--uid must be a positive, non-root integer: 0 collides with the container's own "
+            "root user and breaks bench's PATH the same way an unset --uid does on a root host.",
+        )
+
+
 # ------------------------------------------------------------------ version gating
 
 
@@ -1148,6 +1167,7 @@ def init_bench(
     erpnext_branch: str,
     auto_start: bool = False,
     stream_output: bool = False,
+    uid: int | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[InitReport]:
     """Provision a bench and site inside a running instance.
@@ -1159,10 +1179,14 @@ def init_bench(
     and the optional ERPNext pair. Caching the new bench is the caller's
     post-init recache (``cache.recache_project(..., bench_path=...)``).
 
-    The container ``frappe`` user is aligned to the host's own uid/gid. A root-uid
-    host (a common CI-runner shape) or a uid a system account in the image already
-    holds falls back to a safe non-root default on its own (see
-    :data:`core.docker.DEFAULT_FRAPPE_UID`).
+    ``uid`` overrides the id the container ``frappe`` user is aligned to
+    (:func:`core.docker.align_container_user_to_host`'s ``uid_override``) instead
+    of the host's own uid/gid. Its main use is a root-uid host (a common CI-runner
+    shape), where the alignment already falls back to a safe non-root default
+    rather than colliding with the container's own root user (see that function);
+    ``uid`` is the explicit escape hatch when a caller wants a specific uid. A uid
+    that a system account in the image already holds falls back to that same
+    default whatever its source (see :data:`core.docker.DEFAULT_FRAPPE_UID`).
 
     ``db_root_password`` defaults to the one :func:`init_instance` stored for
     this instance, else the compose default ``123`` (:func:`core.db_password.resolve`);
@@ -1229,7 +1253,7 @@ def init_bench(
         )
     )
     remapped, remap_err = core_docker.align_container_user_to_host(
-        frappe_container, chown_home=True, bench_paths=[bench_full_path]
+        frappe_container, chown_home=True, bench_paths=[bench_full_path], uid_override=uid
     )
     emit(InitStepEnd(phase="align_uid"))
     if remap_err:
@@ -1240,7 +1264,7 @@ def init_bench(
         # uid is 0 (a root host) or belongs to a system account in the image, the
         # container 'frappe' user gets the image default instead (any other choice
         # breaks bench). No note when a usable uid was resolved.
-        target_uid, target_gid, note = core_docker.frappe_alignment_target(frappe_container)
+        target_uid, target_gid, note = core_docker.frappe_alignment_target(frappe_container, uid)
         if note:
             emit(InitNotice(code="init.uid_align_root_host", text=note))
             warnings.append(Message("init.uid_align_root_host", note))

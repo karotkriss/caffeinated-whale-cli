@@ -307,6 +307,27 @@ class TestSharedModeServiceOwnedDirectory:
         assert failures == []
         assert helper.call_args.args[0] == project_dir
 
+    def test_a_workspace_handed_to_a_uid_override_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch
+    ):
+        """`cwcli init --uid <n>` run by a different, non-root user: init handed the
+        workspace to <n>, so the bench files frappe wrote as <n> are not the invoking
+        user's to delete and the same root-helper retry finishes the removal."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        override_uid = (project_dir / "data").stat().st_uid  # the uid --uid chose
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: override_uid + 7)  # the invoker
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert core_rm._delete_project_directory("proj", _render_event, failures=failures) is True
+        assert not project_dir.exists()
+        assert failures == []
+        assert helper.call_args.args[0] == project_dir
+
     def test_per_user_mode_never_uses_the_helper(self, cwcli_home, monkeypatch):
         _make_project_dir(core_rm.PROJECTS_DIR, "proj")
         self._denied_once(monkeypatch)

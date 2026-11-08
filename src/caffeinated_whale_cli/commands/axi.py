@@ -2942,6 +2942,15 @@ def axi_init(
         "starting, for automation/CI. Distinct from container startup, which stage 1 "
         "always brings up regardless of this flag.",
     ),
+    uid: int = typer.Option(
+        None,
+        "--uid",
+        help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
+        "host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0): "
+        "aligning to 0 would collide with the container's own root user and break bench's PATH, "
+        "so that case already falls back to a safe default automatically (reported in `warnings`); "
+        "pass --uid to choose a specific uid instead. Must be a positive, non-root integer.",
+    ),
     complete_setup: bool = typer.Option(
         False,
         "--complete-setup",
@@ -3037,7 +3046,7 @@ def axi_init(
         raise typer.Exit(exit_for(ErrorKind.USAGE))
     db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or None
 
-    # Fail-fast on a bad project/site name BEFORE stage 1 (the human
+    # Fail-fast on a bad project/site name or --uid BEFORE stage 1 (the human
     # init's ordering): the core re-validates in init_bench, but that runs only
     # after compose has brought real containers up, which a usage error must never
     # leave behind. Normalizing the project name here (Docker Compose lowercases it,
@@ -3049,6 +3058,7 @@ def axi_init(
     try:
         project = core_init.validate_project_slug(project)
         site = core_init.validate_new_site_name(site)
+        core_init.check_uid_override(uid)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
@@ -3114,6 +3124,7 @@ def axi_init(
             reuse_bench=reuse_bench,
             install_erpnext=install_erpnext,
             erpnext_branch=erpnext_branch,
+            uid=uid,
             on_event=_init_narrate,
         )
     except CwcliError as error:
@@ -3153,7 +3164,7 @@ def axi_init(
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)
         try:
-            start_result = core_start.start(project, bench_path=report.bench_path)
+            start_result = core_start.start(project, bench_path=report.bench_path, uid_override=uid)
         except Exception as e:
             print(
                 f"Warning: bench created, but its dev services could not be started: "

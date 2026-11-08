@@ -708,8 +708,9 @@ def _workspace_aligned_away(project_dir: Path) -> bool:
 
     ``init`` hands that bind-mounted dir to the container ``frappe`` user's alignment
     target when the target is not the invoking user (a host uid that an image account
-    already holds falls back to 1000; see ``core.docker.align_workspace_dir_owner``),
-    so its owner records that the bench files are not the invoking user's to delete.
+    already holds falls back to 1000, or init's ``--uid`` chose another uid; see
+    ``core.docker.align_workspace_dir_owner``), so its owner records that the bench
+    files are not the invoking user's to delete.
     """
     if not hasattr(os, "getuid"):
         return False
