@@ -87,7 +87,7 @@ The fallback is surfaced ONCE, non-silently, as `InitNotice(code="init.uid_align
 
 Workspace ownership follows the target whenever it is not the invoking user's own uid/gid (`_syncs_workspace_owner`: a root host, a collision, or `--uid`), as well as in shared mode, and whenever align remaps `frappe` (`ids_changed`): a plain start after a one-off `sudo cwcli start` re-owns the bench root handed to uid 1000 back to the invoking user.
 Then align stats each bench path and re-owns (`chown -R`) any whose owner differs; this is the repair path for an instance an older cwcli broke (`frappe` on uid 0 or a system account, bench owned by it): a plain `cwcli start` moves `frappe` to a usable uid and re-owns the bench, deleting nothing.
-On a normal box (aligned to the invoking user, who owns the workspace) no owner probe runs at all, so it stays byte-identical to before.
+On a normal box (aligned to the invoking user, who owns the workspace) the owner probe runs only when align remaps `frappe`, and it re-owns only a bench another uid holds.
 `init_bench` also hands the workspace dir benches are created in (`bench_parent`) to the target via `align_workspace_dir_owner` (a non-recursive, owner-mismatch-gated chown run as root INSIDE the container), right after align and before `_ensure_directory`.
 It replaced the host-side `align_bind_mount_source_owner` in `init_instance`: stage 1 runs before the container exists and so could not know the effective target, and a host-side `os.chown` to another uid is EPERM for a non-root host.
 Skipped in shared mode, whose 2770 state tree owns bind-mount permissions.
