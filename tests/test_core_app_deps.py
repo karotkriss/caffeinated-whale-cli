@@ -444,11 +444,37 @@ class TestPlan:
         assert toolkit.requested and toolkit.checkout and toolkit.ref == "develop"
         assert plan.order == ["toolkit", "booking"] and plan.ok
 
-    def test_two_picks_wanting_one_app_at_two_refs_are_refused_never_one_dropped(self):
+    def test_a_dependant_picked_at_a_ref_does_not_pin_the_ref_of_an_app_picked_too(self):
+        """booking@master requires toolkit, which declares no ref in booking's hooks:
+        toolkit picked at version-16 lands there, never refused for booking's master."""
         world = _booking_world()
         plan = world.plan(_bench(), [(BOOKING, "master"), (TOOLKIT, "version-16")])
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.requested and toolkit.ref == "version-16"
+        assert plan.order == ["toolkit", "booking"]
+        assert "app.ref_conflict" not in [p.code for p in plan.problems]
+
+    def test_a_bench_app_picked_at_a_ref_is_checked_out_for_a_dependant_picked_at_one(self):
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(
+            _bench(toolkit=held),
+            [(BOOKING, "master"), ("toolkit", "develop")],
+            checkout_held=True,
+        )
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.checkout and toolkit.ref == "develop" and plan.ok
+
+    def test_one_app_picked_twice_at_two_refs_is_refused_never_one_dropped(self):
+        world = _booking_world()
+        plan = world.plan(_bench(), [(TOOLKIT, "master"), ("toolkit", "develop")])
         (conflict,) = [p for p in plan.problems if p.code == "app.ref_conflict"]
-        assert conflict.app == "toolkit" and "version-16" in conflict.message
+        assert conflict.app == "toolkit" and "develop" in conflict.message
         assert "master" in conflict.message and plan.blocked
 
     def test_a_checkout_at_a_ref_built_for_another_frappe_is_refused(self):

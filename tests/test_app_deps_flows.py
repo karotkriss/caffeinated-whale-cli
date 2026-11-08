@@ -422,6 +422,31 @@ def test_a_failed_checkout_creates_no_site(world, container, monkeypatch):  # no
     assert "new-site" not in " ".join(container.calls)
 
 
+def test_a_failed_fetch_leaves_the_bench_app_where_it_was(
+    world, container, monkeypatch  # noqa: F811
+):
+    """The checkout moves the app for every site on the bench; a fetch only adds an app
+    no site uses yet. A fetch that fails must therefore stop the job before the move."""
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    container.fail_on = [f"get-app --branch master {BOOKING}"]
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch)
+    checkouts = _record_checkouts(monkeypatch, new_site)
+    _stop_before_the_site(monkeypatch, new_site)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["booking", "toolkit"],
+            fetch=[BOOKING],
+            refs={"toolkit": "develop"},
+        )
+    assert raised.value.code == "new_site.fetch_failed"
+    assert checkouts == []
+
+
 def test_a_wrong_root_password_stops_before_the_bench_app_moves(
     world, container, monkeypatch  # noqa: F811
 ):

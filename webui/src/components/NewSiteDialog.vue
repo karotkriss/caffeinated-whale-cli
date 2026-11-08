@@ -254,6 +254,8 @@ const ready = computed(() => !!project.value && bench.value != null && nameState
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 // Bench apps the plan checks out at their picked ref: Create site moves them first.
 const movedApps = computed(() => benchApp.value.filter((v) => movesTo(plan.value, v, refs.value[v]) === true))
+// Bench apps Create site may move: said on the page too while the plan cannot tell (a stopped instance).
+const moveNotes = computed(() => benchApp.value.filter((v) => movesTo(plan.value, v, refs.value[v]) !== false))
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
   let deps = joined.value.length ? ' --with-deps' : ''
@@ -263,8 +265,8 @@ const cli = computed(() => {
   if (makeDefault.value) line += ' --default'
   if (devMode.value) line += ' --dev-mode'
   line += deps
-  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${refByTarget.value[u] ? ` --branch ${q(refByTarget.value[u])}` : ''}${deps} && ` + line
   for (const a of movedApps.value) line = `cwcli apps checkout ${q(project.value || '<instance>')} ${q(a)} ${q(refs.value[a])} --bench ${q(bench.value ?? '<bench>')} && ` + line
+  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${refByTarget.value[u] ? ` --branch ${q(refByTarget.value[u])}` : ''}${deps} && ` + line
   return line
 })
 function toggleApp(name, on) {
@@ -350,7 +352,7 @@ async function start() {
             <span v-else-if="inventory !== 'live'" class="text-xs text-ink-gray-5">the bench's apps could not be read live; an app it already holds is not fetched again</span>
             <span v-else-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
           </div>
-          <p v-for="a in movedApps" :key="`moved-${a}`" class="mt-2 text-xs text-ink-amber-6">{{ branchChangeNote(a, refs[a], theBench, plan) }}</p>
+          <p v-for="a in moveNotes" :key="`moved-${a}`" class="mt-2 text-xs text-ink-amber-6">{{ branchChangeNote(a, refs[a], theBench, plan) }}</p>
           <DependencyTree v-if="apps.length && instUp" class="mt-3" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" consent-note="Picking an app adds the apps it requires; they go away when it does." />
           <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" :refs="refs" :host="host" @update:model-value="(v) => (apps = v)" @update:refs="(v) => (refs = v)" @update:open="pickerOpen = $event" />
         </div>

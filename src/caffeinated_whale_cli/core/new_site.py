@@ -196,17 +196,6 @@ def new_site(
     )
     if unverified is not None:
         warnings.append(unverified)
-    for a, at in to_checkout:
-        # An app the bench holds at another ref moves there BEFORE the site exists (and
-        # with it every site on the bench that has it); a refused or failed checkout
-        # stops here with no site left behind.
-        moved = core_apps.checkout_app(project, a, at, bench_path=bench_path, on_event=emit)
-        if moved.data is None or not moved.data.ok:
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "new_site.checkout_failed",
-                f"Checking out {at} in {a} failed; the site was not created.",
-            )
     for target, ref in to_fetch:
         # Remote picks and required apps land on the bench BEFORE the site exists: a
         # failed fetch stops here with no site left behind.
@@ -228,6 +217,17 @@ def new_site(
     for a in wanted:
         if not _directory_exists(container, f"{bench_path}/apps/{a}"):
             raise _app_missing(project, bench_path, a)
+    for a, at in to_checkout:
+        # An app the bench holds at another ref moves there BEFORE the site exists (and
+        # with it every site on the bench that has it); a refused or failed checkout
+        # stops here with no site left behind.
+        moved = core_apps.checkout_app(project, a, at, bench_path=bench_path, on_event=emit)
+        if moved.data is None or not moved.data.ok:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "new_site.checkout_failed",
+                f"Checking out {at} in {a} failed; the site was not created.",
+            )
 
     major = frappe_major(container, bench_path)
     mariadb_flag = _select_mariadb_flag(f"version-{major}" if major else "version-16")

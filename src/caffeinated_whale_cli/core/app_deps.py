@@ -752,6 +752,9 @@ class _Planner:
         self.decls: dict[str, Declarations] = {}
         self.order: list[str] = []
         self.requesting: str | None = None  # set while a requested target is visited
+        # Picks that name their ref, by module: a dependant reaching one plans the pick.
+        self.picks: dict[str, tuple[str, str]] = {}
+        self.pick: Callable[[str, str | None, list[str]], None] | None = None
         self.problems: list[PlanProblem] = []
         self.bench_apps = state.apps or {}
         major = semver(state.frappe_version)
@@ -1022,6 +1025,9 @@ class _Planner:
             dep, pin = entry_module(entry)
             if dep == "frappe" or dep == module or dep in self.nodes:
                 continue  # planned already (each app once)
+            if dep in self.picks and dep not in stack and self.pick is not None:
+                self.pick(*self.picks[dep], stack)
+                continue
             if dep in self.bench_apps or dep in stack:  # a dep in the stack is a cycle
                 self.visit(
                     dep,
@@ -1222,8 +1228,18 @@ def build_plan(
             "the bench's apps could not be read, so required apps and Frappe ranges were not "
             "checked.",
         )
-    for target, ref in sorted(targets, key=lambda pair: not pair[1]):
-        planner.requesting = target
+
+    def pick(target: str, ref: str | None, stack: list[str] | tuple[str, ...] = ()) -> None:
+        if target in done:
+            return
+        done.add(target)
+        requesting, planner.requesting = planner.requesting, target
+        try:
+            plan_pick(target, ref, stack)
+        finally:
+            planner.requesting = requesting
+
+    def plan_pick(target: str, ref: str | None, stack: list[str] | tuple[str, ...]) -> None:
         copy = planner.bench_copy(target)
         if copy is not None:
             held = planner.bench_apps.get(copy)
@@ -1245,10 +1261,10 @@ def build_plan(
                     ref=ref,
                     decl=decl,
                     source=remote,
-                    stack=[],
+                    stack=list(stack),
                     checkout=True,
                 )
-                continue
+                return
             planner.visit(
                 copy,
                 target=target,
@@ -1257,11 +1273,11 @@ def build_plan(
                 ref=None,
                 decl=None,
                 source=None,
-                stack=[],
+                stack=list(stack),
             )
-            continue
+            return
         if "/" in target or "@" in target:
-            decl = planner.read(target, ref)
+            decl = read_first.pop(target) if target in read_first else planner.read(target, ref)
             planner.visit(
                 decl.app,
                 target=target,
@@ -1270,9 +1286,9 @@ def build_plan(
                 ref=ref,
                 decl=decl,
                 source=app_catalog.remote_key(target),
-                stack=[],
+                stack=list(stack),
             )
-            continue
+            return
         # A plain name the bench does not hold: the catalog, as for a required app,
         # but a name the catalog does not know is left to bench's own lookup. A name
         # an earlier target (its repository URL) already planned is that same app.
@@ -1285,16 +1301,16 @@ def build_plan(
                 ref=ref,
                 decl=None,
                 source=None,
-                stack=[],
+                stack=list(stack),
             )
-            continue
+            return
         found = planner.sources(target, None)
         if len(found) == 1 or (target in planner.dep_sources):
             picked = (
                 planner.catalog_pick(target, found) if target in planner.dep_sources else found[0]
             )
             if picked is None:
-                continue
+                return
             chosen_ref, decl = planner.choose_ref(
                 picked.url, prefer_ref, picked.default_branch, ref=ref
             )
@@ -1306,12 +1322,12 @@ def build_plan(
                 ref=chosen_ref,
                 decl=decl,
                 source=picked.key,
-                stack=[],
+                stack=list(stack),
             )
         elif len(found) > 1:
             resolved = planner.resolve_source(target, None, "this install", prefer_ref, ref=ref)
             if resolved is None:
-                continue
+                return
             url, key, chosen_ref, decl = resolved
             planner.visit(
                 target,
@@ -1321,7 +1337,7 @@ def build_plan(
                 ref=chosen_ref,
                 decl=decl,
                 source=key,
-                stack=[],
+                stack=list(stack),
             )
         else:
             planner.visit(
@@ -1334,8 +1350,22 @@ def build_plan(
                     app=target, error="not on this bench and not in the apps catalog"
                 ),
                 source=None,
-                stack=[],
+                stack=list(stack),
             )
+
+    done: set[str] = set()
+    read_first: dict[str, Declarations] = {}
+    planner.pick = pick
+    for target, ref in targets:
+        if not ref:
+            continue
+        module = planner.bench_copy(target)
+        if module is None and ("/" in target or "@" in target):
+            read_first[target] = planner.read(target, ref)
+            module = read_first[target].app
+        planner.picks.setdefault(module or target, (target, ref))
+    for target, ref in targets:
+        pick(target, ref)
     planner.check_ranges()
     nodes = [planner.nodes[name] for name in planner.order]
     blocked = any(p.severity == "blocker" for p in planner.problems)
