@@ -74,8 +74,8 @@ CRED_BRIDGE = BootUnit(
 
 # A boot unit whose start keeps failing (its cwcli was uninstalled, moved, or
 # exits non-zero) retries at most START_LIMIT_BURST times per
-# START_LIMIT_INTERVAL_SEC, then stays failed until the next login or a manual
-# start. Without it, systemd's default 10s limit window never trips at
+# START_LIMIT_INTERVAL_SEC, then stays failed until the next boot (or login,
+# without lingering) or a manual start. Without it, systemd's default 10s limit window never trips at
 # RestartSec=10, and a vanished cwcli logged a failure every few seconds forever.
 START_LIMIT_INTERVAL_SEC = 600
 START_LIMIT_BURST = 3
@@ -143,13 +143,20 @@ def unit_search_path() -> str:
     the directory of the cwcli writing the unit comes first (see
     :func:`running_cwcli_dir`), then the usual per-user and shared install
     directories, so a removed install falls through to whichever cwcli remains.
-    It is a superset of systemd's default PATH, so the daemons still find
-    ``docker``/``gh``/``glab``.
+    The writing process's own PATH directories follow, because the unit's PATH
+    replaces the service manager's (which environment.d may extend, such as
+    snapd's ``/snap/bin``), so the daemons still find ``docker``/``gh``/``glab``
+    wherever the user's shell finds them.
     """
     dirs = [running_cwcli_dir(), str(Path.home() / ".local" / "bin")]
     if get_platform() == "darwin":
         dirs.append("/opt/homebrew/bin")
     dirs += ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    dirs += [
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if os.path.isabs(d) and not set(d) & set('"%\\&<>')
+    ]
     return ":".join(dict.fromkeys(dirs))
 
 

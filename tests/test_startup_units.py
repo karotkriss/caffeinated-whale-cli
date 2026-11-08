@@ -62,6 +62,7 @@ def home(tmp_path, monkeypatch):
     current = {"path": str(cwcli)}
     monkeypatch.setattr(startup, "get_cwcli_path", lambda: current["path"])
     monkeypatch.setattr(startup.sys, "argv", [str(cwcli), "config"])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
     calls: list[list[str]] = []
 
     def _run(cmd, **kwargs):
@@ -341,6 +342,18 @@ class TestStaleUnits:
         assert parsed["Environment"].strip('"').removeprefix("PATH=").split(":")[0] == str(
             home.cwcli.parent
         )
+
+    def test_the_writers_own_path_follows_so_snap_tools_stay_reachable(
+        self, home, monkeypatch, unit
+    ):
+        """The unit's PATH replaces the systemd manager's, which snapd's
+        environment.d extends with /snap/bin, where a snap `gh` lives."""
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setenv("PATH", "/usr/bin:/snap/bin:relative/bin::/odd%dir:/bin")
+        startup.install_startup(unit)
+        parsed = _service(home.root / ".config" / "systemd" / "user" / unit.service_name)
+        path = parsed["Environment"].strip('"').removeprefix("PATH=")
+        assert path == _unit_path(home) + ":/snap/bin"
 
     def test_without_a_cwcli_script_the_interpreter_directory_leads(self, home, monkeypatch, unit):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
