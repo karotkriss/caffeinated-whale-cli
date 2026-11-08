@@ -75,8 +75,9 @@ CRED_BRIDGE = BootUnit(
 # A boot unit whose start keeps failing (its cwcli was uninstalled, moved, or
 # exits non-zero) retries at most START_LIMIT_BURST times per
 # START_LIMIT_INTERVAL_SEC, then stays failed until the next boot (or login,
-# without lingering) or a manual start. Without it, systemd's default 10s limit window never trips at
-# RestartSec=10, and a vanished cwcli logged a failure every few seconds forever.
+# without lingering) or a manual start. Without it, systemd's default 10s limit
+# window never trips at RestartSec=10, and a vanished cwcli logged a failure
+# every few seconds forever.
 START_LIMIT_INTERVAL_SEC = 600
 START_LIMIT_BURST = 3
 
@@ -166,8 +167,9 @@ def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
     Stale means its program no longer exists, or it was written by an older cwcli
     (no systemd restart limit, or a macOS absolute path). Read-only; an unreadable
     or malformed per-user unit is never claimed stale (a shared system unit this
-    user cannot read is, see :func:`system_unit_stale_reason`). An old unit whose cwcli still exists repairs
-    itself at the next boot, because the ``start`` verb it runs rewrites it.
+    user cannot read is, see :func:`system_unit_stale_reason`). An old unit whose
+    cwcli still exists repairs itself at the next boot, because the ``start`` verb
+    it runs rewrites it.
     """
     inspect = {
         "darwin": lambda: _macos_unit_program(unit),
