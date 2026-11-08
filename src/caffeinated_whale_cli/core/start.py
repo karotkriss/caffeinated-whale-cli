@@ -31,7 +31,6 @@ from docker.errors import APIError, DockerException, NotFound
 from . import resolvers, supervision
 from .docker import (
     align_container_user_to_host,
-    env_uid_override,
     get_project_containers,
     recreate_missing_project_networks,
 )
@@ -152,7 +151,6 @@ def start(
     auto_start: bool = False,
     restart: bool = False,
     autorestart: bool = True,
-    uid_override: int | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[StartOutcome]:
     """Start a project's containers and its bench. See module docstring.
@@ -169,16 +167,7 @@ def start(
     (True -> ``autorestart=unexpected``, the ``--autorestart`` default; False ->
     ``--no-autorestart``, a crashed program stays down until an explicit restart).
     It only takes effect on a genuine (re)launch, not the idempotent no-op.
-
-    ``uid_override`` is threaded ONLY by ``cwcli init``'s own end-of-init auto-start
-    (the same invocation the ``--uid`` flag was passed to), so its uid alignment
-    matches the one init built the bench under. The ``cwcli start``/``axi start``
-    commands never pass it and never persist it - a start with no override falls
-    back to the host uid / the root-host default / the shared service uid exactly
-    as before.
     """
-    if uid_override is None:
-        env_uid_override()
     warnings: list[Message] = []
     emit = on_event or _noop
 
@@ -225,7 +214,6 @@ def start(
             bench_path=bench_path,
             restart=restart,
             autorestart=autorestart,
-            uid_override=uid_override,
             emit=emit,
         )
     except (APIError, CwcliError):
@@ -272,7 +260,6 @@ def _start_bench(
     bench_path: str | None,
     restart: bool,
     autorestart: bool,
-    uid_override: int | None,
     emit: OnEvent,
 ) -> Result[StartOutcome]:
     """Steps 3-6 of :func:`start`, against a frappe container that is running."""
@@ -312,7 +299,7 @@ def _start_bench(
     # resolved and validated above, so it is safe to pass into align's shell).
     emit(StartStepStart(phase="ownership", message="Aligning workspace ownership"))
     did_remap, remap_err = align_container_user_to_host(
-        frappe_container, bench_paths=[resolved_path], uid_override=uid_override
+        frappe_container, bench_paths=[resolved_path]
     )
     remapped.append(did_remap)
     if remap_err:

@@ -901,7 +901,6 @@ def _project(target: dict[str, Any]) -> str:
 
 def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
     project = _project(target)
-    core_docker.env_uid_override()
     if _bench(target) is None:
         return _restart_serving_benches(project, emit)
     resolved = core_resolvers.resolve_bench(project, _bench(target), None)
@@ -1296,9 +1295,6 @@ def _run_init(
     bench_name = str(args.get("bench_name") or "frappe-bench")
     site_name = str(args.get("site_name") or f"{project}.localhost")
     bench_parent = str(args.get("bench_parent") or "/workspace")
-    uid = args.get("uid")
-    uid = int(uid) if uid is not None else None
-    core_init.check_uid_override(uid)
     auto_start = args.get("auto_start") is True
     if auto_start:
         check_start_port_conflicts(project)
@@ -1335,7 +1331,6 @@ def _run_init(
         install_erpnext=bool(args.get("install_erpnext")),
         erpnext_branch=erpnext_branch,
         auto_start=auto_start,
-        uid=uid,
         stream_output=True,
         on_event=emit,
     )
@@ -1347,9 +1342,7 @@ def _run_init(
         emit.lifecycle("cache_warning", f"Could not refresh the cache for {project}.")
     started = None
     if args.get("start", True):
-        started_result = core_start.start(
-            project, bench_path=report.bench_path, uid_override=uid, on_event=emit
-        )
+        started_result = core_start.start(project, bench_path=report.bench_path, on_event=emit)
         started = started_result.data
         warnings.extend(started_result.warnings)
     return Result(

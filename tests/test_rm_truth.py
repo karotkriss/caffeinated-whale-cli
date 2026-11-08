@@ -286,6 +286,27 @@ class TestSharedModeServiceOwnedDirectory:
         assert failures == ["could not remove project directory for 'proj'"]
         assert "service account" not in capsys.readouterr().err
 
+    def test_a_workspace_owned_by_another_uid_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch
+    ):
+        """Per-user mode on a host whose uid an image account holds: init handed the
+        workspace to frappe's fallback uid, so its bench files are not the invoking
+        user's either."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        another_uid = (project_dir / "data").stat().st_uid + 1
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: another_uid)
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert core_rm._delete_project_directory("proj", _render_event, failures=failures) is True
+        assert not project_dir.exists()
+        assert failures == []
+        assert helper.call_args.args[0] == project_dir
+
     def test_per_user_mode_never_uses_the_helper(self, cwcli_home, monkeypatch):
         _make_project_dir(core_rm.PROJECTS_DIR, "proj")
         self._denied_once(monkeypatch)

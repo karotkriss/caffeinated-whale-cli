@@ -117,7 +117,7 @@ def test_pre_fix_remap_to_uid_0_reproduces_the_exit_127_mechanism():
 
 
 def test_align_on_a_root_host_keeps_frappe_usable(monkeypatch):
-    """The fix: on a root host with no --uid, the REAL align leaves `frappe` at the
+    """The fix: on a root host, the REAL align leaves `frappe` at the
     image default instead of remapping it to 0, so `docker exec -u frappe` keeps
     HOME=/home/frappe and the toolchain stays on PATH - no exit 127."""
     _as_root_host(monkeypatch)
@@ -140,31 +140,5 @@ def test_align_on_a_root_host_keeps_frappe_usable(monkeypatch):
         assert (
             f"HOME={_HOME}" in out and "bench-ran" in out
         ), f"root-host align broke frappe's HOME/PATH (the exit-127 bug):\n{out}"
-    finally:
-        container.remove(v=True, force=True)
-
-
-def test_uid_override_on_a_root_host_remaps_to_that_uid(monkeypatch):
-    """The escape hatch: an explicit --uid on a root host remaps `frappe` to that
-    uid (not 0, not the default), and the user stays usable (HOME unchanged, bench on
-    PATH) - proven against real Docker."""
-    _as_root_host(monkeypatch)
-    override = 1234
-    container = _new_container()
-    try:
-        code, out = _exec(container, ["bash", "-c", _SETUP])
-        assert code == 0 and "SETUP_OK" in out, out
-
-        remapped, err = core_docker.align_container_user_to_host(
-            container, chown_home=True, uid_override=override
-        )
-        assert (remapped, err) == (True, None), f"expected a real remap: remapped={remapped} {err}"
-
-        code, uid_now = _exec(container, ["id", "-u", "frappe"])
-        assert code == 0 and uid_now.strip() == str(override), uid_now
-        # The passwd home field is unchanged, so getpwuid(override) still yields
-        # /home/frappe and the login shell stays healthy.
-        code, out = _frappe_login(container)
-        assert f"HOME={_HOME}" in out and "bench-ran" in out, out
     finally:
         container.remove(v=True, force=True)

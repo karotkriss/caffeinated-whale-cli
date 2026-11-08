@@ -41,7 +41,6 @@ from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
-from ..core import docker as core_docker
 from ..core import doctor as core_doctor
 from ..core import init as core_init
 from ..core import inspect as core_inspect
@@ -1127,11 +1126,6 @@ def axi_start(
     auto-resolves conflicting Frappe projects); a multi-bench project with no
     ``--bench`` is a usage error naming ``--bench``.
     """
-    try:
-        core_docker.env_uid_override()
-    except CwcliError as error:
-        emit_axi_error(error)
-        raise typer.Exit(exit_for(error.kind)) from None
     stop_warnings = _axi_resolve_port_conflicts(project, yes)
 
     try:
@@ -2948,16 +2942,6 @@ def axi_init(
         "starting, for automation/CI. Distinct from container startup, which stage 1 "
         "always brings up regardless of this flag.",
     ),
-    uid: int = typer.Option(
-        None,
-        "--uid",
-        help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
-        "host's own uid/gid (or CWCLI_UID). A root host (uid 0) or a uid that a system account "
-        "in the image already holds falls back to 1000 automatically (reported in `warnings`), "
-        "since either would break bench's PATH; pass --uid to choose a specific uid instead. "
-        "Applies to this init only: set CWCLI_UID=<n> to make later start/restart use it too. "
-        "Must be a positive integer.",
-    ),
     complete_setup: bool = typer.Option(
         False,
         "--complete-setup",
@@ -3053,7 +3037,7 @@ def axi_init(
         raise typer.Exit(exit_for(ErrorKind.USAGE))
     db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or None
 
-    # Fail-fast on a bad project/site name or --uid BEFORE stage 1 (the human
+    # Fail-fast on a bad project/site name BEFORE stage 1 (the human
     # init's ordering): the core re-validates in init_bench, but that runs only
     # after compose has brought real containers up, which a usage error must never
     # leave behind. Normalizing the project name here (Docker Compose lowercases it,
@@ -3065,7 +3049,6 @@ def axi_init(
     try:
         project = core_init.validate_project_slug(project)
         site = core_init.validate_new_site_name(site)
-        core_init.check_uid_override(uid)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
@@ -3131,7 +3114,6 @@ def axi_init(
             reuse_bench=reuse_bench,
             install_erpnext=install_erpnext,
             erpnext_branch=erpnext_branch,
-            uid=uid,
             on_event=_init_narrate,
         )
     except CwcliError as error:
@@ -3171,7 +3153,7 @@ def axi_init(
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)
         try:
-            start_result = core_start.start(project, bench_path=report.bench_path, uid_override=uid)
+            start_result = core_start.start(project, bench_path=report.bench_path)
         except Exception as e:
             print(
                 f"Warning: bench created, but its dev services could not be started: "

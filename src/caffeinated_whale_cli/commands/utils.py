@@ -16,7 +16,6 @@ import click
 import questionary
 import typer
 
-from ..core import docker as core_docker
 from ..core import resolvers
 from ..core.envelope import Status
 from ..core.errors import CwcliError, ErrorKind
@@ -44,15 +43,6 @@ def render_captured_output_tail(e: CwcliError, *, lines: int = 15) -> None:
         return
     stderr_console.print("[dim]Captured output (tail):[/dim]")
     stderr_console.print(tail, markup=False, highlight=False)
-
-
-def require_valid_uid_env() -> None:
-    """Refuse an invalid ``CWCLI_UID`` before a command stops or starts anything."""
-    try:
-        core_docker.env_uid_override()
-    except CwcliError as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
-        raise typer.Exit(code=1) from None
 
 
 def ensure_containers_running(
@@ -418,7 +408,6 @@ def _start_containers_for_command(project_name: str, verbose: bool = False):
     """
     from .start import _check_port_conflicts, _start_project
 
-    require_valid_uid_env()
     # Check for port conflicts BEFORE attempting to start
     try:
         _check_port_conflicts(project_name, verbose)

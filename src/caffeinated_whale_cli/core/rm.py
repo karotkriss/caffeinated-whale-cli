@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 from collections.abc import Callable
@@ -666,12 +667,13 @@ def _archive_project_directory(
 
 
 def _empty_dir_as_root(project_dir: Path, emit: OnEvent) -> bool:
-    """Shared mode: empty ``project_dir`` through a short-lived root container.
+    """Empty ``project_dir`` through a short-lived root container.
 
     In shared mode the container ``frappe`` user is aligned to the cwcli SERVICE
-    uid, so the bench under ``data/`` is service-owned and a member's ``rmtree``
-    fails with EACCES. The Docker daemon, which wrote those files, deletes them
-    instead: only ``project_dir`` is mounted, with no network, and the empty dir
+    uid, and on a host whose uid is unusable in the image (a system account) it is
+    aligned to the image default; either way the bench under ``data/`` is not the
+    invoking user's and their ``rmtree`` fails with EACCES. The Docker daemon, which
+    wrote those files, deletes them instead: only ``project_dir`` is mounted, with no network, and the empty dir
     itself is then removed host-side by the caller. Permissions are never loosened.
 
     Uses a local ``frappe/bench`` image, the one every cwcli frappe service runs,
@@ -701,6 +703,22 @@ def _empty_dir_as_root(project_dir: Path, emit: OnEvent) -> bool:
     return False
 
 
+def _workspace_aligned_away(project_dir: Path) -> bool:
+    """Whether the project's ``data/`` workspace belongs to a uid other than the invoker's.
+
+    ``init`` hands that bind-mounted dir to the container ``frappe`` user's alignment
+    target when the target is not the invoking user (a host uid that an image account
+    already holds falls back to 1000; see ``core.docker.align_workspace_dir_owner``),
+    so its owner records that the bench files are not the invoking user's to delete.
+    """
+    if not hasattr(os, "getuid"):
+        return False
+    try:
+        return (project_dir / "data").stat().st_uid != os.getuid()
+    except OSError:
+        return False
+
+
 def _delete_project_directory(
     project_name: str,
     emit: OnEvent,
@@ -715,7 +733,10 @@ def _delete_project_directory(
 
     In shared mode a permission failure (service-owned bench files) is retried
     through :func:`_empty_dir_as_root`; if that also fails, the failure names the
-    directory left on disk and the command that finishes the removal.
+    directory left on disk and the command that finishes the removal. The same
+    retry runs when the project's workspace is owned by another uid
+    (:func:`_workspace_aligned_away`), since its bench files are then not the
+    invoking user's either.
     """
     project_dir = PROJECTS_DIR / project_name
 
@@ -746,7 +767,9 @@ def _delete_project_directory(
         try:
             shutil.rmtree(project_dir)
         except PermissionError:
-            if not shared or not _empty_dir_as_root(project_dir, emit):
+            if not (shared or _workspace_aligned_away(project_dir)) or not _empty_dir_as_root(
+                project_dir, emit
+            ):
                 raise
             shutil.rmtree(project_dir)
         emit(RmNotice(text=f"Removed project directory {project_dir}"))

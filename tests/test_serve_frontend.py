@@ -876,20 +876,6 @@ class TestActions:
         assert body["errors"][0]["title"] == "select_bench"
         assert body["errors"][0]["choice"]["options"][0]["value"] == "0"
 
-    def test_restart_instance_refuses_a_bad_cwcli_uid_before_stopping(self, daemon, monkeypatch):
-        monkeypatch.setenv("CWCLI_UID", "root")
-        monkeypatch.setattr(
-            serve_cmd.core_stop,
-            "stop",
-            lambda project: pytest.fail("stop must not run with an invalid CWCLI_UID"),
-        )
-
-        with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/v1/actions", {"action": "restart_instance", "project": "p"})
-
-        body = json.loads(e.value.read())
-        assert body["errors"][0]["title"] == "uid.invalid"
-
     def test_same_project_actions_are_serialized(self, daemon, monkeypatch):
         entered = threading.Event()
         release = threading.Event()

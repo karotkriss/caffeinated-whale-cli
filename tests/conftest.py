@@ -104,10 +104,6 @@ if not os.environ.get("CWCLI_HOME"):
     _created_session_home = tempfile.mkdtemp(prefix="cwcli-unit-home-", dir=_tmproot)
     os.environ["CWCLI_HOME"] = _created_session_home
 
-# An operator's own CWCLI_UID (the container frappe-uid override) must not steer the
-# alignment decisions the tests assert; a test that exercises it sets it itself.
-os.environ.pop("CWCLI_UID", None)
-
 # ----------------------------------------------------------- memory / slow-test guard
 #
 # The unit tier must stay small and fast. A test that spins a real deadline (a

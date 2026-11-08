@@ -379,9 +379,7 @@ def _bench_web_url(project: str, bench_path: str, site: str) -> str | None:
         return None
 
 
-def _start_services(
-    project: str, bench_path: str, uid_override: int | None = None
-) -> tuple[bool, bool | None]:
+def _start_services(project: str, bench_path: str) -> tuple[bool, bool | None]:
     """Start the just-created bench's dev services over ``core.start``.
 
     Reuses the ``cwcli start`` path (``core.start``) rather than reinventing the
@@ -392,17 +390,12 @@ def _start_services(
     creating the bench) and returns ``(False, None)``. ``web_ready`` mirrors
     ``core.start``'s own honest signal (True served / False timed out / None not
     probed) so the caller can avoid claiming "running" on a web-readiness timeout.
-
-    ``uid_override`` threads init's ``--uid`` into this end-of-init auto-start so
-    it aligns to the SAME id init built the bench under, rather than re-aligning to
-    the host uid and stranding the workspace (the ``cwcli start`` command itself
-    never takes a ``--uid``).
     """
     try:
         with stderr_console.status(
             f"[bold green]Starting dev services for '{project}'...[/bold green]", spinner="dots"
         ):
-            result = core_start.start(project, bench_path=bench_path, uid_override=uid_override)
+            result = core_start.start(project, bench_path=bench_path)
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Bench created, but its dev services could not be "
@@ -594,15 +587,6 @@ def init(
         "--erpnext-branch",
         help="ERPNext branch to use when fetching the app (used with --install-erpnext).",
     ),
-    uid: int | None = typer.Option(
-        None,
-        "--uid",
-        help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
-        "host's own uid/gid (or CWCLI_UID). A root host (uid 0) or a uid that a system account "
-        "in the image already holds falls back to 1000 automatically, since either would break "
-        "bench's PATH; pass --uid to choose a specific uid instead. Applies to this init only: "
-        "set CWCLI_UID=<n> to make later start/restart use it too. Must be a positive integer.",
-    ),
 ) -> None:
     """
     Initialize a new Frappe project with bench and site.
@@ -643,17 +627,7 @@ def init(
         cwcli init my-project --version 16.26.3
         cwcli init my-project --frappe-branch version-16 --admin-password mypass
         cwcli init my-project --frappe-url https://github.com/me/frappe --frappe-branch my-feature
-        cwcli init my-project --uid 1001
     """
-    # Reject an invalid --uid before ANY project dir / container work. A usage
-    # error (exit 2), the same shape Typer gives a non-numeric --uid at parse time.
-    try:
-        core_init.check_uid_override(uid)
-    except CwcliError as e:
-        raise typer.BadParameter(
-            e.message, param_hint="--uid" if uid is not None else None
-        ) from None
-
     # Resolve the Frappe git ref first so a malformed --version fails fast,
     # before any project dir / container work.
     frappe_branch = _resolve_frappe_branch(frappe_branch, version)
@@ -763,7 +737,6 @@ def init(
                     erpnext_branch=erpnext_branch,
                     auto_start=auto_start,
                     stream_output=verbose,
-                    uid=uid,
                     on_event=renderer,
                 )
             finally:
@@ -836,7 +809,7 @@ def init(
     services_running = False
     web_ready: bool | None = None
     if start_services:
-        services_running, web_ready = _start_services(project, report.bench_path, uid_override=uid)
+        services_running, web_ready = _start_services(project, report.bench_path)
 
     web_url = _bench_web_url(project, report.bench_path, report.site_name)
 

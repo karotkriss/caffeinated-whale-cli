@@ -13,7 +13,6 @@ import pytest
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
-
 # The frappe/bench image's own /etc/passwd (v5.31): the system accounts a remapped
 # `frappe` must never share a uid with, then `frappe` itself.
 IMAGE_PASSWD = """root:x:0:0:root:/root:/bin/bash
@@ -719,7 +718,7 @@ def test_reown_app_repo_reports_a_failed_chown():
 # resolves HOME=/root, drops bench's PATH, and `bench init` fails with exit 127.
 # resolve_frappe_alignment_ids is the shared target decision; align must never
 # emit a remap to uid 0 or onto another image account; align_workspace_dir_owner
-# keeps the workspace dir writable by the fallback/override uid.
+# keeps the workspace dir writable by the fallback uid.
 
 
 class TestResolveFrappeAlignmentIds:
@@ -737,14 +736,7 @@ class TestResolveFrappeAlignmentIds:
             core_docker.DEFAULT_FRAPPE_UID,
             core_docker.DEFAULT_FRAPPE_GID,
         )
-        assert note is not None and "root" in note and "--uid" in note
-
-    def test_explicit_override_wins_and_carries_no_note(self, monkeypatch):
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        # Even on a root host, an explicit --uid is honoured verbatim (no fallback).
-        assert core_docker.resolve_frappe_alignment_ids(1005) == (1005, 1005, None)
+        assert note is not None and "root" in note
 
     def test_shared_service_uid_wins_over_a_root_host(self, monkeypatch):
         """A properly provisioned shared install on a root host resolves to its
@@ -805,18 +797,6 @@ class TestAlignNeverRemapsFrappeToRoot:
         assert "frappe:\\1:1000:" in script  # sed sets the passwd uid to 1000
         assert ":0:" not in script
 
-    def test_explicit_override_on_a_root_host_remaps_to_that_uid(self, monkeypatch):
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
-        remapped, err = core_docker.align_container_user_to_host(c, uid_override=1005)
-        assert (remapped, err) == (True, None)
-        script = c.remap_scripts[0]
-        assert "groupmod -o -g 1005 frappe" in script
-        assert "frappe:\\1:1005:" in script
-
-
 def _root_host(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
@@ -839,7 +819,7 @@ class TestUnusableUidsFallBack:
         uid, gid, note = core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN)
         assert (uid, gid) == (1000, 998)
         assert note is not None
-        assert "systemd-network" in note and "CWCLI_UID" in note and "--uid" in note
+        assert "systemd-network" in note
 
     def test_a_shared_service_uid_a_system_account_holds_falls_back(self, monkeypatch):
         """`cwcli setup shared` creates its service account with `useradd --system`,
@@ -855,69 +835,6 @@ class TestUnusableUidsFallBack:
 
     def test_a_free_uid_is_used_verbatim(self, host_1001):
         assert core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN) == (1001, 1001, None)
-
-    def test_an_override_onto_a_system_account_still_falls_back(self, host_1001):
-        uid, gid, note = core_docker.resolve_frappe_alignment_ids(100, taken=self.TAKEN)
-        assert uid == 1000
-        assert note is not None and "redis" in note
-
-    def test_an_override_of_zero_is_never_applied(self, host_1001):
-        """Every frontend validates --uid first; the resolver's own fallback is defense
-        in depth, so 0 still cannot reach the container."""
-        uid, gid, note = core_docker.resolve_frappe_alignment_ids(0)
-        assert (uid, gid) == (1000, 1000)
-        assert note is not None and "root" in note
-
-
-class TestCwcliUidEnv:
-    """CWCLI_UID is the override every aligning command honours (init, start,
-    restart, scale), so it survives the re-align each start performs."""
-
-    def test_it_wins_over_the_host_uid(self, monkeypatch, host_1001):
-        monkeypatch.setenv("CWCLI_UID", "1005")
-        assert core_docker.resolve_frappe_alignment_ids() == (1005, 1005, None)
-
-    def test_it_wins_over_the_shared_service_uid(self, monkeypatch, host_1001):
-        monkeypatch.setenv("CWCLI_UID", "1005")
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
-        monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
-        monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
-        assert core_docker.resolve_frappe_alignment_ids() == (1005, 1005, None)
-
-    def test_init_s_explicit_flag_wins_over_it(self, monkeypatch, host_1001):
-        monkeypatch.setenv("CWCLI_UID", "1005")
-        assert core_docker.resolve_frappe_alignment_ids(1007) == (1007, 1007, None)
-
-    def test_it_is_honoured_on_a_root_host(self, monkeypatch):
-        _root_host(monkeypatch)
-        monkeypatch.setenv("CWCLI_UID", "1001")
-        assert core_docker.resolve_frappe_alignment_ids() == (1001, 1001, None)
-
-    @pytest.mark.parametrize("value", ["0", "-2", "root", "1e3"])
-    def test_a_bad_value_is_a_usage_error_not_ignored(self, monkeypatch, host_1001, value):
-        monkeypatch.setenv("CWCLI_UID", value)
-        with pytest.raises(CwcliError) as exc:
-            core_docker.resolve_frappe_alignment_ids()
-        assert exc.value.kind is ErrorKind.USAGE and exc.value.code == "uid.invalid"
-
-    def test_an_empty_value_is_unset(self, monkeypatch, host_1001):
-        monkeypatch.setenv("CWCLI_UID", "  ")
-        assert core_docker.resolve_frappe_alignment_ids() == (1001, 1001, None)
-
-    def test_align_applies_it_on_start(self, monkeypatch, host_1001):
-        """The point of an env var: a plain `cwcli start` (no --uid) aligns to it and
-        re-owns a bench it finds owned by another uid."""
-        monkeypatch.setenv("CWCLI_UID", "1005")
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
-        remapped, err = core_docker.align_container_user_to_host(
-            c, bench_paths=["/workspace/frappe-bench"]
-        )
-        assert (remapped, err) == (True, None)
-        script = c.remap_scripts[0]
-        assert "frappe:\\1:1005:" in script
-        assert "chown -R 1005:1005 /workspace/frappe-bench" in script
-
 
 class TestContainerAccountUids:
     def test_reads_every_account_but_frappe(self):
@@ -1018,11 +935,14 @@ class TestAlignWorkspaceDirOwner:
         assert core_docker.align_workspace_dir_owner(c, "/workspace", 1001, 1001) is False
         assert c.calls == []
 
-    def test_a_non_root_override_reowns_too(self, host_1001):
-        """--uid/CWCLI_UID other than the invoking user: chowning from inside the
-        container works where a host-side chown to another uid would be EPERM."""
+    def test_a_system_account_host_reowns_to_the_fallback(self, monkeypatch):
+        """A non-root host whose uid an image account holds (998): chowning from
+        inside the container works where a host-side chown to 1000 would be EPERM."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
         c = self._Recorder()
-        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1005, 1005) is True
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 998) is True
 
     def test_shared_mode_is_skipped(self, monkeypatch):
         _root_host(monkeypatch)

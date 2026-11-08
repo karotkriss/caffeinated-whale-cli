@@ -14,12 +14,7 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from .start import _start_project
 from .stop import stop_project_best_effort
-from .utils import (
-    render_captured_output_tail,
-    require_valid_uid_env,
-    resolve_bench_path,
-    split_trailing_options,
-)
+from .utils import render_captured_output_tail, resolve_bench_path, split_trailing_options
 
 app = typer.Typer(help="Restart a Frappe project's containers.")
 
@@ -145,7 +140,6 @@ def restart(
         _restart_processes(project_names_to_process, actual_process, actual_bench, actual_verbose)
         return
 
-    require_valid_uid_env()
     console.print(
         f"Attempting to restart [bold cyan]{len(project_names_to_process)}[/bold cyan] project(s)..."
     )

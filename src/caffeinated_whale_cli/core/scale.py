@@ -400,7 +400,6 @@ def scale(
             "scale.bad_to",
             "--to must be a positive number of benches.",
         )
-    core_docker.env_uid_override()
     core_docker.ensure_compose_available()
 
     compose_path = _compose_path(project_name)
