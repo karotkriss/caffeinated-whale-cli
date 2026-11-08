@@ -427,6 +427,30 @@ class TestPlan:
         (node,) = plan.nodes
         assert not node.checkout and node.action == "install" and world.reads == []
 
+    def test_a_ref_picked_for_an_app_another_pick_requires_is_the_ref_it_lands_at(self):
+        """booking (no ref picked) requires toolkit, picked after it at develop: toolkit
+        is checked out at develop, not left at the bench's master for booking."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(
+            _bench(toolkit=held), [(BOOKING, None), ("toolkit", "develop")], checkout_held=True
+        )
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.requested and toolkit.checkout and toolkit.ref == "develop"
+        assert plan.order == ["toolkit", "booking"] and plan.ok
+
+    def test_two_picks_wanting_one_app_at_two_refs_are_refused_never_one_dropped(self):
+        world = _booking_world()
+        plan = world.plan(_bench(), [(BOOKING, "master"), (TOOLKIT, "version-16")])
+        (conflict,) = [p for p in plan.problems if p.code == "app.ref_conflict"]
+        assert conflict.app == "toolkit" and "version-16" in conflict.message
+        assert "master" in conflict.message and plan.blocked
+
     def test_a_checkout_at_a_ref_built_for_another_frappe_is_refused(self):
         world = _booking_world()
         world.repos[TOOLKIT]["v17"] = Declarations(

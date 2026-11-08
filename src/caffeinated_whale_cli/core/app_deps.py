@@ -990,6 +990,21 @@ class _Planner:
             )
             return
         if module in self.nodes:
+            planned = self.nodes[module]
+            if requested and ref and planned.ref != ref:
+                by = (
+                    f"{planned.parent}, which requires it,"
+                    if planned.parent
+                    else f"the pick {planned.requested_as}"
+                )
+                self.problem(
+                    "app.ref_conflict",
+                    "blocker",
+                    module,
+                    f"{module} is picked at {ref}, but {by} already plans it at "
+                    f"{planned.ref or 'the ref it has'}; one app lands at one ref.",
+                    remedy=f"Pick {module} at {planned.ref or 'that ref'}, or clear its ref.",
+                )
             return
         on_bench = module in self.bench_apps
         if decl is None:
@@ -1207,7 +1222,7 @@ def build_plan(
             "the bench's apps could not be read, so required apps and Frappe ranges were not "
             "checked.",
         )
-    for target, ref in targets:
+    for target, ref in sorted(targets, key=lambda pair: not pair[1]):
         planner.requesting = target
         copy = planner.bench_copy(target)
         if copy is not None:
@@ -1262,6 +1277,16 @@ def build_plan(
         # but a name the catalog does not know is left to bench's own lookup. A name
         # an earlier target (its repository URL) already planned is that same app.
         if target in planner.nodes:
+            planner.visit(
+                target,
+                target=target,
+                parent=None,
+                requested=True,
+                ref=ref,
+                decl=None,
+                source=None,
+                stack=[],
+            )
             continue
         found = planner.sources(target, None)
         if len(found) == 1 or (target in planner.dep_sources):

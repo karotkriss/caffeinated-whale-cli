@@ -19,15 +19,26 @@ export function sitesHolding(bench, app) {
   return (bench?.sites || []).filter((s) => (s.installed_apps || []).some((e) => String(e).trim().split(/\s+/)[0] === app)).map((s) => s.name)
 }
 
-// What picking `ref` for bench app `app` does, said before it runs, decided as the job
-// decides it (the live plan); '' when nothing moves or the plan has not read the copy yet.
-export function branchChangeNote(app, ref, bench, plan) {
+// Whether Create site checks the bench's copy of `app` out at `ref` first, decided as the
+// job decides it (the live plan): null while the plan has not planned that pick at `ref`.
+export function movesTo(plan, app, ref) {
+  if (!ref) return false
   const n = pickedNode(plan, app)
-  if (!n || !ref) return ''
+  if (!n) return null
+  if (n.checkout) return n.ref === ref ? true : null
+  return n.ref !== ref
+}
+
+// What picking `ref` for bench app `app` does, said before it runs; '' when nothing moves,
+// and said as a condition while the plan cannot tell yet (a pick it has not planned).
+export function branchChangeNote(app, ref, bench, plan) {
+  const moves = movesTo(plan, app, ref)
+  if (moves === false) return ''
   const at = liveBranchOf(plan, app)
-  if (n.checkout ? n.ref !== ref : at === ref) return ''
   const sites = sitesHolding(bench, app)
-  const move = `Create site first checks out ${ref} in the bench's copy of ${app}${at ? ` (now at ${at})` : ''}`
+  const move = moves
+    ? `Create site first checks out ${ref} in the bench's copy of ${app}${at ? ` (now at ${at})` : ''}`
+    : `Unless the bench's copy of ${app} already sits at ${ref}, Create site first checks it out there`
   if (!sites.length) return `${move}; no other site on this bench has it installed.`
   return `${move}, which moves it for every site on this bench: ${sites.join(', ')}.`
 }

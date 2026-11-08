@@ -33,7 +33,7 @@ BENCH = {
 
 def _run(call):
     script = (
-        f"import {{ liveBranchOf, sitesHolding, branchChangeNote, alignedRefs }} from {json.dumps(MODULE.as_uri())};\n"
+        f"import {{ liveBranchOf, movesTo, sitesHolding, branchChangeNote, alignedRefs }} from {json.dumps(MODULE.as_uri())};\n"
         f"console.log(JSON.stringify({call} ?? null));\n"
     )
     out = subprocess.run(
@@ -83,10 +83,31 @@ def test_the_ref_the_copy_already_sits_at_is_no_move():
     assert _run(f"branchChangeNote('payments', 'develop', {json.dumps(BENCH)}, {plan})") == ""
 
 
-def test_no_move_is_claimed_before_the_plan_has_read_the_copy():
-    assert _run(f"branchChangeNote('payments', 'develop', {json.dumps(BENCH)}, null)") == ""
+def test_the_move_is_said_as_a_condition_while_the_plan_has_not_planned_the_pick():
+    # A pick made in the picker is not in the plan yet; one changed in the picker was
+    # planned at its old ref. Neither may read as "nothing moves".
+    unsure = (
+        "Unless the bench's copy of payments already sits at develop, Create site first "
+        "checks it out there, which moves it for every site on this bench: a.localhost, c.localhost."
+    )
+    assert _run(f"branchChangeNote('payments', 'develop', {json.dumps(BENCH)}, null)") == unsure
     stale = json.dumps(_plan(ref="other", checkout=True))
-    assert _run(f"branchChangeNote('payments', 'develop', {json.dumps(BENCH)}, {stale})") == ""
+    assert _run(f"branchChangeNote('payments', 'develop', {json.dumps(BENCH)}, {stale})") == unsure
+
+
+def test_only_a_move_the_plan_confirms_counts_as_one():
+    assert (
+        _run(f"movesTo({json.dumps(_plan(ref='develop', checkout=True))}, 'payments', 'develop')")
+        is True
+    )
+    assert _run(f"movesTo({json.dumps(_plan(ref='develop'))}, 'payments', 'version-16')") is True
+    assert _run(f"movesTo({json.dumps(_plan(ref='develop'))}, 'payments', 'develop')") is False
+    assert (
+        _run(f"movesTo({json.dumps(_plan(ref='other', checkout=True))}, 'payments', 'develop')")
+        is None
+    )
+    assert _run("movesTo(null, 'payments', 'develop')") is None
+    assert _run("movesTo(null, 'payments', '')") is False
 
 
 def test_the_note_says_when_no_site_has_the_app_yet():

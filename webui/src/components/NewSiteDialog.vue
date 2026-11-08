@@ -19,7 +19,7 @@ import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
-import { alignedRefs, branchChangeNote, liveBranchOf } from '../data/app-refs'
+import { alignedRefs, branchChangeNote, liveBranchOf, movesTo } from '../data/app-refs'
 import CommandLine from './CommandLine.vue'
 import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
@@ -253,7 +253,7 @@ const nameState = computed(() => {
 const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value && !(apps.value.length && instUp.value && (planLoading.value || planBlocked.value)))
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 // Bench apps the plan checks out at their picked ref: Create site moves them first.
-const movedApps = computed(() => benchApp.value.filter((v) => branchChangeNote(v, refs.value[v], theBench.value, plan.value)))
+const movedApps = computed(() => benchApp.value.filter((v) => movesTo(plan.value, v, refs.value[v]) === true))
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
   let deps = joined.value.length ? ' --with-deps' : ''
