@@ -260,6 +260,18 @@ class TestStartAliasFrozen:
         assert "cwcli config auto-inspect enable" in result.output
         assert cfg.calls["start"] == 0
 
+    def test_a_refused_start_still_rewrites_the_stale_unit(self, cfg, monkeypatch):
+        repaired = []
+        monkeypatch.setattr(
+            startup,
+            "repair_startup",
+            lambda unit=startup.AUTO_INSPECT: repaired.append(unit) or True,
+        )
+        result = runner.invoke(app, ["config", "auto-inspect", "start"])
+        assert result.exit_code == 1
+        assert repaired == [startup.AUTO_INSPECT]
+        assert cfg.calls["start"] == 0
+
     def test_already_running_is_a_no_op_success(self, cfg, monkeypatch):
         cfg.running = True
         cfg.pid = 4242

@@ -269,10 +269,10 @@ def _require_enabled() -> None:
 def start() -> Result[CredBridgeOutcome]:
     """Start the daemon only, leaving config as-is. Refuses when the feature is
     disabled; idempotent."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    _require_enabled()
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
@@ -287,10 +287,10 @@ def start() -> Result[CredBridgeOutcome]:
 
 def restart() -> Result[CredBridgeOutcome]:
     """Stop the daemon if it runs, then start it again (same guard as :func:`start`)."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    _require_enabled()
     if daemon.is_running():
         _stop_daemon()
     _start_daemon()

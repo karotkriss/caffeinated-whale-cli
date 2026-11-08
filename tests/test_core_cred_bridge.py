@@ -347,6 +347,19 @@ class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
 
 
 class TestBootUnitRepairFailure:
+    def test_a_refused_start_still_rewrites_the_stale_unit(self, cfg, monkeypatch):
+        repaired: list = []
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: repaired.append(unit) or True
+        )
+        for verb in (core_cred.start, core_cred.restart):
+            repaired.clear()
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "cred_bridge.not_enabled"
+            assert repaired == [startup.CRED_BRIDGE]
+        assert (cfg.calls["start"], cfg.calls["stop"]) == (0, 0)
+
     def test_a_failed_unit_repair_is_a_warning_over_a_started_daemon(self, cfg, monkeypatch):
         cfg.enabled = True
 

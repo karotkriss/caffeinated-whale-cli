@@ -305,6 +305,20 @@ class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
         assert events == ["repair", "start"]
 
 
+    def test_a_refused_start_still_rewrites_the_stale_unit(self, cfg, monkeypatch):
+        repaired: list = []
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: repaired.append(unit) or True
+        )
+        for verb in (core_ai.start, core_ai.restart):
+            repaired.clear()
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "auto_inspect.not_enabled"
+            assert len(repaired) == 1
+        assert (cfg.calls["start"], cfg.calls["stop"]) == (0, 0)
+
+
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
         core_ai.enable(at_boot=True)

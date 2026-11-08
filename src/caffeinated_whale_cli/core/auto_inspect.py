@@ -321,10 +321,10 @@ def _require_enabled() -> None:
 
 def start() -> Result[AutoInspectOutcome]:
     """Start the daemon only, leaving config as-is; idempotent."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings)
+    _require_enabled()
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
@@ -339,10 +339,10 @@ def start() -> Result[AutoInspectOutcome]:
 
 def restart() -> Result[AutoInspectOutcome]:
     """Stop the daemon if it runs, then start it again."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings)
+    _require_enabled()
     if daemon.is_running():
         _stop_daemon()
     _start_daemon()
