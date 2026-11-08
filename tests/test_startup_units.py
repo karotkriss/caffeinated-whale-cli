@@ -355,6 +355,27 @@ class TestStaleUnits:
         assert startup.stale_reason(unit) is None
         assert home.calls == []  # never loaded, so never started
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<?xml version='1.0'?><plist version='1.0'><dict><key>Label",
+            b"<?xml version='1.0'?><plist version='1.0'><array/></plist>",
+            b"<?xml version='1.0'?><plist version='1.0'><dict>"
+            b"<key>ProgramArguments</key><array/></dict></plist>",
+        ],
+        ids=["truncated", "non-dict-root", "empty-program-arguments"],
+    )
+    def test_an_unreadable_macos_plist_is_never_claimed_stale(
+        self, home, monkeypatch, unit, body
+    ):
+        monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
+        plist = home.root / "Library" / "LaunchAgents" / f"{unit.label}.plist"
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_bytes(body)
+        assert startup.stale_reason(unit) is None
+        assert startup.repair_startup(unit) is False
+        assert plist.read_bytes() == body
+
     def test_a_windows_task_whose_program_is_gone_is_recreated(self, home, monkeypatch, unit):
         monkeypatch.setattr(startup, "get_platform", lambda: "windows")
         program = {"path": "C:\\gone\\cwcli.exe"}

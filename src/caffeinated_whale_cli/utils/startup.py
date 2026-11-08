@@ -140,7 +140,7 @@ def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
     }.get(get_platform())
     try:
         found = inspect(unit) if inspect else None
-    except (OSError, ValueError, ET.ParseError, plistlib.InvalidFileException):
+    except Exception:
         return None
     if found is None:
         return None
