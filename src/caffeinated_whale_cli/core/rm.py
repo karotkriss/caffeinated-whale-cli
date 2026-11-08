@@ -784,25 +784,26 @@ def _delete_project_directory(
         return False
 
     shared = shared_home.shared_mode()
+    root_owned_retry = False
     try:
         try:
             shutil.rmtree(project_dir)
         except PermissionError as denied:
-            if not (
-                shared or _workspace_aligned_away(project_dir, denied.filename)
-            ) or not _empty_dir_as_root(project_dir, emit):
+            root_owned_retry = shared or _workspace_aligned_away(project_dir, denied.filename)
+            if not root_owned_retry or not _empty_dir_as_root(project_dir, emit):
                 raise
             shutil.rmtree(project_dir)
         emit(RmNotice(text=f"Removed project directory {project_dir}"))
         return True
     except Exception as e:
-        service_owned = shared and isinstance(e, PermissionError)
+        service_owned = root_owned_retry and isinstance(e, PermissionError)
         finish = f"sudo rm -rf '{project_dir}'"
+        owner = "the cwcli service account" if shared else "another uid"
         emit(
             RmWarning(
                 text=f"Could not remove project directory '{project_dir}': {e}",
                 hint=(
-                    f"Its remaining files belong to the cwcli service account; finish with {finish}."
+                    f"Its remaining files belong to {owner}; finish with {finish}."
                     if service_owned
                     else None
                 ),

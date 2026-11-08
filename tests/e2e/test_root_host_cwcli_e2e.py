@@ -28,13 +28,14 @@ version-agnostic, and one more bench build per leg buys nothing.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
-import toml
 from pathlib import Path
 
 import pytest
+import toml
 
 from . import harness
 
@@ -162,7 +163,9 @@ def test_cwcli_as_root_builds_a_working_bench_and_repairs_a_system_account_owner
         assert (st.st_uid, st.st_gid) == (1000, 1000), "workspace must not be root-owned"
 
         # 2. apps and backup work as root.
-        assert "frappe" in _ok(_as_root(image, "apps", "list", name), "apps list")
+        listed = _as_root(image, "apps", "list", name, "--json")
+        _ok(listed, "apps list")
+        assert "frappe" in json.loads(listed.stdout)["available_apps"], listed.stdout
         _ok(_as_root(image, "backup", name, "--site", harness.DEFAULT_SITE), "backup")
 
         # 3. Break it the way an older cwcli did - frappe onto a system account, the

@@ -633,8 +633,9 @@ def _syncs_workspace_owner(uid: int, gid: int) -> bool:
     """Whether align must reconcile the bench workspace's owner with ``uid:gid``.
 
     On a normal box ``frappe`` is aligned to the invoking user, who built and owns
-    the workspace, so there is nothing to reconcile and no probe runs (byte-identical
-    to before this existed). Shared mode aligns to the service account, and a root
+    the workspace, so this is False and the owner probe runs only when align remaps
+    ``frappe`` (a container recreation, or a plain start after a ``sudo cwcli
+    start``). Shared mode aligns to the service account, and a root
     host, a colliding uid, or init's ``--uid`` align to a uid other than the
     invoking user's: there the workspace can be owned by an earlier, different uid
     (an instance an older cwcli built as uid 0 or as a system account), and the
@@ -736,8 +737,9 @@ def align_container_user_to_host(
     gating on the real owner mismatch (stat'd per path) recovers it in place on the
     next ``cwcli start``/``restart``; the same re-own repairs a bench an older cwcli
     built on a root host as uid 0 or as a system account. A normal box - where align
-    targets ``os.getuid()``, which already owns the workspace - runs no owner probe
-    and emits no workspace chown. ``/workspace`` is a bind mount, not the image overlay,
+    targets ``os.getuid()``, which already owns the workspace - probes the owner only
+    when align remaps ``frappe`` (``ids_changed``), and re-owns only a bench another
+    uid holds, such as one a one-off ``sudo cwcli start`` handed to uid 1000. ``/workspace`` is a bind mount, not the image overlay,
     so ``chown -R`` there is cheap (no copy-up).
 
     ``uid_override`` (init's ``--uid`` escape hatch), the target and the unusable-uid
@@ -843,11 +845,11 @@ def align_container_user_to_host(
             f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
             for path in _CHOWN_HOME_SHALLOW_DIRS
         )
-    # Shared mode only: reconcile the bind-mounted bench workspace's ownership
-    # with the service identity. `reown_paths` already holds exactly the bench
-    # dirs whose owner differs from the target (a migrated instance's workspace
-    # still owned by the pre-shared uid, OR one the remap just moved away from) -
-    # a normal box has none. Existence-guarded so a dir that vanished between the
+    # Reconcile the bind-mounted bench workspace's ownership with the target.
+    # `reown_paths` already holds exactly the bench dirs whose owner differs from
+    # it (a migrated instance's workspace still owned by the pre-shared uid, one a
+    # root host or an older cwcli left on another uid, or one a sudo start handed
+    # away before this remap) - a normal box with no remap has none. Existence-guarded so a dir that vanished between the
     # stat and here is a no-op.
     steps.extend(
         f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"

@@ -269,6 +269,26 @@ class TestSharedModeServiceOwnedDirectory:
         ]
         assert f"sudo rm -rf '{project_dir}'" in capsys.readouterr().err
 
+    def test_aligned_away_helper_failure_names_what_is_left(self, cwcli_home, monkeypatch, capsys):
+        """Per-user mode, bench files owned by another uid, and the root helper also
+        fails (no local image): rm still names the dir left behind and how to finish."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: (project_dir / "data").stat().st_uid + 1)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", lambda *a: False)
+        failures = []
+
+        assert _delete_project_directory("proj", failures=failures) is False
+        assert project_dir.exists()
+        assert failures == [
+            f"project directory '{project_dir}' was left on disk; "
+            f"remove it with sudo rm -rf '{project_dir}'"
+        ]
+        err = capsys.readouterr().err
+        assert "another uid" in err and "service account" not in err
+
     def test_shared_mode_non_permission_failure_keeps_the_plain_message(
         self, cwcli_home, monkeypatch, capsys
     ):
