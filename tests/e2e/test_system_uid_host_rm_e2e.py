@@ -17,8 +17,11 @@ It proves, on one instance:
 
 1. ``cwcli init`` as uid 998 says once that ``frappe`` was given uid 1000 instead
    of ``systemd-network``'s, and leaves ``frappe`` at 1000:998.
-2. A seeded record lands in the site's database.
-3. ``cwcli rm`` WITH its backup succeeds: the kept backup's database dump holds the
+2. Under the runner's own default umask, the workspace stays writable by uid 998
+   (``init`` gives its group write), so ``cwcli run`` and an ``apps`` verb, both
+   behind the credential bridge that writes there, work as uid 998.
+3. A seeded record lands in the site's database.
+4. ``cwcli rm`` WITH its backup succeeds: the kept backup's database dump holds the
    record, and the named volumes and the project directory are gone.
 
 Marked ``standalone`` (it builds its own instance) and v16-only: the uid choice is
@@ -79,12 +82,10 @@ def _as_system_user(
         "CWCLI_NO_UPDATE_CHECK=1",
         "-e",
         "PYTHONDONTWRITEBYTECODE=1",
-        "--entrypoint",
-        "sh",
         image,
-        "-c",
-        'umask 000 && exec python -m caffeinated_whale_cli "$@"',
-        "cwcli",
+        "python",
+        "-m",
+        "caffeinated_whale_cli",
         *args,
     ]
     return subprocess.run(
@@ -159,10 +160,14 @@ def test_cwcli_as_a_system_account_uid_removes_its_instance_with_a_backup(
         assert code == 0 and f"ids=1000:{SYSTEM_UID}" in ident, ident
         assert (project_dir / "data" / harness.DEFAULT_BENCH_NAME).stat().st_uid == 1000
 
-        # 2. real data in the site's database.
+        # 2. the credential-bridged verbs work as uid 998.
+        _ok(_as_system_user(image, home, "run", name, "--version"), "run --version")
+        assert "frappe" in _ok(_as_system_user(image, home, "apps", "list", name), "apps list")
+
+        # 3. real data in the site's database.
         _seed_marker(name)
 
-        # 3. rm WITH its backup, as uid 998.
+        # 4. rm WITH its backup, as uid 998.
         _ok(_as_system_user(image, home, "rm", name, "--yes", timeout=1200), "rm")
         assert not harness.project_containers(name), "a container survived removal"
         assert not harness.project_volumes(name), "a named volume survived removal"

@@ -642,6 +642,11 @@ def align_workspace_dir_owner(container, path: str, uid: int, gid: int) -> bool:
     root-owned. Skipped in shared mode, whose group-writable state tree owns
     bind-mount permissions, and a no-op when ``path`` is absent or when the target
     is the invoking user. Returns True when it re-owned the dir.
+
+    When the kept gid is the invoking user's own primary group (a non-root host
+    whose uid an image account holds), the dir also gets group write, so the
+    invoking user can still write it after handing it to ``uid`` (the credential
+    bridge places its socket and shim there).
     """
     if not hasattr(os, "getuid") or shared_home.shared_mode():
         return False
@@ -649,9 +654,15 @@ def align_workspace_dir_owner(container, path: str, uid: int, gid: int) -> bool:
         return False
     q = shlex.quote(path)
     script = (
-        f'[ -d {q} ] && [ "$(stat -c %u:%g {q})" != "{uid}:{gid}" ] '
+        f"[ -d {q} ] || exit 0; "
+        f'[ "$(stat -c %u:%g {q})" != "{uid}:{gid}" ] '
         f"&& chown {uid}:{gid} {q} && echo REOWNED"
     )
+    if uid != os.getuid() and gid == os.getgid():
+        # The one sanctioned exception to "permissions are never loosened": group
+        # write on this one dir (never recursive, never other), granted only to the
+        # invoking user's own group, so the owner keeps access to its workspace.
+        script += f"; chmod g+rwx {q}"
     try:
         _, out = container.exec_run(["bash", "-c", script], user="root")
     except DockerException:

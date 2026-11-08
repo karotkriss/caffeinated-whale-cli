@@ -913,6 +913,13 @@ class TestAlignWorkspaceDirOwner:
             self.calls.append((cmd, kwargs.get("user")))
             return 0, self.out
 
+    class _Shell:
+        """Runs the align script in a real local shell instead of the container."""
+
+        def exec_run(self, cmd, **kwargs):
+            r = subprocess.run(cmd, capture_output=True)
+            return r.returncode, r.stdout
+
     def test_root_host_reowns_the_dir_as_root_only_when_its_owner_differs(self, monkeypatch):
         _root_host(monkeypatch)
         c = self._Recorder()
@@ -937,12 +944,39 @@ class TestAlignWorkspaceDirOwner:
 
     def test_a_system_account_host_reowns_to_the_fallback(self, monkeypatch):
         """A non-root host whose uid an image account holds (998): chowning from
-        inside the container works where a host-side chown to 1000 would be EPERM."""
+        inside the container works where a host-side chown to 1000 would be EPERM,
+        and the invoking user keeps write access through its own group."""
         monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
         monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
         monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
         c = self._Recorder()
         assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 998) is True
+
+    def test_a_system_account_host_keeps_group_write_on_the_dir_only(self, monkeypatch, tmp_path):
+        """The script, run by a real shell on a 0755 dir: the dir gains group write
+        (so the credential bridge can still write it), its contents and other users
+        gain nothing. The chown itself needs root and is not what this checks."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        workspace = tmp_path / "workspace"
+        (workspace / "bench").mkdir(parents=True)
+        workspace.chmod(0o755)
+        (workspace / "bench").chmod(0o755)
+
+        core_docker.align_workspace_dir_owner(self._Shell(), str(workspace), 1000, 998)
+        assert workspace.stat().st_mode & 0o777 == 0o775
+        assert (workspace / "bench").stat().st_mode & 0o777 == 0o755
+
+    def test_a_root_host_grants_no_group_write(self, monkeypatch, tmp_path):
+        """On a root host the gid is the image default too, not the invoking user's
+        group, so nothing is loosened."""
+        _root_host(monkeypatch)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        workspace.chmod(0o755)
+        core_docker.align_workspace_dir_owner(self._Shell(), str(workspace), 1000, 1000)
+        assert workspace.stat().st_mode & 0o777 == 0o755
 
     def test_shared_mode_is_skipped(self, monkeypatch):
         _root_host(monkeypatch)

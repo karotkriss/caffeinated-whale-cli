@@ -89,6 +89,9 @@ On a normal box (aligned to the invoking user, who owns the workspace) no owner 
 `init_bench` also hands the workspace dir benches are created in (`bench_parent`) to the target via `align_workspace_dir_owner` (a non-recursive, owner-mismatch-gated chown run as root INSIDE the container), right after align and before `_ensure_directory`.
 It replaced the host-side `align_bind_mount_source_owner` in `init_instance`: stage 1 runs before the container exists and so could not know the effective target, and a host-side `os.chown` to another uid is EPERM for a non-root host.
 Skipped in shared mode, whose 2770 state tree owns bind-mount permissions.
+When the kept gid is the invoking user's own primary group (a non-root host whose uid an image account holds, so the target is `1000:<their gid>`), it also runs `chmod g+rwx` on that one dir, never recursive and never for other users.
+Without it the dir a 0022-umask user created (0755) is not writable by them after the chown, and `core.credbridge._require_writable_workspace` refuses every `cwcli run`, `apps` verb, and private-fork init with `workspace_not_writable`.
+This is the one sanctioned exception to "permissions are never loosened": it grants write only to the invoking user's own group.
 
 On a NON-ROOT host the fallback leaves the bench files owned by uid 1000, which the invoking user (say a runner at uid 998) cannot `rmtree`.
 `_delete_project_directory` then retries a `PermissionError` through `_empty_dir_as_root`, the root helper container shared mode already uses, on the same verified project dir, when `_workspace_aligned_away` finds the project's `data/` dir owned by a uid other than the invoking user's.
