@@ -901,6 +901,7 @@ def _project(target: dict[str, Any]) -> str:
 
 def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
     project = _project(target)
+    core_docker.env_uid_override()
     if _bench(target) is None:
         return _restart_serving_benches(project, emit)
     resolved = core_resolvers.resolve_bench(project, _bench(target), None)

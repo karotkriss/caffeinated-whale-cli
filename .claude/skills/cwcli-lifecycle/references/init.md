@@ -78,12 +78,12 @@ The v3.2.0 fix guarded only the number 0, so a root CI job on a shared-mode host
 The align TARGET is `core.docker.frappe_alignment_target(container, uid_override) -> (uid, gid, note)`: the pure decision `resolve_frappe_alignment_ids(uid_override, taken=...)` checked against `container_account_uids(container)` (every passwd row except `frappe`'s own, one `cat /etc/passwd` exec, `{}` when unreadable, which leaves the uid-0 guard in force).
 Precedence: init's explicit `--uid` wins over everything; then `CWCLI_UID` (`env_uid_override()`, validated positive or a `USAGE` error, never silently ignored); then the shared-mode service uid; else the host uid.
 A resolved uid that is 0 or in `taken` falls back to `DEFAULT_FRAPPE_UID` (the image's own 1000) with a `note`; the gid is kept unless it is 0, because a duplicate gid is harmless and keeps a shared install's group access.
-An override is not exempt: `--uid 100` on the image above falls back too, and the web UI's job path, which passes `uid` through unvalidated, can never put 0 into the container.
+An override is not exempt: `--uid 100` on the image above falls back too, and 0 can never reach the container; every init frontend (including the web UI's job path) validates the uid first, so the resolver's fallback is defense in depth.
 Because the decision lives inside align, `core.start`/`core.scale`/`new-bench` fall back too, so the next start never re-breaks what init fixed.
 
 `CWCLI_UID` exists because alignment re-runs on every start: init's `--uid` is threaded only within the one init invocation (including its end-of-init auto-start), so a later `cwcli start` without the env var re-resolves to the host uid.
 `--uid` stays init-only and unpersisted; `CWCLI_UID` is the durable form, honoured by every aligning command.
-`core.init.check_uid_override` validates both (the flag, else the env var) BEFORE any project dir or container work.
+`core.init.check_uid_override` validates both (the flag, else the env var) BEFORE any project dir or container work; `core.start` and `core.scale` validate `CWCLI_UID` at entry, and the start/restart frontends (human, `axi start`, the web UI restart job) validate it before they stop or start anything.
 The fallback is surfaced ONCE, non-silently, as `InitNotice(code="init.uid_align_root_host")` in `init_bench` (the code name predates the collision case; rendered as a yellow warning by `commands/init.py`, folded into the `axi init` TOON `warnings`).
 
 Workspace ownership follows the target whenever it is not the invoking user's own uid/gid (`_syncs_workspace_owner`: a root host, a collision, or an override), as well as in shared mode.

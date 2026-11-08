@@ -19,7 +19,12 @@ from ..utils.port_utils import (
     get_ports_in_use_with_processes,
     get_project_ports,
 )
-from .utils import render_captured_output_tail, resolve_bench_path, split_trailing_options
+from .utils import (
+    render_captured_output_tail,
+    require_valid_uid_env,
+    resolve_bench_path,
+    split_trailing_options,
+)
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
@@ -350,7 +355,7 @@ def _handle_start_project_error(e: CwcliError, project_name: str):
         # Historical soft skip: containers came up, but there is no bench to start.
         stderr_console.print(f"[yellow]Warning: {e.message} Skipping bench start.[/yellow]")
         return None
-    if e.kind is ErrorKind.DOCKER:
+    if e.kind in (ErrorKind.DOCKER, ErrorKind.USAGE):
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
         if e.hint:
             stderr_console.print(f"[dim]{e.hint}[/dim]")
@@ -436,6 +441,7 @@ def start(
             "[bold red]Error:[/bold red] Please provide at least one project name or pipe a list of names."
         )
         raise typer.Exit(code=1)
+    require_valid_uid_env()
 
     console.print(
         f"Attempting to start [bold cyan]{len(project_names_to_process)}[/bold cyan] project(s)..."

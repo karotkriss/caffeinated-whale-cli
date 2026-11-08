@@ -234,3 +234,94 @@ def _fake_start_result():
     from types import SimpleNamespace
 
     return SimpleNamespace(status=Status.OK, warnings=[], data=SimpleNamespace(web_ready=True))
+
+
+class TestAnInvalidCwcliUidChangesNothing:
+    """A bad CWCLI_UID is refused at every aligning entry point before any container
+    is stopped, started, or recreated (README: "refused with a usage error before
+    cwcli changes anything"). Each test records the first mutating step and asserts it
+    never ran."""
+
+    @pytest.fixture(autouse=True)
+    def bad_env(self, monkeypatch):
+        monkeypatch.setenv("CWCLI_UID", "root")
+
+    def test_core_start(self, monkeypatch):
+        from caffeinated_whale_cli.core import start as core_start
+
+        touched: list[str] = []
+        monkeypatch.setattr(
+            core_start, "resolve_project_containers", lambda p: touched.append(p) or []
+        )
+        with pytest.raises(CwcliError) as raised:
+            core_start.start("proj")
+        assert raised.value.code == "uid.invalid"
+        assert touched == []
+
+    def test_core_scale(self, monkeypatch):
+        from caffeinated_whale_cli.core import docker as core_docker
+        from caffeinated_whale_cli.core import scale as core_scale
+
+        touched: list[str] = []
+        monkeypatch.setattr(
+            core_docker, "ensure_compose_available", lambda: touched.append("compose")
+        )
+        with pytest.raises(CwcliError) as raised:
+            core_scale.scale("proj", consent=True)
+        assert raised.value.code == "uid.invalid"
+        assert touched == []
+
+    def test_cli_restart(self, monkeypatch, capsys):
+        import typer
+
+        from caffeinated_whale_cli.commands import restart as restart_mod
+
+        touched: list[str] = []
+        monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            restart_mod, "stop_project_best_effort", lambda p, **kw: touched.append(p) or 0
+        )
+        with pytest.raises(typer.Exit) as exc:
+            restart_mod.restart(
+                ctx=None, verbose=False, process=None, bench=None, project_name=["proj"]
+            )
+        assert exc.value.exit_code == 1
+        assert "CWCLI_UID" in capsys.readouterr().err
+        assert touched == []
+
+    def test_cli_start(self, monkeypatch, capsys):
+        import typer
+
+        from caffeinated_whale_cli.commands import start as start_mod
+
+        touched: list[str] = []
+        monkeypatch.setattr(start_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(start_mod, "_frappe_running", lambda p: touched.append(p) or False)
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(verbose=False, bench=None, yes=False, project_name=["proj"])
+        assert exc.value.exit_code == 1
+        assert "CWCLI_UID" in capsys.readouterr().err
+        assert touched == []
+
+    def test_axi_start(self, monkeypatch):
+        from caffeinated_whale_cli.commands import axi as axi_mod
+
+        touched: list[str] = []
+        monkeypatch.setattr(
+            axi_mod, "_axi_resolve_port_conflicts", lambda p, y: touched.append(p) or []
+        )
+        result = runner.invoke(axi_mod.app, ["start", "proj"])
+        assert result.exit_code == 2
+        assert "CWCLI_UID must be a positive" in result.output
+        assert touched == []
+
+    def test_web_ui_restart_job(self, monkeypatch):
+        from caffeinated_whale_cli import jobs
+
+        touched: list[str] = []
+        monkeypatch.setattr(jobs.core_stop, "stop", lambda p, **kw: touched.append(p))
+        monkeypatch.setattr(jobs, "_serving_bench_paths", lambda p: touched.append(p) or [])
+        with pytest.raises(CwcliError) as raised:
+            jobs._restart_instance({"project": "proj"}, lambda e: None)
+        assert raised.value.code == "uid.invalid"
+        assert touched == []

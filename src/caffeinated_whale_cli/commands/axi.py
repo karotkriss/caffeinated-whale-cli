@@ -41,6 +41,7 @@ from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
+from ..core import docker as core_docker
 from ..core import doctor as core_doctor
 from ..core import init as core_init
 from ..core import inspect as core_inspect
@@ -1126,6 +1127,11 @@ def axi_start(
     auto-resolves conflicting Frappe projects); a multi-bench project with no
     ``--bench`` is a usage error naming ``--bench``.
     """
+    try:
+        core_docker.env_uid_override()
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
     stop_warnings = _axi_resolve_port_conflicts(project, yes)
 
     try:

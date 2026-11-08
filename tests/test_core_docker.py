@@ -862,8 +862,8 @@ class TestUnusableUidsFallBack:
         assert note is not None and "redis" in note
 
     def test_an_override_of_zero_is_never_applied(self, host_1001):
-        """The web UI's job path passes --uid through unvalidated; 0 still cannot reach
-        the container."""
+        """Every frontend validates --uid first; the resolver's own fallback is defense
+        in depth, so 0 still cannot reach the container."""
         uid, gid, note = core_docker.resolve_frappe_alignment_ids(0)
         assert (uid, gid) == (1000, 1000)
         assert note is not None and "root" in note

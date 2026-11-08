@@ -31,6 +31,7 @@ from docker.errors import APIError, DockerException, NotFound
 from . import resolvers, supervision
 from .docker import (
     align_container_user_to_host,
+    env_uid_override,
     get_project_containers,
     recreate_missing_project_networks,
 )
@@ -176,6 +177,8 @@ def start(
     back to the host uid / the root-host default / the shared service uid exactly
     as before.
     """
+    if uid_override is None:
+        env_uid_override()
     warnings: list[Message] = []
     emit = on_event or _noop
 
