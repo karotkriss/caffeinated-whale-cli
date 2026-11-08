@@ -731,13 +731,25 @@ def _verify_against_plan(
     return drifted
 
 
-def check_refs(refs: dict[str, str] | None, *, code: str) -> dict[str, str]:
-    """``refs`` without empty entries; a ref git would read as an option, or one with
-    whitespace, is a usage error (``code``) before anything runs."""
+def check_refs(refs: dict[str, str] | None, targets: list[str], *, prefix: str) -> dict[str, str]:
+    """``refs`` without empty entries, each keyed by one of ``targets`` exactly as given.
+    A key naming no target, a ref git would read as an option, or one with whitespace
+    is a usage error (``<prefix>.ref_unknown_app`` / ``<prefix>.ref_invalid``) before
+    anything runs: a ref is never dropped without a word."""
     kept = {k: v for k, v in (refs or {}).items() if k and v}
+    unknown = [k for k in kept if k not in targets]
+    if unknown:
+        raise CwcliError(
+            ErrorKind.USAGE,
+            f"{prefix}.ref_unknown_app",
+            f"A ref was given for {', '.join(unknown)}, which is not an app being added; "
+            "name the app exactly as given.",
+        )
     for wanted in kept.values():
         if wanted.startswith("-") or any(c.isspace() for c in wanted):
-            raise CwcliError(ErrorKind.USAGE, code, f"'{wanted}' is not a git ref.")
+            raise CwcliError(
+                ErrorKind.USAGE, f"{prefix}.ref_invalid", f"'{wanted}' is not a git ref."
+            )
     return kept
 
 
@@ -806,7 +818,7 @@ def install_apps(
     skips only the sites that already have it.
     """
     emit: OnEvent = on_event or _noop
-    refs = check_refs(refs, code="app.ref_invalid")
+    refs = check_refs(refs, apps, prefix="app")
 
     def ref_of(target: str) -> str | None:
         return refs.get(target) or branch

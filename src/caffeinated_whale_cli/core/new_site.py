@@ -117,7 +117,7 @@ def new_site(
     for a in wanted:
         if not APP_NAME_RE.match(a):
             raise CwcliError(ErrorKind.USAGE, "new_site.app_invalid", f"'{a}' is not an app name.")
-    refs = core_apps.check_refs(refs, code="new_site.ref_invalid")
+    refs = core_apps.check_refs(refs, [*(fetch or []), *wanted], prefix="new_site")
 
     container = core_docker.get_frappe_container(project)
     state = resolvers.resolve_container_state(project, container, offer_choice=True)

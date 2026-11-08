@@ -1139,3 +1139,38 @@ def test_human_new_bench_passes_each_app_ref_to_the_core(monkeypatch):
         main.app, ["new-bench", "proj", "hr", "--app-ref", "no-ref", "--admin-password", "a"]
     )
     assert bad.exit_code == 2
+
+
+def test_new_bench_refuses_a_ref_for_no_extra_app_before_building(monkeypatch):
+    """`--app-ref hrms=x` beside `--app <hrms URL>` names no app as given: refused, never
+    fetched at a branch the plan picks while the ref is dropped."""
+    from caffeinated_whale_cli.core import new_bench
+
+    built = []
+    monkeypatch.setattr(new_bench.core_init, "init_bench", lambda *a, **k: built.append(a))
+    with pytest.raises(CwcliError) as raised:
+        new_bench.new_bench(
+            "proj",
+            bench_name="extra",
+            site_name="extra.localhost",
+            admin_password="a",
+            apps=[BOOKING],
+            refs={"booking": "develop"},
+        )
+    assert raised.value.code == "new_bench.ref_unknown_app" and built == []
+    assert "booking" in raised.value.message
+
+
+def test_new_site_refuses_a_ref_for_no_picked_app(world, container, monkeypatch):  # noqa: F811
+    new_site = _wire_new_site(monkeypatch, container)
+    with pytest.raises(CwcliError) as raised:
+        new_site.new_site(
+            "proj",
+            site="shop.localhost",
+            admin_password="a",
+            apps=["toolkit"],
+            fetch=[TOOLKIT],
+            refs={"hrms": "develop"},
+        )
+    assert raised.value.code == "new_site.ref_unknown_app"
+    assert _gets(container) == []

@@ -75,7 +75,7 @@ def new_bench(
     warnings: list[Message] = []
     bench_name = core_init.validate_bench_slug(bench_name)
     site_name = core_init.validate_new_site_name(site_name)
-    refs = core_apps.check_refs(refs, code="new_bench.ref_invalid")
+    refs = core_apps.check_refs(refs, [a for a in (apps or []) if a], prefix="new_bench")
     if not admin_password:
         raise CwcliError(
             ErrorKind.USAGE,
