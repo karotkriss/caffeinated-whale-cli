@@ -510,6 +510,26 @@ def test_init_answers_confirm_start_with_one_capped_auto_start_retry(fake_spawn,
     assert calls == ["ports", ("instance", True), ("bench", True)]
 
 
+@pytest.mark.parametrize(("env", "args"), [("root", {}), ("0", {}), ("", {"uid": 0})])
+def test_init_refuses_an_invalid_uid_before_creating_the_instance(
+    fake_spawn, monkeypatch, env, args
+):
+    from caffeinated_whale_cli.core.errors import CwcliError
+
+    monkeypatch.setenv("CWCLI_UID", env)
+    created = []
+    monkeypatch.setattr(jobs, "check_start_port_conflicts", lambda project: created.append("ports"))
+    monkeypatch.setattr(
+        jobs.core_init, "init_instance", lambda project, **kw: created.append("instance")
+    )
+
+    with pytest.raises(CwcliError) as raised:
+        jobs._run_init({"project": "p"}, args, {"admin_password": "x"}, lambda e: None)
+
+    assert raised.value.code == "uid.invalid"
+    assert created == []
+
+
 def test_run_job_records_typed_events_and_terminal_result(fake_spawn, monkeypatch):
     record = jobs.create_job("backup", {"project": "p"}, {})
 

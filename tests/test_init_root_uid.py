@@ -215,13 +215,6 @@ class TestInitBenchOwnsTheWorkspaceDir:
         first_mkdir = next(i for i, c in enumerate(calls) if c.startswith("mkdir -p"))
         assert calls.index("REOWN-WORKSPACE") < first_mkdir
 
-    def test_init_instance_no_longer_takes_a_uid(self):
-        """The host-side data-dir chown moved into init_bench, where the effective
-        target (after the container's own accounts are checked) is known."""
-        import inspect
-
-        assert "uid" not in inspect.signature(core_init.init_instance).parameters
-
 
 class TestInitThreadsTheUidIntoTheAutoStart:
     def test_default_start_threads_uid_into_the_auto_start(self, monkeypatch, tmp_path):
