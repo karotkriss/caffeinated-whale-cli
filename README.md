@@ -421,6 +421,7 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `--frappe-url TEXT` | A Frappe fork to build from (private forks use the credential bridge) |
 | `--erpnext` | Install ERPNext on the first site |
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
+| `--app-ref APP=REF` | The branch, tag or commit one `--app` is fetched at, with APP exactly as given to `--app`; without it the plan picks the branch (repeatable) |
 | `--with-deps` | Fetch and install the apps each `--app` requires first; the apps are checked after the bench is built, so without it an app with a missing required app is reported as failed |
 | `--ignore-frappe-range` | Install an extra app although its declared Frappe range does not fit the new bench |
 | `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
@@ -2285,6 +2286,7 @@ When an update's new code needs an app the bench or a site lacks, the job page o
 The Install sheet, New site and New bench show the [compatibility and required apps](#apps---manage-frappe-apps) plan live as you pick the app, branch and sites: each app at the ref that would land, its Frappe range against the bench, and each required app with where it comes from and the install order.
 Start stays disabled while something would refuse the install; the Install sheet's checkbox is the consent to fetch the required apps, New site and New bench add them to the picks with the reason shown, and a Frappe range you know is wrong can be overridden by typing the app's name.
 New site's app picker takes a branch, tag or commit for each picked app, in the same autocomplete field as the other ref fields: an app from the app sources is fetched at that ref, and an app the bench already holds is shown at the branch its copy sits at and, given another ref, is checked out there first - which moves it for every site on that bench, so the picker and the plan both say so before Create site runs.
+New bench's extra-apps picker takes a branch, tag or commit for each picked app in that same field, and the app is fetched at it (`--app-ref`).
 A failed job leads with its plain cause (for example MariaDB rejecting the database root password, or git failing to authenticate) when cwcli recognizes one in the failing step's output, and otherwise says it did not and points at that output.
 Interrupt requests use the command's cleanup path; Detach only leaves the page, and an active record whose process disappears becomes `unknown` instead of being reported as failed or successful.
 On Windows a job that has not begun its cleanup five minutes after Interrupt, or has not finished it two minutes after beginning, is terminated; one that never began is marked `unknown` because its cleanup may not have run.

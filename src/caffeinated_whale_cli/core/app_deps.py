@@ -1099,7 +1099,7 @@ class _Planner:
     def check_ranges(self) -> None:
         versions = {name: d.version for name, d in self.bench_apps.items()}
         for name in self.order:
-            if name not in self.bench_apps:
+            if name not in self.bench_apps or self.nodes[name].checkout:
                 versions[name] = self.decls[name].version
         for name in self.order:
             node = self.nodes[name]
@@ -1150,6 +1150,18 @@ class _Planner:
                             "--ignore-frappe-range."
                         ),
                         overridable=acting and not self.ignore,
+                    )
+                elif dep in self.nodes and self.nodes[dep].checkout:
+                    self.problem(
+                        "app.dependency_range_mismatch",
+                        "blocker" if acting else "notice",
+                        name,
+                        f"{name} needs {dep} {spec}, but {dep} at {self.nodes[dep].ref}, the ref "
+                        f"picked for it, is {have}.",
+                        remedy=(
+                            f"Pick {dep} at a ref that fits, or leave it at the branch this "
+                            "bench has."
+                        ),
                     )
                 elif dep in self.bench_apps:
                     self.problem(

@@ -1534,6 +1534,7 @@ def _dispatch(
             frappe_url=str(args["frappe_url"]) if args.get("frappe_url") else None,
             install_erpnext=bool(args.get("install_erpnext")),
             apps=[str(a) for a in (args.get("apps") or []) if a],
+            refs=_str_map(args, "refs"),
             db_root_password=_db_root_password(secret_values),
             with_deps=args.get("with_deps") is True,
             dep_sources=_dep_sources(args),

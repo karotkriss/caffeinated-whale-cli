@@ -1053,3 +1053,89 @@ def test_axi_apps_plan_help_runs_the_plan_it_describes(monkeypatch):
             f"cwcli axi apps install proj {BOOKING} --site {site} --branch master "
             f"--dep-source {pick} --with-deps"
         ) in result.output
+
+
+def test_install_fetches_each_app_at_its_own_picked_ref(world, container):  # noqa: F811
+    """`refs` names one app's ref over the shared --branch: booking lands at develop."""
+    world.landed["booking"] = world.repos[BOOKING]["develop"]
+    result = core_apps.install_apps(
+        "proj", [BOOKING], refs={BOOKING: "develop"}, sites=["a.localhost"], with_deps=True
+    )
+    assert result.data.ok, result.data.results
+    (get,) = _gets(container)
+    assert BOOKING in get and "--branch develop" in get
+
+
+def test_new_bench_fetches_an_extra_app_at_the_ref_picked_for_it(
+    world, container, monkeypatch  # noqa: F811
+):
+    from caffeinated_whale_cli.core import new_bench
+
+    world.landed["booking"] = world.repos[BOOKING]["develop"]
+    monkeypatch.setattr(new_bench.core_docker, "get_frappe_container", lambda _p: container)
+    monkeypatch.setattr(
+        new_bench.resolvers, "resolve_container_state", lambda *a, **k: Result(status=Status.OK)
+    )
+    monkeypatch.setattr(
+        new_bench.core_init,
+        "init_bench",
+        lambda *a, **k: Result(
+            status=Status.OK, data=types.SimpleNamespace(bench_path=BENCH, erpnext_installed=False)
+        ),
+    )
+    monkeypatch.setattr(new_bench.core_start, "start", lambda *a, **k: Result(status=Status.OK))
+    result = new_bench.new_bench(
+        "proj",
+        bench_name="extra",
+        site_name="a.localhost",
+        admin_password="a",
+        apps=[BOOKING],
+        refs={BOOKING: "develop"},
+        with_deps=True,
+    )
+    assert result.data.apps_failed == [] and result.data.apps_installed
+    (get,) = _gets(container)
+    assert BOOKING in get and "--branch develop" in get
+
+
+def test_new_bench_refuses_a_ref_git_would_read_as_an_option_before_building(monkeypatch):
+    from caffeinated_whale_cli.core import new_bench
+
+    built = []
+    monkeypatch.setattr(new_bench.core_init, "init_bench", lambda *a, **k: built.append(a))
+    with pytest.raises(CwcliError) as raised:
+        new_bench.new_bench(
+            "proj",
+            bench_name="extra",
+            site_name="extra.localhost",
+            admin_password="a",
+            apps=[BOOKING],
+            refs={BOOKING: "--upload-pack=x"},
+        )
+    assert raised.value.code == "new_bench.ref_invalid" and built == []
+
+
+def test_human_new_bench_passes_each_app_ref_to_the_core(monkeypatch):
+    from caffeinated_whale_cli import main
+    from caffeinated_whale_cli.commands import new_bench as new_bench_cmd
+
+    seen: dict = {}
+
+    def fake(project, **kw):
+        seen.update(kw)
+        raise CwcliError(ErrorKind.PRECONDITION, "test.stop", "stop")
+
+    monkeypatch.setattr(new_bench_cmd, "ensure_containers_running", lambda *a, **k: None)
+    monkeypatch.setattr(new_bench_cmd.core_new_bench, "new_bench", fake)
+    url = "https://github.com/frappe/hrms"
+    result = CliRunner().invoke(
+        main.app,
+        ["new-bench", "proj", "hr", "--app", url, "--app-ref", f"{url}=version-16-hotfix"]
+        + ["--admin-password", "a"],
+    )
+    assert result.exit_code == 1
+    assert seen["apps"] == [url] and seen["refs"] == {url: "version-16-hotfix"}
+    bad = CliRunner().invoke(
+        main.app, ["new-bench", "proj", "hr", "--app-ref", "no-ref", "--admin-password", "a"]
+    )
+    assert bad.exit_code == 2

@@ -470,6 +470,39 @@ class TestPlan:
         toolkit = next(n for n in plan.nodes if n.app == "toolkit")
         assert toolkit.checkout and toolkit.ref == "develop" and plan.ok
 
+    def test_a_dependant_is_checked_against_the_version_its_dependency_is_checked_out_at(self):
+        """The bench holds toolkit 0.23.3 and booking, which needs toolkit <1.0.0. Picking
+        toolkit at a ref declaring 1.2.0 moves it out of booking's range: refused, and a
+        booking that needs >=1.0.0 is not refused for the 0.23.3 the checkout replaces."""
+        world = _booking_world()
+        world.repos[TOOLKIT]["next"] = Declarations(app="toolkit", version="1.2.0", branch="next")
+        toolkit = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+
+        def booking(spec):
+            return Declarations(
+                app="booking",
+                version="1.0.0",
+                ranges={"toolkit": spec},
+                required=["toolkit"],
+                remotes=["gitlab.example.com/team/booking"],
+            )
+
+        picks = [("booking", None), ("toolkit", "next")]
+        out = world.plan(
+            _bench(toolkit=toolkit, booking=booking("<1.0.0")), picks, checkout_held=True
+        )
+        (mismatch,) = [p for p in out.problems if p.code == "app.dependency_range_mismatch"]
+        assert mismatch.severity == "blocker" and "toolkit at next" in mismatch.message
+        fits = world.plan(
+            _bench(toolkit=toolkit, booking=booking(">=1.0.0")), picks, checkout_held=True
+        )
+        assert fits.ok and "app.dependency_range_mismatch" not in [p.code for p in fits.problems]
+
     def test_one_app_picked_twice_at_two_refs_is_refused_never_one_dropped(self):
         world = _booking_world()
         plan = world.plan(_bench(), [(TOOLKIT, "master"), ("toolkit", "develop")])
