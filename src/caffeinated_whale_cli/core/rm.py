@@ -703,21 +703,38 @@ def _empty_dir_as_root(project_dir: Path, emit: OnEvent) -> bool:
     return False
 
 
-def _workspace_aligned_away(project_dir: Path) -> bool:
-    """Whether the project's ``data/`` workspace belongs to a uid other than the invoker's.
+def _workspace_aligned_away(project_dir: Path, failed: str | None = None) -> bool:
+    """Whether the bench files in the project dir belong to a uid other than the invoker's.
 
-    ``init`` hands that bind-mounted dir to the container ``frappe`` user's alignment
-    target when the target is not the invoking user (a host uid that an image account
-    already holds falls back to 1000, or init's ``--uid`` chose another uid; see
-    ``core.docker.align_workspace_dir_owner``), so its owner records that the bench
-    files are not the invoking user's to delete.
+    The container ``frappe`` user writes them as its alignment target, which is not
+    the invoking user when an image account already holds the host uid (a fallback
+    to 1000), when root's ``init --uid`` chose another uid, or after a one-off
+    ``sudo cwcli start`` re-owned the benches to root's target (see
+    ``core.docker.align_container_user_to_host``). Checks the ``data/`` workspace,
+    each bench dir in it, and the path ``rmtree`` failed on with its parent, when
+    those lie inside ``project_dir``; any of them owned by another uid means the
+    remaining files are not the invoking user's to delete.
     """
     if not hasattr(os, "getuid"):
         return False
+    data = project_dir / "data"
+    candidates = [data]
     try:
-        return (project_dir / "data").stat().st_uid != os.getuid()
+        candidates.extend(data.iterdir())
     except OSError:
-        return False
+        pass
+    if failed:
+        path = Path(failed)
+        candidates.extend(
+            p for p in (path, path.parent) if p == project_dir or project_dir in p.parents
+        )
+    for candidate in candidates:
+        try:
+            if candidate.lstat().st_uid != os.getuid():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _delete_project_directory(
@@ -735,9 +752,9 @@ def _delete_project_directory(
     In shared mode a permission failure (service-owned bench files) is retried
     through :func:`_empty_dir_as_root`; if that also fails, the failure names the
     directory left on disk and the command that finishes the removal. The same
-    retry runs when the project's workspace is owned by another uid
-    (:func:`_workspace_aligned_away`), since its bench files are then not the
-    invoking user's either.
+    retry runs when the bench files are owned by another uid
+    (:func:`_workspace_aligned_away`), since they are then not the invoking
+    user's either.
     """
     project_dir = PROJECTS_DIR / project_name
 
@@ -767,10 +784,10 @@ def _delete_project_directory(
     try:
         try:
             shutil.rmtree(project_dir)
-        except PermissionError:
-            if not (shared or _workspace_aligned_away(project_dir)) or not _empty_dir_as_root(
-                project_dir, emit
-            ):
+        except PermissionError as denied:
+            if not (
+                shared or _workspace_aligned_away(project_dir, denied.filename)
+            ) or not _empty_dir_as_root(project_dir, emit):
                 raise
             shutil.rmtree(project_dir)
         emit(RmNotice(text=f"Removed project directory {project_dir}"))

@@ -3034,6 +3034,7 @@ In the second case, the bench files do not belong to you, so `cwcli rm` cannot d
 Upgrade cwcli and run `cwcli start <project>` as the same user as before.
 When `frappe` is aligned to a uid other than yours (a root host or a fallback), or `start` moves `frappe` to a new uid, `start` gives `frappe` ownership of every bench it starts that another uid owns, with `chown -R`, so no file is deleted.
 This also repairs a bench that one `sudo cwcli start` left owned by uid 1000: the next plain `cwcli start` gives it back to you.
+If you remove that instance with `cwcli rm` before then, `rm` deletes those bench files through the same short-lived root container.
 A bench whose `bench init` never finished must still be created again with `cwcli init`.
 
 ### For agents: the `cwcli axi` surface

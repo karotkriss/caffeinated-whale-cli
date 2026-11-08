@@ -14,6 +14,8 @@ These tests pin the corrected behavior:
 - a copy of the project directory is archived before deletion.
 """
 
+import os
+import stat
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -419,6 +421,55 @@ class TestRemoveProjectEndToEnd:
             volume.remove.assert_not_called()
         # The project directory is still removed regardless of --no-volumes.
         assert not project_dir.exists()
+
+    @pytest.mark.parametrize("remove_volumes", [True, False], ids=["rm", "rm-no-volumes"])
+    def test_a_bench_a_sudo_start_reowned_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch, remove_volumes
+    ):
+        """The invoker built the instance, so ``data/`` is theirs, but one `sudo cwcli
+        start` handed the bench to root's alignment target (uid 1000). A later plain
+        `cwcli rm`, with or without --no-volumes, hits EACCES inside that bench and
+        must finish the verified delete through the root helper, not leave it behind."""
+        self._patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        bench = project_dir / "data" / "frappe-bench"
+        (bench / "logs").mkdir(parents=True)
+        (bench / "logs" / "bench.log").write_text("log\n")
+        invoker = os.getuid()
+        real_lstat = core_rm.Path.lstat
+
+        def lstat(path):
+            st = real_lstat(path)
+            if path == bench or bench in path.parents:
+                fields = list(st)
+                fields[stat.ST_UID] = invoker + 1
+                return os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(core_rm.Path, "lstat", lstat)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        real_rmtree = core_rm.shutil.rmtree
+        calls = []
+
+        def rmtree(path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "Permission denied", str(bench / "logs" / "bench.log"))
+            real_rmtree(path)
+
+        monkeypatch.setattr(core_rm.shutil, "rmtree", rmtree)
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        _patch_attr(monkeypatch, "get_project_containers", lambda name: [_make_container()])
+        _patch_attr(monkeypatch, "get_project_volumes", lambda name: [])
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
+        monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = _remove_project("proj", remove_volumes=remove_volumes, no_backup=True)
+
+        assert result["dir_removed"] is True
+        assert not project_dir.exists()
+        assert helper.call_args.args[0] == project_dir
 
     def test_missing_project_is_not_found(self, cwcli_home, monkeypatch):
         self._patch_docker(monkeypatch)
