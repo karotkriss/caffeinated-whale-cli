@@ -421,7 +421,7 @@ cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
 | `--frappe-url TEXT` | A Frappe fork to build from (private forks use the credential bridge) |
 | `--erpnext` | Install ERPNext on the first site |
 | `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
-| `--app-ref APP=REF` | The branch, tag or commit one `--app` is fetched at, with APP exactly as given to `--app`; without it the plan picks the branch (repeatable) |
+| `--app-ref APP=REF` | The branch, tag or commit one `--app` is fetched at, with APP exactly as given to `--app`; without it the plan picks the branch, and one naming no `--app` exits 2 before anything is built (repeatable) |
 | `--with-deps` | Fetch and install the apps each `--app` requires first; the apps are checked after the bench is built, so without it an app with a missing required app is reported as failed |
 | `--ignore-frappe-range` | Install an extra app although its declared Frappe range does not fit the new bench |
 | `--dep-source APP=URL` | Which of the apps catalog's repositories named APP to fetch a required app from, when it holds several; a repository not in the catalog is refused (repeatable) |
