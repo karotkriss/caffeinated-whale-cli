@@ -629,6 +629,21 @@ class TestUidOverride:
         assert calls["instance"] == []
         assert calls["bench"] == []
 
+    def test_another_users_uid_as_non_root_refuses_before_stage_one(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+        monkeypatch.setattr(axi_mod.core_init.os, "getuid", lambda: 1001)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "1005"],
+        )
+
+        assert result.exit_code == 2
+        assert "uid.not_permitted" in result.stdout or "not your own uid" in result.stdout
+        assert calls["instance"] == []
+        assert calls["bench"] == []
+
     def test_negative_uid_refuses_before_stage_one(self, monkeypatch):
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
@@ -660,6 +675,7 @@ class TestUidOverride:
         re-aligning to the host uid. Stage 1 creates no bench files, so it needs none."""
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
+        monkeypatch.setattr(axi_mod.core_init.os, "getuid", lambda: 0)
 
         result = runner.invoke(
             axi_mod.app,

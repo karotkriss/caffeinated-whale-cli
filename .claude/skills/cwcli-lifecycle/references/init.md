@@ -77,7 +77,7 @@ The v3.2.0 fix guarded only the number 0, so a root CI job on a shared-mode host
 
 The align TARGET is `core.docker.frappe_alignment_target(container, uid_override) -> (uid, gid, note)`: the pure decision `resolve_frappe_alignment_ids(uid_override, taken=...)` checked against `container_account_uids(container)` (every passwd row except `frappe`'s own, one `cat /etc/passwd` exec, `{}` when unreadable, which leaves the uid-0 guard in force).
 Precedence: init's explicit `--uid` (v3.2.0) wins; else the shared-mode service uid; else the host uid.
-`--uid` is on `cwcli init` and `cwcli axi init` ONLY, validated `>0` (0/negative are usage errors; non-numeric is Typer's own parse error) by `core.init.check_uid_override` BEFORE any project dir or container work.
+`--uid` is on `cwcli init` and `cwcli axi init` ONLY, validated `>0` (0/negative are usage errors; non-numeric is Typer's own parse error; a non-root user naming a uid other than their own is `uid.not_permitted`, since that workspace would be neither theirs to write nor to delete) by `core.init.check_uid_override` BEFORE any project dir or container work.
 It is threaded only within the one init invocation, INCLUDING its end-of-init auto-start (`_start_services` -> `core.start(uid_override=)`); `cwcli start`/`scale`/`restart` never take a `--uid` and never persist one.
 There is deliberately NO environment-variable override: one was tried in this change and dropped, because an override every start honours had to be validated at every stop-then-start entry point.
 A resolved uid that is 0 or in `taken` falls back to `DEFAULT_FRAPPE_UID` (the image's own 1000) with a `note`; the gid is kept unless it is 0, because a duplicate gid is harmless and keeps a shared install's group access.
@@ -85,7 +85,7 @@ Because the decision lives inside align, `core.start`/`core.scale`/`new-bench` f
 
 The fallback is surfaced ONCE, non-silently, as `InitNotice(code="init.uid_align_root_host")` in `init_bench` (the code name predates the collision case; rendered as a yellow warning by `commands/init.py`, folded into the `axi init` TOON `warnings`).
 
-Workspace ownership follows the target whenever it is not the invoking user's own uid/gid (`_syncs_workspace_owner`: a root host, a collision, or `--uid`), as well as in shared mode.
+Workspace ownership follows the target whenever it is not the invoking user's own uid/gid (`_syncs_workspace_owner`: a root host, a collision, or `--uid`), as well as in shared mode, and whenever align remaps `frappe` (`ids_changed`): a plain start after a one-off `sudo cwcli start` re-owns the bench root handed to uid 1000 back to the invoking user.
 Then align stats each bench path and re-owns (`chown -R`) any whose owner differs; this is the repair path for an instance an older cwcli broke (`frappe` on uid 0 or a system account, bench owned by it): a plain `cwcli start` moves `frappe` to a usable uid and re-owns the bench, deleting nothing.
 On a normal box (aligned to the invoking user, who owns the workspace) no owner probe runs at all, so it stays byte-identical to before.
 `init_bench` also hands the workspace dir benches are created in (`bench_parent`) to the target via `align_workspace_dir_owner` (a non-recursive, owner-mismatch-gated chown run as root INSIDE the container), right after align and before `_ensure_directory`.
@@ -95,7 +95,7 @@ When the kept gid is the invoking user's own primary group (a non-root host whos
 Without it the dir a 0022-umask user created (0755) is not writable by them after the chown, and `core.credbridge._require_writable_workspace` refuses every `cwcli run`, `apps` verb, and private-fork init with `workspace_not_writable`.
 This is the one sanctioned exception to "permissions are never loosened": it grants write only to the invoking user's own group.
 
-On a NON-ROOT host the fallback leaves the bench files owned by uid 1000, which the invoking user (say a runner at uid 998) cannot `rmtree`; a `--uid` other than the invoking user's does the same.
+On a NON-ROOT host the fallback leaves the bench files owned by uid 1000, which the invoking user (say a runner at uid 998) cannot `rmtree`; a non-root `--uid` naming another uid would do the same, which is why `check_uid_override` refuses it.
 `_delete_project_directory` then retries a `PermissionError` through `_empty_dir_as_root`, the root helper container shared mode already uses, on the same verified project dir, when `_workspace_aligned_away` finds the project's `data/` dir owned by a uid other than the invoking user's.
 That owner is the one `align_workspace_dir_owner` gave the workspace, so the check is a host-side stat: no exec into a container that `rm` may already have removed, and it holds for a stopped instance too.
 

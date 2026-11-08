@@ -1297,6 +1297,7 @@ def _run_init(
     bench_parent = str(args.get("bench_parent") or "/workspace")
     uid = args.get("uid")
     uid = int(uid) if uid is not None else None
+    core_init.check_uid_override(uid)
     auto_start = args.get("auto_start") is True
     if auto_start:
         check_start_port_conflicts(project)

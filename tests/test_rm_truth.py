@@ -310,9 +310,9 @@ class TestSharedModeServiceOwnedDirectory:
     def test_a_workspace_handed_to_a_uid_override_finishes_through_the_root_helper(
         self, cwcli_home, monkeypatch
     ):
-        """`cwcli init --uid <n>` run by a different, non-root user: init handed the
-        workspace to <n>, so the bench files frappe wrote as <n> are not the invoking
-        user's to delete and the same root-helper retry finishes the removal."""
+        """Root's `cwcli init --uid <n>` handed the workspace to <n>, and a different,
+        non-root user removes it: the bench files frappe wrote as <n> are not theirs
+        to delete, so the same root-helper retry finishes the removal."""
         project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
         (project_dir / "data").mkdir()
         override_uid = (project_dir / "data").stat().st_uid  # the uid --uid chose

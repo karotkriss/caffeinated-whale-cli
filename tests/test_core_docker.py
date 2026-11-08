@@ -482,14 +482,13 @@ def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch)
 
 
 def test_normal_box_remap_never_chowns_the_workspace(monkeypatch):
-    """The workspace re-own is a SHARED-mode-only reconciliation. On a normal box
-    align targets os.getuid(), which already owns the workspace it built, so even a
-    real id change (a CI runner is uid 1001, the image frappe is 1000) must leave
-    the bench dirs untouched when the caller passes them."""
+    """On a normal box align targets os.getuid(), which already owns the workspace
+    it built, so even a real id change (a CI runner is uid 1001, the image frappe
+    is 1000) must leave the bench dirs untouched when the caller passes them."""
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
     monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1001:1001")
     remapped, err = core_docker.align_container_user_to_host(
         c, chown_home=True, bench_paths=["/workspace/frappe-bench"]
     )
@@ -928,12 +927,49 @@ class TestAlignRepairsAWorkspaceOwnedByTheWrongUid:
         assert c.remap_scripts == []
 
     def test_a_normal_box_never_probes_the_workspace_owner(self, host_1001):
-        """Byte-identical to before: aligned to the invoking user, who owns the
-        workspace, so not even the owner probe runs."""
-        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
-        core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH])
+        """Byte-identical to before: frappe already aligned to the invoking user, who
+        owns the workspace, so not even the owner probe runs."""
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            False,
+            None,
+        )
         assert c.stats == []
+        assert c.remap_scripts == []
+
+    def test_a_normal_box_remap_leaves_a_bench_the_invoker_owns_alone(self, host_1001):
+        """A container recreation reset frappe to 1000; the bench is still the
+        invoker's, so the remap probes the owner once and re-owns nothing."""
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        assert c.stats
         assert self.BENCH not in c.remap_scripts[0]
+
+    def test_a_plain_start_after_a_sudo_start_gives_the_bench_back(self, monkeypatch):
+        """uid 1001 runs `sudo cwcli start` once (root: frappe -> 1000 and the bench
+        re-owned to 1000), then a plain `cwcli start`: frappe moves back to 1001 AND
+        the bench comes back with it, or frappe could not write its own logs."""
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        assert f"chown -R 1000:1000 {self.BENCH}" in c.remap_scripts[0]
+
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+        c2 = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+        assert core_docker.align_container_user_to_host(c2, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        script = c2.remap_scripts[0]
+        assert f"[ ! -e {self.BENCH} ] || chown -R 1001:1001 {self.BENCH}" in script
+        assert script.index("chown -R 1001:1001") < script.index("sed -i")
 
 
 class TestAlignWorkspaceDirOwner:

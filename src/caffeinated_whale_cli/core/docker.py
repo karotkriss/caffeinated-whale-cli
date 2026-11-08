@@ -766,8 +766,10 @@ def align_container_user_to_host(
         return (False, "could not read the container 'frappe' user's uid/gid")
     ids_changed = cur_uid != host_uid or cur_gid != host_gid
 
-    # Shared mode, or a target other than the invoking user (`_syncs_workspace_owner`):
-    # which bench dirs are actually owned by someone other than the target identity.
+    # Shared mode, a target other than the invoking user (`_syncs_workspace_owner`), or
+    # a remap of `frappe` (a plain start after a one-off `sudo cwcli start` moves it
+    # back to the invoker, whose bench root re-owned away): which bench dirs are
+    # actually owned by someone other than the target identity.
     # An instance already bricked by v3.1.0 has `frappe` remapped to the service uid
     # ALREADY (so ids match, `ids_changed` is False), yet its bind-mounted workspace is
     # still owned by the pre-shared uid - gating the re-own on `ids_changed` alone
@@ -776,7 +778,7 @@ def align_container_user_to_host(
     # recovers it in place on the next `cwcli start`/`restart`, and a box whose
     # workspace already matches gets no chown -R.
     reown_paths: list[str] = []
-    if bench_paths and _syncs_workspace_owner(host_uid, host_gid):
+    if bench_paths and (ids_changed or _syncs_workspace_owner(host_uid, host_gid)):
         # Each bench dir PLUS the real source dir of any app symlinked outside it
         # (a devcontainer bench points `apps/<app>` at a shared tree like
         # `/workspace/.hdsrc/<app>`, which a `chown -R <bench>` does not follow).

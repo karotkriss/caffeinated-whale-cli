@@ -3025,13 +3025,15 @@ In two cases that uid would break bench, so cwcli uses uid 1000 (the image's own
 - The uid already belongs to another account in the image, such as `systemd-network` (998) or `redis` (100). A shared install's `cwcli` service account and a runner's system user often have a uid in this range.
 
 Both cases need no configuration.
-To choose the uid yourself, pass `cwcli init --uid <n>`; it applies to that `init` run and its end-of-init start only.
-In the second case, or with a `--uid` other than your own, the bench files do not belong to you, so `cwcli rm` cannot delete them as you.
+As root, you can choose the uid yourself with `cwcli init --uid <n>`; it applies to that `init` run and its end-of-init start only.
+A non-root user may pass only their own uid, and `init` refuses any other uid with a usage error before it creates anything.
+In the second case, the bench files do not belong to you, so `cwcli rm` cannot delete them as you.
 `cwcli rm` therefore deletes the project directory through a short-lived root container, the same way it does on a shared install.
 
 **Repairing an instance an older cwcli left broken:** older releases could give `frappe` uid 0 (before 3.2.0, on a root host) or a system account's uid, so `bench` was not on its `PATH` and the bench files were owned by that account.
 Upgrade cwcli and run `cwcli start <project>` as the same user as before.
-When `frappe` is aligned to a uid other than yours (a root host or a fallback), `start` moves `frappe` to the usable uid and gives it ownership of every bench it starts, with `chown -R`, so no file is deleted.
+When `frappe` is aligned to a uid other than yours (a root host or a fallback), or `start` moves `frappe` to a new uid, `start` gives `frappe` ownership of every bench it starts that another uid owns, with `chown -R`, so no file is deleted.
+This also repairs a bench that one `sudo cwcli start` left owned by uid 1000: the next plain `cwcli start` gives it back to you.
 A bench whose `bench init` never finished must still be created again with `cwcli init`.
 
 ### For agents: the `cwcli axi` surface

@@ -251,8 +251,10 @@ def check_uid_override(uid: int | None) -> None:
     aliases the container's own root user and breaks bench's PATH), and a negative
     uid is not a real account; both raise a ``USAGE`` error. A non-numeric value is
     rejected earlier by Typer's ``int`` coercion at parse time. ``None`` (the flag
-    was not passed) is always fine. The frontends call this before stage 1, so a
-    bad value never leaves a project dir or containers behind.
+    was not passed) is always fine. A non-root user may pass only their own uid:
+    another uid would leave a workspace they can neither write nor delete. The
+    frontends call this before stage 1, so a bad value never leaves a project dir or
+    containers behind.
     """
     if uid is not None and uid <= 0:
         raise CwcliError(
@@ -260,6 +262,14 @@ def check_uid_override(uid: int | None) -> None:
             "uid.invalid",
             "--uid must be a positive, non-root integer: 0 collides with the container's own "
             "root user and breaks bench's PATH the same way an unset --uid does on a root host.",
+        )
+    if uid is not None and hasattr(os, "getuid") and os.getuid() not in (0, uid):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "uid.not_permitted",
+            f"--uid {uid} is not your own uid ({os.getuid()}): only root can align the "
+            "container 'frappe' user to another uid, because the workspace it creates would "
+            "not be yours to write or delete. Run init as root, or omit --uid.",
         )
 
 

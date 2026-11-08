@@ -54,8 +54,22 @@ class TestCheckUidOverride:
     def test_none_is_accepted(self):
         core_init.check_uid_override(None)  # no raise
 
-    def test_a_positive_uid_is_accepted(self):
+    def test_root_may_pass_any_positive_uid(self, monkeypatch):
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 0)
         core_init.check_uid_override(1001)  # no raise
+
+    def test_a_non_root_user_may_pass_their_own_uid(self, monkeypatch):
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        core_init.check_uid_override(1001)  # no raise
+
+    def test_a_non_root_user_naming_another_uid_is_a_usage_error(self, monkeypatch):
+        """A non-root user cannot hand the workspace to another uid: it would be
+        neither theirs to write nor to delete (it used to fail later with EPERM)."""
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        with pytest.raises(CwcliError) as exc:
+            core_init.check_uid_override(1005)
+        assert exc.value.kind is ErrorKind.USAGE
+        assert exc.value.code == "uid.not_permitted"
 
     def test_zero_is_a_usage_error(self):
         with pytest.raises(CwcliError) as exc:
@@ -102,6 +116,15 @@ class TestHumanCliRejectsBadUid:
             core_init, "init_instance", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
         )
         result = runner.invoke(app, ["init", "proj", "--uid", "-3"])
+        assert result.exit_code == 2
+
+    def test_another_users_uid_as_non_root_is_a_usage_error_before_any_work(self, monkeypatch):
+        self._bypass_docker_precheck(monkeypatch)
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        monkeypatch.setattr(
+            core_init, "init_instance", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
+        )
+        result = runner.invoke(app, ["init", "proj", "--uid", "1005"])
         assert result.exit_code == 2
 
     def test_non_numeric_uid_is_a_parse_time_usage_error(self, monkeypatch):
