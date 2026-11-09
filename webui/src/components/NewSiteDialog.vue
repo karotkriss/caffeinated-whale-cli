@@ -5,7 +5,10 @@
 // password asked for only when cwcli has none saved for the instance, apps to
 // install from what the bench already holds (frappe always), default site and
 // developer mode. Runs as the `new-site` job with its card; a stopped instance
-// gets the Start prompt first.
+// gets the Start prompt first. Each picked app takes a branch, tag or commit in the
+// picker (data/app-refs.js): a remote pick is fetched at it; an app the bench holds is
+// checked out there first, which moves it for every site on the bench - said here,
+// in the picker and in the plan.
 // With Cloudflare DNS or Nginx Proxy Manager on, "Publish it at a public address"
 // starts a `publish-site` job as soon as the site exists (core/publish.py): the name
 // becomes a label plus a zone the DNS token can see, and each part has a live,
@@ -16,6 +19,7 @@ import AppIcon from './AppIcon.vue'
 import AppPickerDialog from './AppPickerDialog.vue'
 import { apps as catalogApps, catalogApp, hostLabel, loadCatalog } from '../data/catalog'
 import { benchAppFor, inventoryState, splitBenchApps } from '../data/bench-apps'
+import { alignedRefs, branchChangeNote, liveBranchOf, movesTo } from '../data/app-refs'
 import CommandLine from './CommandLine.vue'
 import DependencyTree from './DependencyTree.vue'
 import { onlyOverridable, planBlockers, requiredNodes, usePlan } from '../data/app-plan'
@@ -38,6 +42,7 @@ const rejected = ref(null) // { project, host, message }: MariaDB rejected the p
 const rejection = computed(() => (rejected.value && rejected.value.project === project.value && rejected.value.host === host.value ? rejected.value.message : null))
 const askDbRootPassword = computed(() => !!project.value && (!!rejection.value || needsDbRootPassword(project.value, host.value)))
 const apps = ref([])
+const refs = ref({}) // { [pick value]: ref } for picks given a branch, tag or commit
 const pickerOpen = ref(false)
 const override = ref(false)
 const depSources = ref({})
@@ -66,6 +71,7 @@ watch(() => newSiteDialog.open, (open) => {
   adminPassword.value = ''
   dbRootPassword.value = ''
   apps.value = []
+  refs.value = {}
   override.value = false
   depSources.value = {}
   makeDefault.value = false
@@ -95,6 +101,7 @@ watch(() => newSiteDialog.open, (open) => {
   const a = retry.args || {}
   site.value = retry.site || ''
   apps.value = (a.apps || []).map((n) => { const r = catalogApps.value.find((x) => x.name === n && (a.fetch || []).includes(x.source?.url)); return r ? `remote:${r.key}` : n })
+  refs.value = Object.fromEntries(apps.value.map((v) => [v, (a.refs || {})[pickedRemote(v)?.source?.url || v]]).filter(([, r]) => r))
   makeDefault.value = !!a.default
   devMode.value = !!a.developer_mode
   publishWanted.value = !!a.publish
@@ -123,10 +130,26 @@ const benchApps = computed(() => split.value.onBench)
 const remoteApps = computed(() => split.value.remote)
 const inventory = computed(() => inventoryState(detailOf(project.value, host.value)))
 const remoteApp = (v) => (String(v).startsWith('remote:') ? remoteApps.value.find((a) => a.key === v.slice(7)) : null)
+// A bench app's ref field lists its own remote's refs and defaults to the branch the copy
+// sits at; another ref is a checkout that moves it for every site on the bench. Both are
+// read from the live plan (declared below), when the picker shows them. A remote pick's
+// field lists the repository's refs; empty leaves the branch to the plan.
 const pickerOptions = computed(() => [
-  ...benchApps.value.map((a) => ({ value: a, label: catalogApp(a).title, app: catalogApp(a), hint: catalogApp(a).description || '', section: 'On this bench' })),
-  ...remoteApps.value.map((a) => ({ value: `remote:${a.key}`, name: a.name, label: a.title, app: a, hint: `fetched from ${hostLabel(a.source.host)} first · ${a.source.url}`, section: 'From app sources' })),
+  ...benchApps.value.map((a) => ({
+    value: a, label: catalogApp(a).title, app: catalogApp(a), hint: catalogApp(a).description || '', section: 'On this bench',
+    repo: (held.value.benchRemotes[a] || [])[0] || null, refLabel: 'Branch, tag or commit', refCommit: true,
+    get refPlaceholder() { return liveBranchOf(plan.value, a) || 'the branch the bench has' }, refNote: (r) => branchChangeNote(a, r, theBench.value, plan.value),
+  })),
+  ...remoteApps.value.map((a) => ({
+    value: `remote:${a.key}`, name: a.name, label: a.title, app: a, hint: `fetched from ${hostLabel(a.source.host)} first · ${a.source.url}`, section: 'From app sources',
+    repo: a.source.url, refPlaceholder: 'picked for this bench\'s Frappe',
+  })),
 ])
+// A pick that goes takes its ref with it.
+watch(apps, (list) => {
+  const kept = Object.fromEntries(Object.entries(refs.value).filter(([v]) => list.includes(v)))
+  if (Object.keys(kept).length !== Object.keys(refs.value).length) refs.value = kept
+})
 // A fresh read can move a remote pick onto the bench: keep it, as the bench app holding it.
 watch(pickerOptions, (opts) => {
   const ok = new Set(opts.map((o) => o.value))
@@ -139,6 +162,8 @@ const pickedRemote = (v) => (String(v).startsWith('remote:') ? catalogApps.value
 const chipApp = (v) => pickedRemote(v) || catalogApp(v)
 const appNames = computed(() => apps.value.map((v) => pickedRemote(v)?.name || v))
 const fetchUrls = computed(() => apps.value.map((v) => remoteApp(v)?.source?.url).filter(Boolean))
+// The refs keyed as the job and the plan name their targets: a remote pick by its URL, a bench app by name.
+const refByTarget = computed(() => Object.fromEntries(apps.value.filter((v) => refs.value[v]).map((v) => [remoteApp(v)?.source?.url || v, refs.value[v]])))
 const existing = computed(() => (theBench.value?.sites || []).map((s) => s.name))
 const allSites = computed(() => benches.value.flatMap((b) => b.sites.map((s) => s.name)))
 
@@ -202,9 +227,10 @@ const publishReady = computed(() => !publishing.value || (!!options.value && !!r
 // alone; required apps join the picks with the reason shown, and go when their app does.
 const benchApp = computed(() => apps.value.filter((v) => !remoteApp(v)))
 const instUp = computed(() => !!findInstance(project.value, host.value)?.container_running)
+const planTargets = computed(() => [...fetchUrls.value, ...benchApp.value])
 const { plan, loading: planLoading, error: planError } = usePlan(
   () => (newSiteDialog.open && project.value && bench.value != null && instUp.value && apps.value.length
-    ? { project: project.value, bench: String(bench.value), target: [...fetchUrls.value, ...benchApp.value], new_site: fullName.value || 'new-site.localhost', dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
+    ? { project: project.value, bench: String(bench.value), target: planTargets.value, ref: alignedRefs(planTargets.value, refByTarget.value), checkout: true, new_site: fullName.value || 'new-site.localhost', dep_source: Object.entries(depSources.value).map(([a, u]) => `${a}=${u}`) }
     : null),
   () => host.value,
 )
@@ -226,6 +252,10 @@ const nameState = computed(() => {
 })
 const ready = computed(() => !!project.value && bench.value != null && nameState.value.ok && adminPassword.value.length >= 1 && publishReady.value && !running.value && !(apps.value.length && instUp.value && (planLoading.value || planBlocked.value)))
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
+// Bench apps the plan checks out at their picked ref: Create site moves them first.
+const movedApps = computed(() => benchApp.value.filter((v) => movesTo(plan.value, v, refs.value[v]) === true))
+// Bench apps Create site may move: said on the page too while the plan cannot tell (a stopped instance).
+const moveNotes = computed(() => benchApp.value.filter((v) => movesTo(plan.value, v, refs.value[v]) !== false))
 const cli = computed(() => {
   let line = `CWCLI_ADMIN_PASSWORD=… cwcli new-site ${q(project.value || '<instance>')} ${q(fullName.value || '<site>')} --bench ${q(bench.value ?? '<bench>')}`
   let deps = joined.value.length ? ' --with-deps' : ''
@@ -235,7 +265,8 @@ const cli = computed(() => {
   if (makeDefault.value) line += ' --default'
   if (devMode.value) line += ' --dev-mode'
   line += deps
-  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${deps} && ` + line
+  for (const a of movedApps.value) line = `cwcli apps checkout ${q(project.value || '<instance>')} ${q(a)} ${q(refs.value[a])} --bench ${q(bench.value ?? '<bench>')} && ` + line
+  for (const u of fetchUrls.value) line = `cwcli apps install ${q(project.value || '<instance>')} ${q(u)} --bench ${q(bench.value ?? '<bench>')} --fetch-only${refByTarget.value[u] ? ` --branch ${q(refByTarget.value[u])}` : ''}${deps} && ` + line
   return line
 })
 function toggleApp(name, on) {
@@ -252,6 +283,7 @@ async function start() {
       args: {
         apps: appNames.value,
         fetch: fetchUrls.value,
+        ...(Object.keys(refByTarget.value).length ? { refs: refByTarget.value } : {}),
         default: makeDefault.value,
         developer_mode: devMode.value,
         ...(joined.value.length ? { with_deps: true } : {}),
@@ -309,7 +341,7 @@ async function start() {
           <div v-else class="flex flex-wrap items-center gap-1.5">
             <span class="inline-flex h-7 items-center gap-1.5 rounded-4 border border-outline-gray-1 bg-surface-gray-1 px-2 text-sm text-ink-gray-6"><AppIcon :app="catalogApp('frappe')" size="xs" />Frappe<span class="text-xs text-ink-gray-4">always</span></span>
             <span v-for="a in apps" :key="a" class="inline-flex h-7 items-center gap-1.5 rounded-4 border border-outline-gray-2 bg-surface-elevation-1 pl-2 pr-1 text-sm text-ink-gray-8">
-              <AppIcon :app="chipApp(a)" size="xs" />{{ chipApp(a).title }}<span v-if="remoteApp(a)" class="text-xs text-ink-gray-4">fetch</span>
+              <AppIcon :app="chipApp(a)" size="xs" />{{ chipApp(a).title }}<span v-if="refs[a]" class="font-mono text-xs text-ink-gray-5">{{ refs[a] }}</span><span v-if="remoteApp(a)" class="text-xs text-ink-gray-4">fetch</span>
               <button type="button" class="rounded p-0.5 text-ink-gray-4 hover:bg-surface-gray-2 hover:text-ink-gray-7" :aria-label="`Remove ${a}`" @click="toggleApp(a, false)"><span class="lucide-x size-3.5" aria-hidden="true" /></button>
             </span>
             <span v-for="n in joined" :key="`req-${n.app}`" class="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-4 border border-dashed border-outline-gray-2 bg-surface-gray-1 px-2 py-1 text-sm text-ink-gray-7" :title="n.on_bench ? 'on this bench' : `fetched from ${n.source || n.target}`">
@@ -320,8 +352,9 @@ async function start() {
             <span v-else-if="inventory !== 'live'" class="text-xs text-ink-gray-5">the bench's apps could not be read live; an app it already holds is not fetched again</span>
             <span v-else-if="!benchApps.length" class="text-xs text-ink-gray-5">only frappe is on this bench; a remote pick is fetched first</span>
           </div>
+          <p v-for="a in moveNotes" :key="`moved-${a}`" class="mt-2 text-xs text-ink-amber-6">{{ branchChangeNote(a, refs[a], theBench, plan) }}</p>
           <DependencyTree v-if="apps.length && instUp" class="mt-3" v-model:override="override" v-model:depSources="depSources" :plan="plan" :loading="planLoading" :error="planError" consent-note="Picking an app adds the apps it requires; they go away when it does." />
-          <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" @update:model-value="(v) => (apps = v)" @update:open="pickerOpen = $event" />
+          <AppPickerDialog :open="pickerOpen" title="Apps to install on the new site" :options="pickerOptions" :locked="[{ value: 'frappe', label: 'Frappe Framework', app: catalogApp('frappe') }]" :model-value="apps" :refs="refs" :host="host" @update:model-value="(v) => (apps = v)" @update:refs="(v) => (refs = v)" @update:open="pickerOpen = $event" />
         </div>
         <Checkbox v-model="makeDefault" label="Make it the bench's default site" />
         <Checkbox v-model="devMode" label="Turn developer mode on for it" />

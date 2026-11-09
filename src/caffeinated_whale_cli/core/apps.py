@@ -43,7 +43,7 @@ from docker.errors import DockerException
 
 from ..utils import bench_sites
 from . import app_deps, bench_read, credbridge, resolvers, supervision
-from .app_catalog import remote_key
+from .app_catalog import fetch_rank, remote_key
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -215,11 +215,6 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
-def _fetch_rank(remote: str) -> tuple[int, str]:
-    """Sort key of a checkout's remote names: the one ``apps checkout`` fetches from first."""
-    return {"upstream": 0, "origin": 1}.get(remote, 2), remote
-
-
 def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | None:
     """``apps/<dir> -> [normalized remote, ...]`` for every git checkout on the bench.
 
@@ -246,7 +241,7 @@ def app_remotes(frappe_container, bench_path: str) -> dict[str, list[str]] | Non
         if len(parts) == 4 and key:
             remotes.setdefault(parts[1], {}).setdefault(name.strip('"]'), []).append(key)
     return {
-        app: list(dict.fromkeys(k for n in sorted(named, key=_fetch_rank) for k in named[n]))
+        app: list(dict.fromkeys(k for n in sorted(named, key=fetch_rank) for k in named[n]))
         for app, named in remotes.items()
     }
 
@@ -736,6 +731,28 @@ def _verify_against_plan(
     return drifted
 
 
+def check_refs(refs: dict[str, str] | None, targets: list[str], *, prefix: str) -> dict[str, str]:
+    """``refs`` without empty entries, each keyed by one of ``targets`` exactly as given.
+    A key naming no target, a ref git would read as an option, or one with whitespace
+    is a usage error (``<prefix>.ref_unknown_app`` / ``<prefix>.ref_invalid``) before
+    anything runs: a ref is never dropped without a word."""
+    kept = {k: v for k, v in (refs or {}).items() if k and v}
+    unknown = [k for k in kept if k not in targets]
+    if unknown:
+        raise CwcliError(
+            ErrorKind.USAGE,
+            f"{prefix}.ref_unknown_app",
+            f"A ref was given for {', '.join(unknown)}, which is not an app being added; "
+            "name the app exactly as given.",
+        )
+    for wanted in kept.values():
+        if wanted.startswith("-") or any(c.isspace() for c in wanted):
+            raise CwcliError(
+                ErrorKind.USAGE, f"{prefix}.ref_invalid", f"'{wanted}' is not a git ref."
+            )
+    return kept
+
+
 def install_apps(
     project_name: str,
     apps: list[str],
@@ -744,6 +761,7 @@ def install_apps(
     bench_path: str | None = None,
     sites: list[str] | None = None,
     branch: str | None = None,
+    refs: dict[str, str] | None = None,
     fetch_only: bool = False,
     auto_start: bool = False,
     require_absent: bool = False,
@@ -767,7 +785,8 @@ def install_apps(
     installed on the target sites first, dependencies before dependents. An
     ambiguous source returns ``NEEDS_CHOICE``/``select_app_source``, answered through
     ``dep_sources`` (``{app: url}``). ``prefer_ref`` is the branch a plain-name app
-    found in the catalog prefers (an update passes the parent app's branch).
+    found in the catalog prefers (an update passes the parent app's branch). ``refs``
+    maps a target in ``apps`` to its own branch, tag or commit, over ``branch``.
 
     The fetch is idempotent on bench-presence: an app already present under the
     bench's ``apps/`` (e.g. a bench built from a pre-warmed base that carries it)
@@ -799,6 +818,10 @@ def install_apps(
     skips only the sites that already have it.
     """
     emit: OnEvent = on_event or _noop
+    refs = check_refs(refs, apps, prefix="app")
+
+    def ref_of(target: str) -> str | None:
+        return refs.get(target) or branch
 
     resolved = _resolve(project_name, bench, bench_path, auto_start=auto_start)
     if isinstance(resolved, Result):
@@ -815,7 +838,7 @@ def install_apps(
         plan = app_deps.build_plan(
             project_name,
             state,
-            [(target, branch) for target in apps],
+            [(target, ref_of(target)) for target in apps],
             fetch_only=fetch_only,
             dep_sources=dep_sources,
             ignore_frappe_range=ignore_frappe_range,
@@ -843,8 +866,8 @@ def install_apps(
     def _requested(target: str) -> tuple[str, str | None]:
         node = by_request.get(target)
         if node is None or node.on_bench or node.target == target:
-            return target, branch
-        return node.target, branch or node.ref
+            return target, ref_of(target)
+        return node.target, ref_of(target) or node.ref
 
     steps: list[tuple[str, str | None, app_deps.PlanNode | None]] = [
         (n.target, n.ref, n) for n in deps if not n.on_bench
@@ -1042,7 +1065,7 @@ def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
         )
     remotes = _decode(output).split()
     if remotes:
-        return min(remotes, key=_fetch_rank)
+        return min(remotes, key=fetch_rank)
     raise CwcliError(
         ErrorKind.PRECONDITION,
         "app.no_remote",

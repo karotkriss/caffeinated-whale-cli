@@ -47,6 +47,12 @@ def new_bench(
         "-a",
         help="An extra app (git URL or name) to fetch and install on the first site (repeatable).",
     ),
+    app_refs: list[str] = typer.Option(
+        None,
+        "--app-ref",
+        help="The branch, tag or commit one --app is fetched at, as APP=REF with APP "
+        "exactly as given to --app (repeatable).",
+    ),
     admin_password: str = typer.Option(
         None,
         "--admin-password",
@@ -80,7 +86,17 @@ def new_bench(
     Examples:
         CWCLI_ADMIN_PASSWORD=... cwcli new-bench my-project bench-v15 --version 15 --erpnext
         cwcli new-bench my-project hrms-bench --app https://github.com/frappe/hrms
+        cwcli new-bench my-project hrms-bench --app hrms --app-ref hrms=version-16-hotfix
     """
+    refs: dict[str, str] = {}
+    for value in app_refs if isinstance(app_refs, list) else []:
+        app, sep, at = str(value).rpartition("=")
+        if not sep or not app.strip() or not at.strip():
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] --app-ref takes APP=REF, got '{value}'."
+            )
+            raise typer.Exit(code=2)
+        refs[app.strip()] = at.strip()
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
     password = admin_password or os.environ.get("CWCLI_ADMIN_PASSWORD")
     if not password:
@@ -110,6 +126,7 @@ def new_bench(
             frappe_url=frappe_url,
             install_erpnext=erpnext,
             apps=list(apps or []),
+            refs=refs,
             db_root_password=db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD"),
             with_deps=with_deps is True,
             dep_sources=deps_ui.parse_dep_sources(

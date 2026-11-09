@@ -383,6 +383,147 @@ class TestPlan:
         assert [p.code for p in plan.problems] == ["app.required_app_not_installed"]
         assert world.reads.count((TOOLKIT, "master")) == 0  # the bench copy is read
 
+    def test_a_bench_app_asked_for_at_another_ref_is_a_checkout_planned_at_that_ref(self):
+        """The bench holds toolkit on master; a New site pick of toolkit at develop is
+        not re-read from the bench copy: the plan reads develop from the copy's own
+        remote and names the move (it changes toolkit for every site on the bench)."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "develop")], checkout_held=True)
+        (node,) = plan.nodes
+        assert node.checkout and node.on_bench and node.ref == "develop"
+        assert (
+            node.action == "checkout+install" and node.source == "gitlab.example.com/tools/toolkit"
+        )
+        assert world.reads == [(TOOLKIT, "develop")]  # the remote at the asked ref
+        assert plan.ok
+
+    def test_without_the_opt_in_a_bench_app_at_another_ref_is_still_read_from_the_copy(self):
+        """`apps install --branch x` of an app the bench holds installs the copy as it is
+        (the branch is for a fetch alone); only a caller that will check the copy out,
+        New site, asks for the checkout reading."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "develop")])
+        (node,) = plan.nodes
+        assert not node.checkout and node.action == "install" and world.reads == []
+
+    def test_a_bench_app_asked_for_at_the_ref_it_sits_at_is_not_a_checkout(self):
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit", version="0.23.3", branch="master", remotes=["gitlab.example.com/x"]
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "master")], checkout_held=True)
+        (node,) = plan.nodes
+        assert not node.checkout and node.action == "install" and world.reads == []
+
+    def test_a_ref_picked_for_an_app_another_pick_requires_is_the_ref_it_lands_at(self):
+        """booking (no ref picked) requires toolkit, picked after it at develop: toolkit
+        is checked out at develop, not left at the bench's master for booking."""
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(
+            _bench(toolkit=held), [(BOOKING, None), ("toolkit", "develop")], checkout_held=True
+        )
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.requested and toolkit.checkout and toolkit.ref == "develop"
+        assert plan.order == ["toolkit", "booking"] and plan.ok
+
+    def test_a_dependant_picked_at_a_ref_does_not_pin_the_ref_of_an_app_picked_too(self):
+        """booking@master requires toolkit, which declares no ref in booking's hooks:
+        toolkit picked at version-16 lands there, never refused for booking's master."""
+        world = _booking_world()
+        plan = world.plan(_bench(), [(BOOKING, "master"), (TOOLKIT, "version-16")])
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.requested and toolkit.ref == "version-16"
+        assert plan.order == ["toolkit", "booking"]
+        assert "app.ref_conflict" not in [p.code for p in plan.problems]
+
+    def test_a_bench_app_picked_at_a_ref_is_checked_out_for_a_dependant_picked_at_one(self):
+        world = _booking_world()
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(
+            _bench(toolkit=held),
+            [(BOOKING, "master"), ("toolkit", "develop")],
+            checkout_held=True,
+        )
+        toolkit = next(n for n in plan.nodes if n.app == "toolkit")
+        assert toolkit.checkout and toolkit.ref == "develop" and plan.ok
+
+    def test_a_dependant_is_checked_against_the_version_its_dependency_is_checked_out_at(self):
+        """The bench holds toolkit 0.23.3 and booking, which needs toolkit <1.0.0. Picking
+        toolkit at a ref declaring 1.2.0 moves it out of booking's range: refused, and a
+        booking that needs >=1.0.0 is not refused for the 0.23.3 the checkout replaces."""
+        world = _booking_world()
+        world.repos[TOOLKIT]["next"] = Declarations(app="toolkit", version="1.2.0", branch="next")
+        toolkit = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+
+        def booking(spec):
+            return Declarations(
+                app="booking",
+                version="1.0.0",
+                ranges={"toolkit": spec},
+                required=["toolkit"],
+                remotes=["gitlab.example.com/team/booking"],
+            )
+
+        picks = [("booking", None), ("toolkit", "next")]
+        out = world.plan(
+            _bench(toolkit=toolkit, booking=booking("<1.0.0")), picks, checkout_held=True
+        )
+        (mismatch,) = [p for p in out.problems if p.code == "app.dependency_range_mismatch"]
+        assert mismatch.severity == "blocker" and "toolkit at next" in mismatch.message
+        fits = world.plan(
+            _bench(toolkit=toolkit, booking=booking(">=1.0.0")), picks, checkout_held=True
+        )
+        assert fits.ok and "app.dependency_range_mismatch" not in [p.code for p in fits.problems]
+
+    def test_one_app_picked_twice_at_two_refs_is_refused_never_one_dropped(self):
+        world = _booking_world()
+        plan = world.plan(_bench(), [(TOOLKIT, "master"), ("toolkit", "develop")])
+        (conflict,) = [p for p in plan.problems if p.code == "app.ref_conflict"]
+        assert conflict.app == "toolkit" and "develop" in conflict.message
+        assert "master" in conflict.message and plan.blocked
+
+    def test_a_checkout_at_a_ref_built_for_another_frappe_is_refused(self):
+        world = _booking_world()
+        world.repos[TOOLKIT]["v17"] = Declarations(
+            app="toolkit", version="9.0.0", ranges={"frappe": ">=17.0.0"}, branch="v17"
+        )
+        held = Declarations(
+            app="toolkit",
+            version="0.23.3",
+            branch="master",
+            remotes=["gitlab.example.com/tools/toolkit"],
+        )
+        plan = world.plan(_bench(toolkit=held), [("toolkit", "v17")], checkout_held=True)
+        assert plan.blocked and [p.code for p in plan.problems] == ["app.frappe_range_mismatch"]
+
     def test_an_installed_required_app_is_never_touched(self):
         world = _booking_world()
         bench = _bench(toolkit=Declarations(app="toolkit", version="0.23.3"))
@@ -626,3 +767,37 @@ def test_a_pinned_required_app_comes_from_the_catalog_only(monkeypatch):
     assert found.url == TOOLKIT and found.default_branch == "develop"
     assert app_deps.find_sources("toolkit", f"{TOOLKIT}.git") == [found]
     assert app_deps.find_sources("toolkit", "https://github.com/someone/toolkit") == []
+
+
+# --------------------------------------------------------------------- bench reader
+
+
+class _LocalBench:
+    """Runs the bench reader's exec on this host, against a bench laid out in tmp_path."""
+
+    def exec_run(self, cmd, **_kw):
+        import subprocess
+
+        done = subprocess.run(cmd, capture_output=True)
+        return done.returncode, done.stdout
+
+
+def test_a_bench_copys_remotes_start_with_the_one_apps_checkout_fetches_from(tmp_path):
+    """bench get-app clones with ``--origin upstream`` and ``apps checkout`` fetches from
+    upstream, then origin: a hand-cloned fork listed first in .git/config must not be the
+    remote the plan reads a checkout's ref from."""
+    git = tmp_path / "apps" / "toolkit" / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/master\n")
+    (git / "config").write_text(
+        '[core]\n\tbare = false\n[remote "mine"]\n\turl = https://github.com/me/toolkit-mine\n'
+        '[remote "origin"]\n\turl = https://github.com/me/toolkit\n'
+        '[remote "upstream"]\n\turl = https://gitlab.example.com/tools/toolkit.git\n'
+    )
+    found = app_deps.read_bench_apps(_LocalBench(), str(tmp_path))
+    assert found["toolkit"].remotes == [
+        "gitlab.example.com/tools/toolkit",
+        "github.com/me/toolkit",
+        "github.com/me/toolkit-mine",
+    ]
+    assert found["toolkit"].branch == "master"

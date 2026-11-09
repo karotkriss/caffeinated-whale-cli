@@ -11,9 +11,9 @@ from __future__ import annotations
 import pytest
 
 from caffeinated_whale_cli.core import db_access, new_bench, new_site
-from caffeinated_whale_cli.core.init import InitStepStart
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.core.init import InitStepStart
 
 DENIED = (1, (None, b"ERROR 1045 (28000): Access denied for user 'root'@'172.21.0.5'"))
 REFUSED = (1, (None, b"ERROR 2003 (HY000): Can't connect to MySQL server on 'mariadb'"))
@@ -210,31 +210,48 @@ class TestOtherFlowsCheckFirst:
         assert exc.value.code == "db.root_password_wrong"
         assert not [c for c, _env in db.calls if "new-site" in " ".join(c)]
 
-    def test_the_web_new_site_job_refuses_before_fetching_remote_apps(self, monkeypatch):
-        from caffeinated_whale_cli import jobs
+    def test_new_site_refuses_before_fetching_remote_apps(self, monkeypatch):
+        import types
 
-        db = Db(DENIED)
+        hrms = "https://github.com/frappe/hrms"
+        db = Db(DENIED, dirs={"/workspace/frappe-bench"})
+        monkeypatch.setattr(new_site.core_docker, "get_frappe_container", lambda p: db)
         monkeypatch.setattr(
-            jobs.core_resolvers,
-            "resolve_container_and_bench",
-            lambda *a, **k: (db, "/workspace/frappe-bench", []),
+            new_site.resolvers, "resolve_container_state", lambda *a, **k: Result(status=Status.OK)
         )
+        monkeypatch.setattr(
+            new_site.resolvers,
+            "resolve_bench",
+            lambda *a: Result(status=Status.OK, data="/workspace/frappe-bench"),
+        )
+        monkeypatch.setattr(new_site.resolvers, "require_bench_dir", lambda *a: None)
         monkeypatch.setattr(db_access.supervision, "common_site_config", lambda c, b: {})
+        node = types.SimpleNamespace(
+            app="hrms",
+            target=hrms,
+            ref="version-16",
+            on_bench=False,
+            requested=True,
+            requested_as=hrms,
+            checkout=False,
+            readable=True,
+        )
+        monkeypatch.setattr(new_site.app_deps, "read_bench_state", lambda *a, **k: None)
+        monkeypatch.setattr(
+            new_site.app_deps,
+            "build_plan",
+            lambda *a, **k: types.SimpleNamespace(nodes=[node], problems=[]),
+        )
+        monkeypatch.setattr(new_site.app_deps, "enforce", lambda *a, **k: None)
         fetched: list = []
-        monkeypatch.setattr(jobs.core_apps, "install_apps", lambda *a, **k: fetched.append(a))
-
-        class Emit:
-            def lifecycle(self, *a, **k):
-                pass
-
+        monkeypatch.setattr(new_site.core_apps, "install_apps", lambda *a, **k: fetched.append(a))
         with pytest.raises(CwcliError) as exc:
-            jobs._dispatch(
-                "new-site",
-                {"project": "acme", "bench": "0", "site": "shop.localhost"},
-                {"fetch": ["https://github.com/frappe/hrms"]},
-                False,
-                {"admin_password": "a", "db_root_password": SECRET},
-                Emit(),
+            new_site.new_site(
+                "acme",
+                site="shop.localhost",
+                admin_password="a",
+                fetch=[hrms],
+                db_root_password=SECRET,
             )
         assert exc.value.code == "db.root_password_wrong"
         assert fetched == []

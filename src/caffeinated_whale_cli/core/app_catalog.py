@@ -316,6 +316,11 @@ def normalize_remote(url: str | None) -> tuple[str, str] | None:
     return host.lower(), path.lower()
 
 
+def fetch_rank(remote: str) -> tuple[int, str]:
+    """Sort key of a checkout's remote names: the one ``apps checkout`` fetches from first."""
+    return {"upstream": 0, "origin": 1}.get(remote, 2), remote
+
+
 def remote_key(url: str | None) -> str | None:
     norm = normalize_remote(url)
     return f"{norm[0]}/{norm[1]}" if norm else None

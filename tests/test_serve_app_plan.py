@@ -83,3 +83,48 @@ def test_an_instance_plan_rides_the_core_and_its_warnings(daemon, monkeypatch): 
 def test_a_plan_without_a_target_is_a_usage_error(daemon):  # noqa: F811
     status, body, _ = _req(daemon, "/api/v1/apps/plan?project=acme", bearer=True)
     assert status == 400 and body["errors"][0]["title"] == "plan.target_required"
+
+
+def test_one_ref_per_target_rides_in_target_order(daemon, monkeypatch):  # noqa: F811
+    """New site sends one `ref` per target, in the targets' order; an empty one leaves
+    that target's ref to the plan. One `ref` for several targets still applies to all."""
+    seen = {}
+
+    def plan(project, targets, **kw):
+        seen["targets"] = targets
+        seen["checkout_held"] = kw.get("checkout_held")
+        return Result(status=Status.OK, data=_booking_world().plan(_state(), targets))
+
+    monkeypatch.setattr(serve_cmd.core_app_deps, "plan", plan)
+    _wire(monkeypatch)
+    q = urllib.parse.urlencode(
+        [
+            ("project", "acme"),
+            ("target", BOOKING),
+            ("target", "toolkit"),
+            ("ref", ""),
+            ("ref", "develop"),
+            ("checkout", "1"),
+        ]
+    )
+    status, body, _ = _req(daemon, f"/api/v1/apps/plan?{q}", bearer=True)
+    assert status == 200, body
+    assert seen["targets"] == [(BOOKING, None), ("toolkit", "develop")]
+    assert seen["checkout_held"] is True
+    q = urllib.parse.urlencode(
+        [("project", "acme"), ("target", BOOKING), ("target", "toolkit"), ("ref", "master")]
+    )
+    status, body, _ = _req(daemon, f"/api/v1/apps/plan?{q}", bearer=True)
+    assert status == 200, body
+    assert seen["targets"] == [(BOOKING, "master"), ("toolkit", "master")]
+    assert seen["checkout_held"] is False
+
+
+def _state():
+    return app_deps.BenchState(
+        bench_path="/workspace/frappe-bench",
+        apps={"frappe": app_deps.Declarations(app="frappe", version="15.125.0")},
+        sites=["a.localhost"],
+        installed={"a.localhost": {"frappe"}},
+        frappe_version="15.125.0",
+    )

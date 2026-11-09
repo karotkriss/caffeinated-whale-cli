@@ -53,6 +53,7 @@ def new_bench(
     install_erpnext: bool = False,
     erpnext_branch: str | None = None,
     apps: list[str] | None = None,
+    refs: dict[str, str] | None = None,
     bench_parent: str = "/workspace",
     db_root_password: str | None = None,
     with_deps: bool = False,
@@ -66,13 +67,15 @@ def new_bench(
     and the app installs, which both resolve the bench by its path.
 
     The extra ``apps`` go through ``core.apps.install_apps``' dependency plan against
-    the bench just built: ``with_deps`` consents to their required apps, and a range
+    the bench just built, each fetched at its ref in ``refs`` (keyed by the app as
+    given) when one is picked: ``with_deps`` consents to their required apps, and a range
     that does not fit refuses them (the bench and its site stay; the apps are named
     as failed)."""
     emit = on_event or (lambda _e: None)
     warnings: list[Message] = []
     bench_name = core_init.validate_bench_slug(bench_name)
     site_name = core_init.validate_new_site_name(site_name)
+    refs = core_apps.check_refs(refs, [a for a in (apps or []) if a], prefix="new_bench")
     if not admin_password:
         raise CwcliError(
             ErrorKind.USAGE,
@@ -166,6 +169,7 @@ def new_bench(
                 project,
                 wanted,
                 bench_path=bench_path,
+                refs=refs,
                 sites=[site_name],
                 with_deps=with_deps,
                 dep_sources=dep_sources,

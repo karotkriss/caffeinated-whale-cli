@@ -2354,7 +2354,11 @@ class _Handler(BaseHTTPRequestHandler):
         re-plans before it acts, so a remote that moves in between cannot slip by.
 
         ``target`` (repeatable) is a repository URL or a bench app's name; ``ref`` the
-        branch for the targets; ``site`` (repeatable) filters the sites; ``new_site``
+        branch for the targets - one value for all of them, or one per target in the
+        same order (an empty one leaves that target's ref to the plan); ``checkout=1``
+        plans a bench app asked for at another ref as a checkout of the bench's copy
+        (New site), not as read from that copy; ``site``
+        (repeatable) filters the sites; ``new_site``
         names a site about to be created; ``dep_source`` (repeatable ``app=url``)
         answers an ambiguous source. ``new_bench=1`` with ``version`` and ``erpnext``
         plans against a bench that does not exist yet.
@@ -2366,13 +2370,18 @@ class _Handler(BaseHTTPRequestHandler):
         if not targets:
             self._send_error(400, ErrorKind.USAGE.value, "plan.target_required", "no target")
             return
-        ref = one("ref")
+        # Re-read `ref` keeping blanks: parse_qs drops an empty value, and an empty ref
+        # is how one target of several says "the plan picks mine".
+        raw_refs = parse_qs(urlparse(self.path).query, keep_blank_values=True).get("ref") or []
+        refs = [_optional_str(value) for value in raw_refs]
+        if len(refs) != len(targets):
+            refs = [refs[0] if refs else None] * len(targets)
         dep_sources = {}
         for value in query.get("dep_source") or []:
             app_name, sep, url = str(value).partition("=")
             if sep and app_name.strip() and url.strip():
                 dep_sources[app_name.strip()] = url.strip()
-        pairs = [(t.strip(), ref) for t in targets]
+        pairs = [(t.strip(), ref) for t, ref in zip(targets, refs, strict=True)]
         try:
             if one("new_bench"):
                 version = one("version") or "16"
@@ -2400,6 +2409,7 @@ class _Handler(BaseHTTPRequestHandler):
                 fetch_only=one("fetch_only") in ("1", "true"),
                 dep_sources=dep_sources,
                 ignore_frappe_range=one("ignore_frappe_range") in ("1", "true"),
+                checkout_held=one("checkout") in ("1", "true"),
             )
         except CwcliError as e:
             self._send_core_error(e)

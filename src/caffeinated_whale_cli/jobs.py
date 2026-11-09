@@ -1458,12 +1458,17 @@ def _run_self_update(args: dict[str, Any], emit: _Recorder) -> Result:
     )
 
 
-def _dep_sources(args: dict[str, Any]) -> dict[str, str] | None:
-    """``args.dep_sources``: the repository picked for each ambiguous required app."""
-    raw = args.get("dep_sources")
+def _str_map(args: dict[str, Any], key: str) -> dict[str, str] | None:
+    """``args[key]`` as ``{str: non-empty str}``, None when it is not a mapping."""
+    raw = args.get(key)
     if not isinstance(raw, dict):
         return None
     return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+
+
+def _dep_sources(args: dict[str, Any]) -> dict[str, str] | None:
+    """``args.dep_sources``: the repository picked for each ambiguous required app."""
+    return _str_map(args, "dep_sources")
 
 
 def _dispatch(
@@ -1529,6 +1534,7 @@ def _dispatch(
             frappe_url=str(args["frappe_url"]) if args.get("frappe_url") else None,
             install_erpnext=bool(args.get("install_erpnext")),
             apps=[str(a) for a in (args.get("apps") or []) if a],
+            refs=_str_map(args, "refs"),
             db_root_password=_db_root_password(secret_values),
             with_deps=args.get("with_deps") is True,
             dep_sources=_dep_sources(args),
@@ -1588,18 +1594,6 @@ def _dispatch(
                     "The site was not created, because it could not be published: "
                     + " ".join(refused),
                 )
-        if args.get("fetch"):
-            # The root password is checked before the fetch, not minutes later at new-site.
-            prologue = core_resolvers.resolve_container_and_bench(project, bench, None)
-            if isinstance(prologue, tuple):
-                unverified = core_db_access.verify_root_password(
-                    prologue[0],
-                    project,
-                    _db_root_password(secret_values),
-                    bench_path=prologue[1],
-                )
-                if unverified is not None:
-                    emit.lifecycle("db_password_unverified", unverified.text)
         # A remote pick is fetched onto the bench FIRST (no site install
         # yet), after the dependency plan of every pick; a refusal or a failed fetch stops
         # the job before any site exists.
@@ -1613,6 +1607,7 @@ def _dispatch(
             developer_mode=bool(args.get("developer_mode")),
             db_root_password=_db_root_password(secret_values),
             fetch=[str(u) for u in (args.get("fetch") or []) if u],
+            refs=_str_map(args, "refs"),
             with_deps=args.get("with_deps") is True,
             dep_sources=_dep_sources(args),
             ignore_frappe_range=args.get("ignore_frappe_range") is True,
