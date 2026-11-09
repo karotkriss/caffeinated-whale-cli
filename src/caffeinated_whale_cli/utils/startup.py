@@ -14,10 +14,15 @@ installed after a ``disable`` execs a start that refuses, so a stale hook stays
 inert rather than resurrecting a daemon the config says should not exist.
 """
 
+import os
 import platform
+import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -67,6 +72,16 @@ CRED_BRIDGE = BootUnit(
 )
 
 
+# A boot unit whose start keeps failing (its cwcli was uninstalled, moved, or
+# exits non-zero) retries at most START_LIMIT_BURST times per
+# START_LIMIT_INTERVAL_SEC, then stays failed until the next boot (or login,
+# without lingering) or a manual start. Without it, systemd's default 10s limit
+# window never trips at RestartSec=10, and a vanished cwcli logged a failure
+# every few seconds forever.
+START_LIMIT_INTERVAL_SEC = 600
+START_LIMIT_BURST = 3
+
+
 def get_platform() -> str:
     """Get the current platform (darwin, linux, windows)."""
     return platform.system().lower()
@@ -88,6 +103,154 @@ def get_cwcli_path() -> str:
 
     # Last resort: just return "cwcli" and hope it's in PATH
     return "cwcli"
+
+
+def _cwcli_in(directory: str) -> str | None:
+    """The executable ``cwcli`` (or Windows ``cwcli.exe``) in ``directory``, if any."""
+    for name in ("cwcli", "cwcli.exe"):
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def running_cwcli_dir() -> str:
+    """The directory of the cwcli executing now: the script ``sys.argv[0]`` names
+    when that directory holds a ``cwcli`` (or ``cwcli.exe``, which also covers the
+    frozen standalone build, whose ``sys.executable`` is a temporary unpack
+    directory), else the interpreter's own directory.
+
+    Unlike :func:`get_cwcli_path`, this never consults the caller's PATH, so a
+    unit written by one install never points at another one that happens to come
+    first on PATH.
+    """
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv[0] else ""
+    if script_dir and _cwcli_in(script_dir):
+        return script_dir
+    return str(Path(sys.executable).parent)
+
+
+def running_cwcli() -> str:
+    """The running cwcli's absolute path, for units that name one (system units and
+    Windows tasks); :func:`get_cwcli_path` when it cannot be found beside it."""
+    return _cwcli_in(running_cwcli_dir()) or get_cwcli_path()
+
+
+def unit_search_path() -> str:
+    """The PATH a boot unit finds ``cwcli`` on.
+
+    The unit runs ``/usr/bin/env cwcli`` rather than an absolute path, so it
+    survives a reinstall or a move between a per-user and the shared install:
+    the directory of the cwcli writing the unit comes first (see
+    :func:`running_cwcli_dir`), then the usual per-user and shared install
+    directories, so a removed install falls through to whichever cwcli remains.
+    The writing process's own PATH directories follow, because the unit's PATH
+    replaces the service manager's (which environment.d may extend, such as
+    snapd's ``/snap/bin``), so the daemons still find ``docker``/``gh``/``glab``
+    wherever the user's shell finds them.
+    """
+    dirs = [running_cwcli_dir(), str(Path.home() / ".local" / "bin")]
+    if get_platform() == "darwin":
+        dirs.append("/opt/homebrew/bin")
+    dirs += ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    dirs += [
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if os.path.isabs(d) and not set(d) & set('"%\\&<>')
+    ]
+    return ":".join(dict.fromkeys(dirs))
+
+
+def stale_reason(unit: BootUnit = AUTO_INSPECT) -> str | None:
+    """Why the installed boot unit needs rewriting, or None when absent or current.
+
+    Stale means its program no longer exists, or it was written by an older cwcli
+    (no systemd restart limit, or a macOS absolute path). Read-only; an unreadable
+    or malformed per-user unit is never claimed stale (a shared system unit this
+    user cannot read is, see :func:`system_unit_stale_reason`). An old unit whose
+    cwcli still exists repairs itself at the next boot, because the ``start`` verb
+    it runs rewrites it.
+    """
+    inspect = {
+        "darwin": lambda: _macos_unit_program(unit),
+        "linux": lambda: _systemd_unit_program(_get_linux_service_path(unit)),
+        "windows": lambda: _windows_unit_program(unit),
+    }.get(get_platform())
+    return _stale(inspect) if inspect else None
+
+
+def system_unit_stale_reason(unit: BootUnit) -> str | None:
+    """:func:`stale_reason` for the shared-mode system unit in ``/etc/systemd/system``.
+
+    Unlike a per-user unit, a system unit this user cannot read IS reported (an
+    older cwcli wrote it 0660 under the shared umask), because a member's
+    ``status``/``doctor`` must not call a unit it never checked current;
+    :func:`repair_system_unit` makes it world-readable. Read-only, so any user
+    can run it; rewriting the unit needs root.
+    """
+    if get_platform() != "linux":
+        return None
+    path = system_unit_path(unit)
+    if path.exists() and not os.access(path, os.R_OK):
+        return "only root can read it, so it could not be checked"
+    return _stale(lambda: _systemd_unit_program(path))
+
+
+_UnitProgram = tuple[str, str | None, str | None] | None
+
+
+def _stale(inspect: Callable[[], _UnitProgram]) -> str | None:
+    try:
+        found = inspect()
+    except Exception:
+        return None
+    if found is None:
+        return None
+    named, resolved, outdated = found
+    if resolved is None:
+        return f"it runs {named}, which no longer exists"
+    return outdated
+
+
+def _resolve_program(argv: list[str], path: str | None) -> tuple[str, str | None]:
+    """``(named, resolved)`` for a unit's argv: what it names and the file it runs."""
+    if not argv:
+        return "no program", None
+    if argv[:1] == ["/usr/bin/env"] and len(argv) > 1:
+        return f"{argv[1]} (on the unit's PATH)", shutil.which(argv[1], path=path or "")
+    program = argv[0]
+    return program, program if os.access(program, os.X_OK) else None
+
+
+def repair_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
+    """Rewrite an installed boot unit that :func:`stale_reason` reports stale.
+
+    Returns True when a unit was rewritten. Its enabled state is untouched and
+    nothing is started: Linux only reloads systemd, macOS rewrites the plist
+    launchd reads at the next login, and Windows replaces the logon task. A failed
+    systemd reload restores the old file, so the next call retries, and raises
+    because systemd is still using the old unit.
+    """
+    if stale_reason(unit) is None:
+        return False
+    plat = get_platform()
+    if plat == "linux":
+        service_path = _get_linux_service_path(unit)
+        original = service_path.read_text()
+        _write_linux_unit(unit)
+        result = subprocess.run(
+            ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            service_path.write_text(original)
+            raise OSError(_systemctl_reason("daemon-reload", result.stderr))
+    elif plat == "darwin":
+        _write_macos_plist(unit)
+    else:
+        ok, reason = _install_windows_startup(unit)
+        if not ok:
+            raise OSError(reason or "schtasks create failed")
+    return True
 
 
 def is_startup_installed(unit: BootUnit = AUTO_INSPECT) -> bool:
@@ -157,15 +320,13 @@ def _is_macos_startup_installed(unit: BootUnit) -> bool:
     return _get_macos_plist_path(unit).exists()
 
 
-def _install_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
-    """Install macOS LaunchAgent plist file."""
-    plist_path = _get_macos_plist_path(unit)
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
-
+def _render_macos_plist(unit: BootUnit) -> str:
+    # KeepAlive is false, so launchd runs the unit once per login and never retries
+    # a failed start: a vanished cwcli logs one failure, not a loop.
     argv_lines = "\n".join(
-        f"        <string>{arg}</string>" for arg in (get_cwcli_path(), *unit.start_args)
+        f"        <string>{arg}</string>" for arg in ("/usr/bin/env", "cwcli", *unit.start_args)
     )
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -175,6 +336,11 @@ def _install_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
     <array>
 {argv_lines}
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{unit_search_path()}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -187,8 +353,30 @@ def _install_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
 </plist>
 """
 
-    with open(plist_path, "w") as f:
-        f.write(plist_content)
+
+def _write_macos_plist(unit: BootUnit) -> Path:
+    plist_path = _get_macos_plist_path(unit)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text(_render_macos_plist(unit))
+    return plist_path
+
+
+def _macos_unit_program(unit: BootUnit) -> tuple[str, str | None, str | None] | None:
+    plist_path = _get_macos_plist_path(unit)
+    if not plist_path.exists():
+        return None
+    data = plistlib.loads(plist_path.read_bytes())
+    path = data.get("EnvironmentVariables", {}).get("PATH")
+    named, resolved = _resolve_program(list(data.get("ProgramArguments", [])), path)
+    outdated = None
+    if data.get("ProgramArguments", [None])[0] != "/usr/bin/env":
+        outdated = "it names an absolute path, which a reinstall or a move breaks"
+    return named, resolved, outdated
+
+
+def _install_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
+    """Install macOS LaunchAgent plist file."""
+    plist_path = _write_macos_plist(unit)
 
     # Load the LaunchAgent
     result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
@@ -243,55 +431,50 @@ def _is_linux_startup_installed(unit: BootUnit) -> bool:
 # daemon the unit never owned. systemd's default stop (SIGTERM to the unit's own
 # cgroup) already stops a daemon the unit DID start, and both daemons exit
 # cleanly on SIGTERM.
-def _write_linux_unit(unit: BootUnit) -> None:
-    service_path = _get_linux_service_path(unit)
-    service_path.parent.mkdir(parents=True, exist_ok=True)
-    service_path.write_text(
-        f"""[Unit]
+def _render_linux_unit(unit: BootUnit) -> str:
+    return f"""[Unit]
 Description={unit.description}
 After=network.target
+StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}
+StartLimitBurst={START_LIMIT_BURST}
 
 [Service]
 Type=forking
-ExecStart="{get_cwcli_path()}" {" ".join(unit.start_args)}
+Environment="PATH={unit_search_path()}"
+ExecStart=/usr/bin/env cwcli {" ".join(unit.start_args)}
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=default.target
 """
-    )
 
 
-def repair_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
-    """Drop the daemon-killing ExecStop line from an installed Linux unit.
-
-    Returns True when a unit was repaired. Only that line goes: the unit's
-    ExecStart keeps the cwcli it was installed with (the caller may have a
-    different one on PATH), its enabled state is untouched, nothing is started.
-    A failed daemon reload restores the old file, so the next call retries, and
-    raises because systemd is still using the old unit.
-    """
-    if get_platform() != "linux":
-        return False
+def _write_linux_unit(unit: BootUnit) -> None:
     service_path = _get_linux_service_path(unit)
-    try:
-        original = service_path.read_text()
-        lines = original.splitlines(keepends=True)
-        kept = [line for line in lines if not line.startswith("ExecStop=")]
-        if len(kept) == len(lines):
-            return False
-        service_path.write_text("".join(kept))
-    except OSError:
-        return False
-    result = subprocess.run(
-        ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        service_path.write_text(original)
-        reason = _systemctl_reason("daemon-reload", result.stderr)
-        raise OSError(reason or "systemctl daemon-reload failed")
-    return True
+    service_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text(_render_linux_unit(unit))
+
+
+def _systemd_unit_program(service_path: Path) -> tuple[str, str | None, str | None] | None:
+    if not service_path.exists():
+        return None
+    text = service_path.read_text()
+    exec_start = path = None
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            exec_start = line.removeprefix("ExecStart=")
+        elif line.startswith("Environment="):
+            for assignment in shlex.split(line.removeprefix("Environment=")):
+                if assignment.startswith("PATH="):
+                    path = assignment.removeprefix("PATH=")
+    if not exec_start:
+        return None
+    named, resolved = _resolve_program(shlex.split(exec_start), path)
+    outdated = None
+    if "StartLimitBurst=" not in text:
+        outdated = "it has no restart limit, so a failing start would retry forever"
+    return named, resolved, outdated
 
 
 def _install_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
@@ -364,9 +547,25 @@ def _is_windows_startup_installed(unit: BootUnit) -> bool:
         return False
 
 
+def _windows_unit_program(unit: BootUnit) -> tuple[str, str | None, str | None] | None:
+    """The logon task's program. Task Scheduler runs it once per logon with no
+    retry, so a missing program logs one failure, not a loop; it keeps an absolute
+    path because a task action does not search PATH."""
+    result = subprocess.run(
+        ["schtasks", "/Query", "/TN", unit.task_name, "/XML"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    command = ET.fromstring(result.stdout).find(".//{*}Command")
+    if command is None or not command.text:
+        return None
+    program = command.text.strip().strip('"')
+    return program, program if os.path.isfile(program) else None, None
+
+
 def _install_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Install Windows Task Scheduler task."""
-    cwcli_path = get_cwcli_path()
+    cwcli_path = running_cwcli()
 
     # Create a scheduled task that runs at logon
     command = [
@@ -419,6 +618,9 @@ def _uninstall_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
 # Linux-only; setup refuses on Windows and defers macOS (which needs a LaunchDaemon).
 
 SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+# World-readable (a unit holds no secret) so a non-root member's status/doctor can
+# check it; shared mode's 0007 umask would otherwise leave it 0660 root:root.
+SYSTEM_UNIT_MODE = 0o644
 
 
 def system_unit_path(unit: BootUnit) -> Path:
@@ -435,7 +637,7 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
     if get_platform() != "linux":
         raise OSError("system units are only supported on Linux (systemd)")
 
-    cwcli_path = get_cwcli_path()
+    cwcli_path = running_cwcli()
     service_path = system_unit_path(unit)
     # No ExecStop, for the reason given above _write_linux_unit.
     kind = f"Type=forking\nUser={user}\nGroup={group}\nPIDFile={pid_file}"
@@ -444,6 +646,8 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
     service_content = f"""[Unit]
 Description={unit.description} (shared)
 After=network.target docker.service
+StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}
+StartLimitBurst={START_LIMIT_BURST}
 
 [Service]
 {kind}
@@ -455,6 +659,7 @@ RestartSec=10
 WantedBy=multi-user.target
 """
     service_path.write_text(service_content)
+    os.chmod(service_path, SYSTEM_UNIT_MODE)
 
     result = subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True)
     if result.returncode != 0:
@@ -470,24 +675,45 @@ WantedBy=multi-user.target
 
 
 def repair_system_unit(unit: BootUnit) -> bool:
-    """Make an installed system unit for a foreground daemon ``Type=simple``.
+    """Fix an installed system unit in place, keeping its ``User=``/``Group=``.
 
-    Units written before :attr:`BootUnit.forks` existed start the scheduler as
-    ``Type=forking`` with a pid file nothing writes, so systemd waits for a fork
-    that never comes, kills the scheduler at the start timeout, and restarts it in
-    a loop. Returns True when the file was rewritten (the caller reloads systemd);
-    a forking unit, a missing file, or an already-correct one is left alone.
+    Three fixes, each for a unit an older cwcli wrote: a foreground daemon (the
+    scheduler) written as ``Type=forking`` with a pid file nothing writes, which
+    systemd kills at the start timeout and restarts in a loop, becomes
+    ``Type=simple``; a unit with no restart limit gets one; and an ``ExecStart``
+    whose cwcli no longer exists runs this cwcli instead. The file is also made
+    readable to every user (:data:`SYSTEM_UNIT_MODE`). Returns True when the
+    file was rewritten (the caller reloads systemd); a missing or already-correct
+    file is left alone. Needs root.
     """
-    if unit.forks:
-        return False
     path = system_unit_path(unit)
     try:
         original = path.read_text()
-    except OSError:
+        found = _systemd_unit_program(path)
+        mode_ok = path.stat().st_mode & 0o777 == SYSTEM_UNIT_MODE
+    except Exception:
         return False
-    lines = [line for line in original.splitlines(keepends=True) if not line.startswith("PIDFile=")]
-    repaired = "".join(lines).replace("Type=forking", "Type=simple")
-    if repaired == original:
+    missing = found is not None and found[1] is None
+    lines: list[str] = []
+    for line in original.splitlines(keepends=True):
+        if not unit.forks and line.startswith("PIDFile="):
+            continue
+        if not unit.forks and line.strip() == "Type=forking":
+            line = "Type=simple\n"
+        if missing and line.startswith("ExecStart="):
+            line = f'ExecStart="{running_cwcli()}" {" ".join(unit.start_args)}\n'
+        lines.append(line)
+        if line.strip() == "[Unit]" and "StartLimitBurst=" not in original:
+            lines.append(f"StartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n")
+            lines.append(f"StartLimitBurst={START_LIMIT_BURST}\n")
+    repaired = "".join(lines)
+    if "StartLimitBurst=" not in repaired:
+        repaired = (
+            f"[Unit]\nStartLimitIntervalSec={START_LIMIT_INTERVAL_SEC}\n"
+            f"StartLimitBurst={START_LIMIT_BURST}\n\n{repaired}"
+        )
+    if repaired == original and mode_ok:
         return False
     path.write_text(repaired)
+    os.chmod(path, SYSTEM_UNIT_MODE)
     return True

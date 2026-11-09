@@ -101,8 +101,8 @@ from dataclasses import dataclass, replace
 
 from docker.errors import APIError, NotFound
 
+from . import auto_inspect, resolvers, supervision
 from . import maintenance as core_maintenance
-from . import resolvers, supervision
 from .docker import get_project_containers
 from .envelope import Message, Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
@@ -213,7 +213,7 @@ NOT_CWCLI_SUPERVISED_HINT = (
 )
 
 
-def _offline(project_name: str) -> Result[StatusReport]:
+def _offline(project_name: str, warnings: list[Message]) -> Result[StatusReport]:
     """A stopped instance: ``offline`` and an EMPTY bench list.
 
     Populating the list from the cache with every bench marked down was considered
@@ -230,6 +230,7 @@ def _offline(project_name: str) -> Result[StatusReport]:
             container_running=False,
             benches=[],
         ),
+        warnings=warnings,
     )
 
 
@@ -274,6 +275,10 @@ def status(
     Defaults False, so every existing caller is byte-unchanged.
     """
     warnings: list[Message] = []
+    # A stale start-on-boot unit is host-wide, but `status` is where a user looks when
+    # something misbehaves; the one-shot read reports it, a repeating poll does not.
+    if probe_web and not fused:
+        warnings.extend(auto_inspect.stale_boot_unit_warnings())
 
     containers = get_project_containers(project_name)
     if containers is None:
@@ -307,9 +312,9 @@ def status(
     try:
         frappe_container.reload()
     except (APIError, NotFound):
-        return _offline(project_name)
+        return _offline(project_name, warnings)
     if frappe_container.status != "running":
-        return _offline(project_name)
+        return _offline(project_name, warnings)
 
     # Which benches to report. `--bench`/`--path` narrows to one (the SAME selector
     # core.start uses, so the two verbs always agree); the bare form reports every

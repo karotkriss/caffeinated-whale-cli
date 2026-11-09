@@ -394,6 +394,22 @@ def _check_cred_bridge() -> tuple:
     return _outcome(CheckStatus.PASS, f"running (pid {pid})")
 
 
+def _check_boot_units() -> tuple:
+    """C22 - the start-on-boot units point at a cwcli that exists, read-only.
+
+    A unit left pointing at a removed cwcli fails at every boot (and, without a
+    restart limit, every few seconds); ``startup.stale_reason`` only reads the unit.
+    """
+    from .auto_inspect import stale_boot_unit_warnings
+
+    stale = stale_boot_unit_warnings()
+    if not stale:
+        return _outcome(CheckStatus.PASS, "none installed, or all current")
+    detail = "; ".join(f"{w.detail['unit']}: {w.detail['reason']}" for w in stale if w.detail)
+    fix = "; ".join(f"run `{w.detail['fix']}`" for w in stale if w.detail)
+    return _outcome(CheckStatus.WARN, detail, fix)
+
+
 def _check_shared_mode() -> tuple:
     """C20 - opt-in shared/multi-user install integrity, read-only.
 
@@ -747,6 +763,7 @@ _CHECKS: list[Check] = [
         group="cwcli",
         run=_check_cred_bridge,
     ),
+    Check(id="c22", title="start-on-boot units", group="cwcli", run=_check_boot_units),
     Check(id="c20", title="shared install", group="cwcli", run=_check_shared_mode),
     Check(id="c5", title="Free space (cwcli home)", group="Storage", run=_check_home_free_space),
     Check(

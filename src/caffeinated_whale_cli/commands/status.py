@@ -39,6 +39,7 @@ import typer
 from rich.live import Live
 from rich.table import Table
 
+from ..core import auto_inspect as core_auto_inspect
 from ..core import docker as core_docker
 from ..core import maintenance as core_maintenance
 from ..core import resolvers
@@ -124,7 +125,12 @@ def status(
     exits 1 if any site still answers maintenance mode or its state could not be read.
     """
     if project_name is None:
-        render_instances_summary(verbose=verbose)
+        try:
+            render_instances_summary(verbose=verbose)
+        finally:
+            # Host-wide, so the "how is everything" read names it too, Docker or not.
+            for w in core_auto_inspect.stale_boot_unit_warnings():
+                stderr_console.print(f"[yellow]{w.text}[/yellow]")
         raise typer.Exit(code=0)
 
     if site and not clear_maintenance:
@@ -153,7 +159,7 @@ def status(
             # The not-cwcli-supervised hint and the maintenance/scheduler faults are
             # rendered by _render_detail (in BOTH modes), so don't also echo them
             # here as warnings - they would double up.
-            if warning.code in ("supervisor.not_cwcli", *_BENCH_FAULT_CODES):
+            if warning.code in ("supervisor.not_cwcli", STALE_UNIT_CODE, *_BENCH_FAULT_CODES):
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose, result.warnings)
@@ -461,6 +467,7 @@ def _web_line(bench: BenchStatus, verbose: bool, host_target: str | None) -> str
 # Faults the core reports per bench (``detail["bench_path"]``), rendered under that
 # bench's heading with the core's own text, so the remedy is written in one place.
 _BENCH_FAULT_CODES = ("status.maintenance_mode", "status.scheduler_paused")
+STALE_UNIT_CODE = "startup.unit_stale"
 
 
 def _render_detail(report: StatusReport, verbose: bool, warnings: Sequence[Message] = ()) -> None:
@@ -516,6 +523,11 @@ def _render_detail(report: StatusReport, verbose: bool, warnings: Sequence[Messa
                     bits.append(f"rss={p.rss_kb}KB")
             detail = "  " + " ".join(bits) if bits else ""
             stderr_console.print(f"  {p.label:<16} {mark}{detail}")
+    # A stale start-on-boot unit fails at every boot (or every few seconds, on an old
+    # unit with no restart limit); host-wide, so after the benches, without --verbose.
+    for w in warnings:
+        if w.code == STALE_UNIT_CODE:
+            stderr_console.print(f"[yellow]{w.text}[/yellow]")
 
 
 def _render_table(report: StatusReport) -> Table:

@@ -221,6 +221,31 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
     assert calls == [{"verbose": False}]
 
 
+def test_bare_status_names_a_stale_boot_unit(monkeypatch, capsys):
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
+    monkeypatch.setattr(status_mod, "render_instances_summary", lambda **k: None)
+    monkeypatch.setattr(
+        status_mod.core_auto_inspect,
+        "stale_boot_unit_warnings",
+        lambda: [Message("startup.unit_stale", "The unit is stale. Run `cwcli x start`.")],
+    )
+    with pytest.raises(typer.Exit):
+        status_mod.status(
+            project_name=None,
+            bench=None,
+            path=None,
+            verbose=False,
+            watch=False,
+            interval=2.0,
+            clear_maintenance=False,
+            site=None,
+        )
+    assert "Run `cwcli x start`." in capsys.readouterr().err
+
+
 def test_multi_bench_stdout_is_still_exactly_one_token(monkeypatch, capsys):
     # The one-token contract is load-bearing and survives the restructure: a
     # multi-bench project prints the INSTANCE fold, and every per-bench detail goes
@@ -345,6 +370,21 @@ def test_maintenance_mode_is_named_plainly_with_the_way_out(monkeypatch, capsys)
     assert "set-maintenance-mode off" in err
     # stdout stays exactly one machine token.
     assert captured.out.strip() == "degraded"
+
+
+def test_a_stale_boot_unit_is_named_with_its_fix_without_verbose(monkeypatch, capsys):
+    warning = Message(
+        "startup.unit_stale",
+        "The auto-inspect start-on-boot unit cwcli-auto-inspect.service is stale: it runs "
+        "/gone/cwcli, which no longer exists. Run `cwcli config auto-inspect enable` to "
+        "rewrite it.",
+    )
+    captured = _run(monkeypatch, capsys, _report("offline"), warnings=[warning])
+    err = harness_collapse(captured.err)
+
+    assert "cwcli-auto-inspect.service is stale" in err
+    assert "cwcli config auto-inspect enable" in err
+    assert captured.out.strip() == "offline"
 
 
 def test_a_bench_left_down_by_bench_update_is_named_with_the_bench_wide_way_out(

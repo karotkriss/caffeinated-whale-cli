@@ -225,13 +225,21 @@ def _no_real_boot_unit_repair(request, monkeypatch):
     ``startup.repair_startup`` rewrites ``~/.config/systemd/user/<unit>`` and runs
     ``systemctl --user daemon-reload``, and every daemon enable/start reaches it.
     ``Path.home()`` is the real home here (only ``CWCLI_HOME`` is redirected), so
-    an unstubbed call would edit the developer's own installed unit. Tests of the
-    repair itself (``test_startup_units.py``) restore it inside a sandboxed home.
+    an unstubbed call would edit the developer's own installed unit. ``stale_reason``
+    is stubbed too, so ``status``/``doctor`` never report the developer's own units.
+    ``SYSTEM_UNIT_DIR`` points at an empty directory for the same reason, so the
+    machine's real ``/etc/systemd/system`` units are never read or rewritten.
+    Tests of the repair itself (``test_startup_units.py``) restore them inside a
+    sandbox.
     """
     if request.node.get_closest_marker("unit"):
         from caffeinated_whale_cli.utils import startup
 
         monkeypatch.setattr(startup, "repair_startup", lambda unit=startup.AUTO_INSPECT: False)
+        monkeypatch.setattr(startup, "stale_reason", lambda unit=startup.AUTO_INSPECT: None)
+        monkeypatch.setattr(
+            startup, "SYSTEM_UNIT_DIR", Path(tempfile.gettempdir()) / "cwcli-no-system-units"
+        )
 
 
 def pytest_collection_finish(session):

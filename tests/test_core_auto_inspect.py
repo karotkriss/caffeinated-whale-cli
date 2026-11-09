@@ -149,9 +149,7 @@ class TestEnable:
         assert _saved()["startup_enabled"] is False
         assert result.data.state.daemon_running is True
 
-    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(
-        self, cfg, monkeypatch
-    ):
+    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(self, cfg, monkeypatch):
         core_ai.enable(at_boot=True)
 
         def _uninstall_kills_daemon(unit=None):
@@ -304,6 +302,19 @@ class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
         core_ai.start()
         assert events == ["repair", "start"]
 
+    def test_a_refused_start_still_rewrites_the_stale_unit(self, cfg, monkeypatch):
+        repaired: list = []
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: repaired.append(unit) or True
+        )
+        for verb in (core_ai.start, core_ai.restart):
+            repaired.clear()
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "auto_inspect.not_enabled"
+            assert len(repaired) == 1
+        assert (cfg.calls["start"], cfg.calls["stop"]) == (0, 0)
+
 
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
@@ -361,3 +372,69 @@ class TestLogTail:
             core_ai.log_tail()
         assert exc.value.kind is ErrorKind.INTERNAL
         assert exc.value.code == "logs.read_failed"
+
+
+class TestStaleBootUnitWarnings:
+    """``status`` and ``doctor`` name a stale boot unit and the exact command that fixes it."""
+
+    def _stale(self, monkeypatch, *units):
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(
+            startup,
+            "stale_reason",
+            lambda unit=startup.AUTO_INSPECT: (
+                "it runs /gone/cwcli, which no longer exists" if unit in units else None
+            ),
+        )
+
+    def test_an_enabled_feature_is_fixed_by_its_idempotent_enable(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.AUTO_INSPECT)
+        config_utils.set_auto_inspect_enabled(True)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.code == "startup.unit_stale"
+        assert warning.detail == {
+            "unit": "cwcli-auto-inspect.service",
+            "reason": "it runs /gone/cwcli, which no longer exists",
+            "fix": "cwcli config auto-inspect enable",
+        }
+        assert "Run `cwcli config auto-inspect enable` to rewrite it." in warning.text
+
+    def test_a_disabled_feature_is_fixed_by_removing_the_unit(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.CRED_BRIDGE)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.detail["fix"] == "cwcli config cred-bridge disable"
+        assert "to remove it." in warning.text
+
+    def test_an_enabled_bridge_is_fixed_by_its_start_verb(self, cfg, monkeypatch):
+        self._stale(monkeypatch, startup.CRED_BRIDGE)
+        config_utils.set_cred_bridge_enabled(True)
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.detail["fix"] == "cwcli config cred-bridge start"
+
+    def test_current_units_warn_nothing(self, cfg, monkeypatch):
+        self._stale(monkeypatch)
+        assert core_ai.stale_boot_unit_warnings() == []
+
+    def test_a_stale_shared_system_unit_is_fixed_by_setup_shared(self, cfg, monkeypatch, tmp_path):
+        self._stale(monkeypatch)
+        monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
+        unit = tmp_path / startup.CRED_BRIDGE.service_name
+        unit.write_text(
+            "[Service]\nType=forking\nUser=cwcli\n"
+            'ExecStart="/gone/cwcli" config cred-bridge start\nRestart=on-failure\n'
+        )
+
+        [warning] = core_ai.stale_boot_unit_warnings()
+
+        assert warning.code == "startup.unit_stale"
+        assert warning.detail == {
+            "unit": str(unit),
+            "reason": "it runs /gone/cwcli, which no longer exists",
+            "fix": "sudo cwcli setup shared",
+        }

@@ -8,15 +8,17 @@ best-effort-suppressed in :func:`core.setup._secure`, so the mode assertions
 ownership.
 """
 
+import configparser
 import os
 import stat
+import subprocess
 
 import pytest
 
 from caffeinated_whale_cli.core import setup as core_setup
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError
-from caffeinated_whale_cli.utils import shared_home
+from caffeinated_whale_cli.utils import shared_home, startup
 
 
 @pytest.fixture
@@ -72,6 +74,42 @@ class TestProvision:
         # A re-run neither re-creates the tree nor crashes.
         assert not any(a.startswith("tree.created") for a in second.data.actions)
 
+    def test_rewrites_an_old_system_unit_without_a_restart_limit(
+        self, fake_root, stub_identity, marker_at, tmp_path, monkeypatch
+    ):
+        """A shared install's credential bridge is a system unit; one an older
+        `setup shared` wrote must gain the restart limit on the next `setup shared`."""
+        units = tmp_path / "systemd"
+        units.mkdir()
+        monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", units)
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        cwcli = tmp_path / "bin" / "cwcli"
+        cwcli.parent.mkdir()
+        cwcli.write_text("#!/bin/sh\n")
+        cwcli.chmod(0o755)
+        unit = units / startup.CRED_BRIDGE.service_name
+        unit.write_text(
+            "[Unit]\nDescription=bridge\n\n[Service]\nType=forking\nUser=cwcli\n"
+            f'ExecStart="{cwcli}" config cred-bridge start\nRestart=on-failure\n'
+        )
+        systemctl = []
+        monkeypatch.setattr(
+            core_setup.subprocess,
+            "run",
+            lambda cmd, **kw: systemctl.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        result = core_setup.provision(state_dir=tmp_path / "state")
+
+        assert "system_unit.repaired:cwcli-cred-bridge.service" in result.data.actions
+        assert systemctl == [["systemctl", "daemon-reload"]]
+        assert startup.system_unit_stale_reason(startup.CRED_BRIDGE) is None
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(unit)
+        assert parser["Unit"]["StartLimitBurst"] == "3"
+        assert parser["Service"]["User"] == "cwcli"
+
     def test_refuses_on_windows(self, monkeypatch):
         monkeypatch.setattr(shared_home, "is_posix", lambda: False)
         with pytest.raises(CwcliError) as exc:
@@ -84,7 +122,9 @@ class TestProvision:
             core_setup.provision(state_dir=tmp_path / "state")
         assert exc.value.code == "setup.needs_root"
 
-    def test_unknown_user_is_refused(self, fake_root, stub_identity, marker_at, tmp_path, monkeypatch):
+    def test_unknown_user_is_refused(
+        self, fake_root, stub_identity, marker_at, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr(core_setup, "_user_exists", lambda name: name != "ghost")
         with pytest.raises(CwcliError) as exc:
             core_setup.provision(state_dir=tmp_path / "state", users=["ghost"])

@@ -146,13 +146,13 @@ def repair_boot_hook(
     *,
     unit: startup.BootUnit = startup.AUTO_INSPECT,
 ) -> None:
-    """Rewrite an installed boot unit that still carries the daemon-killing ExecStop.
+    """Rewrite an installed boot unit that ``startup.stale_reason`` reports stale.
 
-    Units installed before the fix stop the live daemon whenever systemd starts
-    them while it already runs (see ``utils/startup._write_linux_unit``), so every
-    enable/start repairs one in place. Best-effort: a failure leaves the old unit
-    in place (retried next time) and is reported as a warning, never raised over
-    a daemon that did start.
+    A stale unit runs a cwcli that was removed or moved, or was written by an older
+    cwcli (no restart limit, or the daemon-killing ExecStop), so every enable/start
+    of the unit's own daemon rewrites it in place. Best-effort: a failure leaves the
+    old unit in place (retried next time) and is reported as a warning, never raised
+    over a daemon that did start.
     """
     try:
         if startup.repair_startup(unit):
@@ -161,10 +161,61 @@ def repair_boot_hook(
         warnings.append(
             Message(
                 "startup.repair_failed",
-                f"Could not repair the start-on-boot unit ({e}); it may stop a running "
-                "daemon when systemd starts it.",
+                f"Could not rewrite the stale start-on-boot unit ({e}); it still runs the "
+                "old command at boot.",
             )
         )
+
+
+def stale_boot_unit_warnings() -> list[Message]:
+    """One ``startup.unit_stale`` warning per installed boot unit that needs rewriting.
+
+    Read-only, for ``status`` and ``doctor``. Each names the exact fix: while its
+    feature is enabled, the verb that rewrites it without changing anything else
+    (auto-inspect's idempotent ``enable``; its ``start`` is a deprecated alias, and
+    the bridge's ``start``, since its ``enable`` also wires running instances), and
+    ``disable``, which removes a unit left behind for a disabled feature. A stale
+    shared-mode system unit names ``sudo cwcli setup shared``, which rewrites it.
+    """
+    units = (
+        (startup.AUTO_INSPECT, config_utils.read_auto_inspect_config, "enable"),
+        (startup.CRED_BRIDGE, config_utils.read_cred_bridge_config, "start"),
+    )
+    names = {"linux": "service_name", "darwin": "label", "windows": "task_name"}
+    warnings = []
+    for unit, read_config, rewrite in units:
+        reason = startup.stale_reason(unit)
+        if reason is None:
+            continue
+        try:
+            enabled = bool(read_config().get("enabled"))
+        except (OSError, ValueError):  # unreadable config: `start` still rewrites it
+            enabled = True
+        group = unit.start_args[1]
+        fix = f"cwcli config {group} {rewrite if enabled else 'disable'}"
+        name = getattr(unit, names.get(startup.get_platform(), "service_name"))
+        warnings.append(
+            Message(
+                "startup.unit_stale",
+                f"The {group} start-on-boot unit {name} is stale: {reason}. "
+                f"Run `{fix}` to {'rewrite' if enabled else 'remove'} it.",
+                detail={"unit": name, "reason": reason, "fix": fix},
+            )
+        )
+    fix = "sudo cwcli setup shared"
+    for unit in (startup.CRED_BRIDGE, startup.SCHEDULER):
+        reason = startup.system_unit_stale_reason(unit)
+        if reason is None:
+            continue
+        name = str(startup.system_unit_path(unit))
+        warnings.append(
+            Message(
+                "startup.unit_stale",
+                f"The shared system unit {name} is stale: {reason}. Run `{fix}` to rewrite it.",
+                detail={"unit": name, "reason": reason, "fix": fix},
+            )
+        )
+    return warnings
 
 
 def _install_failed_text(unit: startup.BootUnit, reason: str | None) -> str:
@@ -284,10 +335,10 @@ def _require_enabled() -> None:
 
 def start() -> Result[AutoInspectOutcome]:
     """Start the daemon only, leaving config as-is; idempotent."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings)
+    _require_enabled()
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
@@ -302,10 +353,10 @@ def start() -> Result[AutoInspectOutcome]:
 
 def restart() -> Result[AutoInspectOutcome]:
     """Stop the daemon if it runs, then start it again."""
-    _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
     repair_boot_hook(actions, warnings)
+    _require_enabled()
     if daemon.is_running():
         _stop_daemon()
     _start_daemon()
