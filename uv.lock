@@ -88,7 +88,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "toml", specifier = ">=0.10.2" },
-    { name = "typer", specifier = ">=0.16.0" },
+    { name = "typer", specifier = ">=0.16.0,<0.29" },
     { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.33.0.20260518" },
     { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.8.20260518" },
 ]
