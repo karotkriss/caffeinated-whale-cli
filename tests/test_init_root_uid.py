@@ -218,6 +218,35 @@ class TestInitBenchOwnsTheWorkspaceDir:
         first_mkdir = next(i for i, c in enumerate(calls) if c.startswith("mkdir -p"))
         assert calls.index("REOWN-WORKSPACE") < first_mkdir
 
+    def test_a_failed_align_still_hands_the_workspace_dir_to_the_target(self, monkeypatch):
+        """A failed align degrades to a warning and the bench must still build, so on
+        a root host (target 1000:1000) the root-created workspace dir is still handed
+        to frappe; without it `bench init`, run as frappe, cannot create the bench."""
+        _patch_common(monkeypatch)
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "align_container_user_to_host",
+            lambda *a, **k: (False, "usermod failed"),
+        )
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "frappe_alignment_target",
+            lambda c, uid=None: (1000, 1000, "Using uid 1000 because the host is root."),
+        )
+        spy: list[tuple] = []
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "align_workspace_dir_owner",
+            lambda c, path, uid, gid: spy.append((path, uid, gid)) or True,
+        )
+
+        result = core_init.init_bench(PROJECT, **bench_kwargs())
+
+        assert spy == [("/workspace", 1000, 1000)]
+        assert [w.code for w in result.warnings].count("init.uid_align_failed") == 1
+
 
 class TestInitThreadsTheUidIntoTheAutoStart:
     def test_default_start_threads_uid_into_the_auto_start(self, monkeypatch, tmp_path):

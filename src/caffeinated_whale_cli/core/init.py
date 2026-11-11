@@ -1266,36 +1266,35 @@ def init_bench(
         frappe_container, chown_home=True, bench_paths=[bench_full_path], uid_override=uid
     )
     emit(InitStepEnd(phase="align_uid"))
+    target_uid, target_gid, note = core_docker.frappe_alignment_target(frappe_container, uid)
     if remap_err:
         emit(InitNotice(code="init.uid_align_failed", text=remap_err))
         warnings.append(Message("init.uid_align_failed", remap_err))
-    else:
+    elif note:
         # Surface an unusable-uid fallback once, non-silently: when the requested
         # uid is 0 (a root host) or belongs to a system account in the image, the
         # container 'frappe' user gets the image default instead (any other choice
         # breaks bench). No note when a usable uid was resolved.
-        target_uid, target_gid, note = core_docker.frappe_alignment_target(frappe_container, uid)
-        if note:
-            emit(InitNotice(code="init.uid_align_root_host", text=note))
-            warnings.append(Message("init.uid_align_root_host", note))
-        elif remapped:
-            emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
-        # The workspace dir benches are created in was made by this process, so when
-        # 'frappe' is aligned to another uid it must own that dir too, or `bench init`
-        # cannot create the bench (also repairs a dir a failed init left root-owned).
-        if (
-            target_uid is not None
-            and target_gid is not None
-            and core_docker.align_workspace_dir_owner(
-                frappe_container, bench_parent_path, target_uid, target_gid
+        emit(InitNotice(code="init.uid_align_root_host", text=note))
+        warnings.append(Message("init.uid_align_root_host", note))
+    elif remapped:
+        emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
+    # The workspace dir benches are created in was made by this process, so when
+    # 'frappe' is aligned to another uid it must own that dir too, or `bench init`
+    # cannot create the bench (also repairs a dir a failed init left root-owned).
+    if (
+        target_uid is not None
+        and target_gid is not None
+        and core_docker.align_workspace_dir_owner(
+            frappe_container, bench_parent_path, target_uid, target_gid
+        )
+    ):
+        emit(
+            InitTrace(
+                text=f"Set {bench_parent_path} owner to uid {target_uid} for the "
+                "container 'frappe' user."
             )
-        ):
-            emit(
-                InitTrace(
-                    text=f"Set {bench_parent_path} owner to uid {target_uid} for the "
-                    "container 'frappe' user."
-                )
-            )
+        )
 
     _ensure_directory(frappe_container, bench_parent_path)
 
