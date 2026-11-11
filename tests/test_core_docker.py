@@ -13,6 +13,17 @@ import pytest
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
+# The frappe/bench image's own /etc/passwd (v5.31): the system accounts a remapped
+# `frappe` must never share a uid with, then `frappe` itself.
+IMAGE_PASSWD = """root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+systemd-network:x:998:998:systemd Network Management:/:/usr/sbin/nologin
+redis:x:100:101::/var/lib/redis:/usr/sbin/nologin
+frappe:x:{uid}:1000::/home/frappe:/bin/sh
+"""
+
 
 class FakeContainer:
     """Answers the ``id -u/-g frappe``, app-source discovery, and ``stat`` probes,
@@ -25,7 +36,9 @@ class FakeContainer:
     repo is not); ``app_sources`` is what the ``apps/*`` symlink-resolution probe
     returns (the real out-of-bench app source dirs a devcontainer bench points at);
     ``workspace_present=False`` makes stat report the path absent (a fresh init whose
-    bench dir does not exist yet)."""
+    bench dir does not exist yet). ``passwd`` is the container's ``/etc/passwd``
+    (defaults to the frappe/bench image's own system accounts plus ``frappe``);
+    ``stats`` records every owner probe, so a test can assert none ran."""
 
     def __init__(
         self,
@@ -38,6 +51,7 @@ class FakeContainer:
         workspace_present=True,
         app_sources=None,
         owners=None,
+        passwd=None,
     ):
         self.frappe_uid = frappe_uid
         self.frappe_gid = frappe_gid
@@ -47,9 +61,11 @@ class FakeContainer:
         self.workspace_present = workspace_present
         self.app_sources = list(app_sources or [])
         self.owners = dict(owners or {})
+        self.passwd = IMAGE_PASSWD.format(uid=frappe_uid) if passwd is None else passwd
         self.remap_scripts: list[str] = []
         self.remap_user: str | None = None
         self.events: list[str] = []
+        self.stats: list[str] = []
 
     def kill(self, signal):
         self.events.append(signal)
@@ -61,7 +77,10 @@ class FakeContainer:
         if cmd and cmd[0] == "id":
             val = self.frappe_uid if "-u" in cmd else self.frappe_gid
             return 0, (b"" if val is None else f"{val}\n".encode())
+        if cmd == ["cat", "/etc/passwd"]:
+            return (1, b"") if self.passwd is False else (0, self.passwd.encode())
         if cmd and cmd[0] == "stat":
+            self.stats.append(cmd[3])
             if not self.workspace_present:
                 return 1, b"stat: cannot statx: No such file or directory\n"
             owner = self.owners.get(cmd[3], self.workspace_owner)
@@ -463,14 +482,13 @@ def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch)
 
 
 def test_normal_box_remap_never_chowns_the_workspace(monkeypatch):
-    """The workspace re-own is a SHARED-mode-only reconciliation. On a normal box
-    align targets os.getuid(), which already owns the workspace it built, so even a
-    real id change (a CI runner is uid 1001, the image frappe is 1000) must leave
-    the bench dirs untouched when the caller passes them."""
+    """On a normal box align targets os.getuid(), which already owns the workspace
+    it built, so even a real id change (a CI runner is uid 1001, the image frappe
+    is 1000) must leave the bench dirs untouched when the caller passes them."""
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
     monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1001:1001")
     remapped, err = core_docker.align_container_user_to_host(
         c, chown_home=True, bench_paths=["/workspace/frappe-bench"]
     )
@@ -698,8 +716,8 @@ def test_reown_app_repo_reports_a_failed_chown():
 # with the container's own root row in /etc/passwd, so `docker exec -u frappe`
 # resolves HOME=/root, drops bench's PATH, and `bench init` fails with exit 127.
 # resolve_frappe_alignment_ids is the shared target decision; align must never
-# emit a remap to uid 0; align_bind_mount_source_owner keeps the host data dir
-# writable by the fallback/override uid.
+# emit a remap to uid 0 or onto another image account; align_workspace_dir_owner
+# keeps the workspace dir writable by the fallback uid.
 
 
 class TestResolveFrappeAlignmentIds:
@@ -714,8 +732,8 @@ class TestResolveFrappeAlignmentIds:
         monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
         uid, gid, note = core_docker.resolve_frappe_alignment_ids()
         assert (uid, gid) == (
-            core_docker.ROOT_HOST_FALLBACK_UID,
-            core_docker.ROOT_HOST_FALLBACK_GID,
+            core_docker.DEFAULT_FRAPPE_UID,
+            core_docker.DEFAULT_FRAPPE_GID,
         )
         assert note is not None and "root" in note and "--uid" in note
 
@@ -747,8 +765,8 @@ class TestResolveFrappeAlignmentIds:
         monkeypatch.setattr(core_docker.shared_home, "gid", lambda: None)
         uid, gid, note = core_docker.resolve_frappe_alignment_ids()
         assert (uid, gid) == (
-            core_docker.ROOT_HOST_FALLBACK_UID,
-            core_docker.ROOT_HOST_FALLBACK_GID,
+            core_docker.DEFAULT_FRAPPE_UID,
+            core_docker.DEFAULT_FRAPPE_GID,
         )
         assert note is not None
 
@@ -797,81 +815,264 @@ class TestAlignNeverRemapsFrappeToRoot:
         assert "frappe:\\1:1005:" in script
 
 
-class TestAlignBindMountSourceOwner:
-    """Keep the host-side bind-mount source dir writable by the aligned frappe user."""
+def _root_host(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
 
-    def _record_chown(self, monkeypatch):
-        chowns: list[tuple] = []
-        monkeypatch.setattr(core_docker.os, "chown", lambda p, u, g: chowns.append((str(p), u, g)))
-        return chowns
 
-    def test_root_host_chowns_the_data_dir_to_the_fallback(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+class TestUnusableUidsFallBack:
+    """Any uid another account in the image already holds is as broken as 0: the
+    exec's HOME comes from that account's row, bench's PATH is gone, `bench init`
+    exits 127. The fallback is the image's own frappe uid, with a note."""
+
+    TAKEN = {0: "root", 100: "redis", 998: "systemd-network"}
+
+    def test_a_host_uid_a_system_account_holds_falls_back_keeping_the_gid(self, monkeypatch):
+        """A runner whose own user is a system account (uid 998) on a box where the
+        image's systemd-network is 998: frappe gets 1000, the harmless gid stays."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
         monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        chowns = self._record_chown(monkeypatch)
-        data = tmp_path / "data"
-        data.mkdir()
-        aligned = core_docker.align_bind_mount_source_owner(data)
-        assert aligned == core_docker.ROOT_HOST_FALLBACK_UID
-        assert chowns == [(str(data), 1000, 1000)]
+        uid, gid, note = core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN)
+        assert (uid, gid) == (1000, 998)
+        assert note is not None
+        assert "systemd-network" in note
+        assert "--uid" not in note  # a non-root user may not pass another uid
 
-    def test_root_host_retry_reowns_a_root_owned_dir(self, monkeypatch, tmp_path):
-        """A prior failed init left the dir root-owned; the chown is idempotent, so a
-        retry re-applies it (the dir already existing must not skip the fix)."""
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        chowns = self._record_chown(monkeypatch)
-        data = tmp_path / "data"
-        data.mkdir()  # already exists from the failed run
-        assert core_docker.align_bind_mount_source_owner(data) == 1000
-        assert chowns == [(str(data), 1000, 1000)]
+    def test_a_shared_service_uid_a_system_account_holds_falls_back(self, monkeypatch):
+        """`cwcli setup shared` creates its service account with `useradd --system`,
+        so its uid lands in exactly the range the image's system accounts use. The
+        service GID is kept, so group members keep their access to the workspace."""
+        _root_host(monkeypatch)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 998)
+        monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 995)
+        uid, gid, note = core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN)
+        assert (uid, gid) == (1000, 995)
+        assert note is not None and "systemd-network" in note
 
-    def test_non_root_host_no_override_is_a_noop(self, monkeypatch, tmp_path):
-        """The common case: frappe aligns to this process's own uid, which already
-        owns the dir it created - byte-identical to before this existed (no chown)."""
+    def test_a_free_uid_is_used_verbatim(self, host_1001):
+        assert core_docker.resolve_frappe_alignment_ids(taken=self.TAKEN) == (1001, 1001, None)
+
+    def test_an_override_onto_a_system_account_still_falls_back(self, host_1001):
+        """--uid 100 would hand bench redis's home just as a host uid 100 would."""
+        uid, _gid, note = core_docker.resolve_frappe_alignment_ids(100, taken=self.TAKEN)
+        assert uid == 1000
+        assert note is not None and "redis" in note
+
+    def test_an_override_reowns_a_bench_built_under_another_uid(self, host_1001):
+        """--uid aligns frappe away from the invoking user, so a bench owned by the
+        invoking uid is handed to the override too (it is what bench will write as)."""
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        remapped, err = core_docker.align_container_user_to_host(
+            c, bench_paths=["/workspace/frappe-bench"], uid_override=1005
+        )
+        assert (remapped, err) == (True, None)
+        assert "chown -R 1005:1005 /workspace/frappe-bench" in c.remap_scripts[0]
+
+
+class TestContainerAccountUids:
+    def test_reads_every_account_but_frappe(self):
+        c = FakeContainer(frappe_uid=998, frappe_gid=998)
+        accounts = core_docker.container_account_uids(c)
+        assert accounts[0] == "root" and accounts[998] == "systemd-network"
+        assert "frappe" not in accounts.values()
+
+    def test_the_first_row_wins_for_a_duplicated_uid(self):
+        passwd = "root:x:0:0::/root:/bin/bash\ntoor:x:0:0::/root:/bin/sh\nbad:x:abc:1::/:/bin/sh\n"
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, passwd=passwd)
+        assert core_docker.container_account_uids(c) == {0: "root"}
+
+    def test_an_unreadable_passwd_is_empty_and_keeps_the_root_guard(self, monkeypatch):
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, passwd=False)
+        assert core_docker.container_account_uids(c) == {}
+        uid, _gid, note = core_docker.frappe_alignment_target(c)
+        assert uid == 1000 and note is not None
+
+
+class TestAlignRepairsAWorkspaceOwnedByTheWrongUid:
+    """The repair path for an instance an older cwcli broke: `frappe` was remapped
+    onto a system account and the workspace it wrote is owned by that uid. The next
+    `cwcli start` moves frappe to a usable uid AND re-owns the bench to it."""
+
+    BENCH = "/workspace/frappe-bench"
+
+    def test_root_host_moves_frappe_off_a_system_account_and_reowns_the_bench(self, monkeypatch):
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=998, frappe_gid=998, workspace_owner="998:998")
+        remapped, err = core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH])
+        assert (remapped, err) == (True, None)
+        script = c.remap_scripts[0]
+        assert "frappe:\\1:1000:" in script and "groupmod -o -g 1000 frappe" in script
+        assert f"[ ! -e {self.BENCH} ] || chown -R 1000:1000 {self.BENCH}" in script
+        assert ":998:" not in script.split("sed -i")[-1]
+
+    def test_root_host_reowns_a_bench_built_as_root_even_with_ids_already_right(self, monkeypatch):
+        """frappe already at 1000 (a re-run of a fixed cwcli) but the bench an older
+        build left owned by uid 0: the owner mismatch alone triggers the re-own."""
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="0:0")
+        remapped, err = core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH])
+        assert (remapped, err) == (False, None)
+        assert f"chown -R 1000:1000 {self.BENCH}" in c.remap_scripts[0]
+
+    def test_root_host_with_a_matching_workspace_changes_nothing(self, monkeypatch):
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            False,
+            None,
+        )
+        assert c.remap_scripts == []
+
+    def test_a_normal_box_never_probes_the_workspace_owner(self, host_1001):
+        """Byte-identical to before: frappe already aligned to the invoking user, who
+        owns the workspace, so not even the owner probe runs."""
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            False,
+            None,
+        )
+        assert c.stats == []
+        assert c.remap_scripts == []
+
+    def test_a_normal_box_remap_leaves_a_bench_the_invoker_owns_alone(self, host_1001):
+        """A container recreation reset frappe to 1000; the bench is still the
+        invoker's, so the remap probes the owner once and re-owns nothing."""
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        assert c.stats
+        assert self.BENCH not in c.remap_scripts[0]
+
+    def test_a_plain_start_after_a_sudo_start_gives_the_bench_back(self, monkeypatch):
+        """uid 1001 runs `sudo cwcli start` once (root: frappe -> 1000 and the bench
+        re-owned to 1000), then a plain `cwcli start`: frappe moves back to 1001 AND
+        the bench comes back with it, or frappe could not write its own logs."""
+        _root_host(monkeypatch)
+        c = FakeContainer(frappe_uid=1001, frappe_gid=1001, workspace_owner="1001:1001")
+        assert core_docker.align_container_user_to_host(c, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        assert f"chown -R 1000:1000 {self.BENCH}" in c.remap_scripts[0]
+
         monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
         monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        chowns = self._record_chown(monkeypatch)
-        data = tmp_path / "data"
-        data.mkdir()
-        assert core_docker.align_bind_mount_source_owner(data) is None
-        assert chowns == []
+        c2 = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+        assert core_docker.align_container_user_to_host(c2, bench_paths=[self.BENCH]) == (
+            True,
+            None,
+        )
+        script = c2.remap_scripts[0]
+        assert f"[ ! -e {self.BENCH} ] || chown -R 1001:1001 {self.BENCH}" in script
+        assert script.index("chown -R 1001:1001") < script.index("sed -i")
 
-    def test_non_root_host_override_follows_the_override(self, monkeypatch, tmp_path):
-        """--uid different from the host uid must not leave an unwritable bench: the
-        data dir ownership follows the override."""
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        chowns = self._record_chown(monkeypatch)
-        data = tmp_path / "data"
-        data.mkdir()
-        assert core_docker.align_bind_mount_source_owner(data, uid_override=1001) == 1001
-        assert chowns == [(str(data), 1001, 1001)]
 
-    def test_shared_mode_is_skipped(self, monkeypatch, tmp_path):
-        """Shared mode's group-writable model owns bind-mount permissions; the
-        per-uid chown must not fight it."""
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+class TestAlignWorkspaceDirOwner:
+    """The workspace dir benches are created in follows frappe's uid when that is
+    not the invoking user's (a root host's data dir is made by root)."""
+
+    class _Recorder:
+        def __init__(self, out=b"REOWNED\n"):
+            self.out = out
+            self.calls: list[tuple] = []
+
+        def exec_run(self, cmd, **kwargs):
+            self.calls.append((cmd, kwargs.get("user")))
+            return 0, self.out
+
+    class _Shell:
+        """Runs the align script in a real local shell instead of the container."""
+
+        def exec_run(self, cmd, **kwargs):
+            r = subprocess.run(cmd, capture_output=True)
+            return r.returncode, r.stdout
+
+    def test_root_host_reowns_the_dir_as_root_only_when_its_owner_differs(self, monkeypatch):
+        _root_host(monkeypatch)
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 1000) is True
+        ((cmd, user),) = c.calls
+        assert user == "root"
+        script = cmd[2]
+        assert '[ "$(stat -c %u:%g /workspace)" != "1000:1000" ]' in script
+        assert "chown 1000:1000 /workspace" in script and "chown -R" not in script
+
+    def test_an_already_owned_dir_reports_no_change(self, monkeypatch):
+        _root_host(monkeypatch)
+        assert (
+            core_docker.align_workspace_dir_owner(self._Recorder(out=b""), "/workspace", 1000, 1000)
+            is False
+        )
+
+    def test_the_invoking_user_s_own_uid_is_a_noop(self, host_1001):
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1001, 1001) is False
+        assert c.calls == []
+
+    def test_a_system_account_host_reowns_to_the_fallback(self, monkeypatch):
+        """A non-root host whose uid an image account holds (998): chowning from
+        inside the container works where a host-side chown to 1000 would be EPERM,
+        and the invoking user keeps write access through its own group."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 998) is True
+
+    def test_a_non_root_uid_override_reowns_the_dir_without_group_write(self, host_1001):
+        """init --uid 1005 as uid 1001: the dir goes to 1005 from inside the container
+        (a host-side chown to another uid would be EPERM), and the override's own gid
+        is not the invoking user's group, so no group write is added."""
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1005, 1005) is True
+        script = c.calls[0][0][2]
+        assert "chown 1005:1005 /workspace" in script
+        assert "chmod" not in script
+
+    def test_a_system_account_host_keeps_group_write_on_the_dir_only(self, monkeypatch, tmp_path):
+        """The script, run by a real shell on a 0755 dir: the dir gains group write
+        (so the credential bridge can still write it), its contents and other users
+        gain nothing. The chown itself needs root and is not what this checks."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 998)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 998)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        workspace = tmp_path / "workspace"
+        (workspace / "bench").mkdir(parents=True)
+        workspace.chmod(0o755)
+        (workspace / "bench").chmod(0o755)
+
+        core_docker.align_workspace_dir_owner(self._Shell(), str(workspace), 1000, 998)
+        assert workspace.stat().st_mode & 0o777 == 0o775
+        assert (workspace / "bench").stat().st_mode & 0o777 == 0o755
+
+    def test_a_root_host_grants_no_group_write(self, monkeypatch, tmp_path):
+        """On a root host the gid is the image default too, not the invoking user's
+        group, so nothing is loosened."""
+        _root_host(monkeypatch)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        workspace.chmod(0o755)
+        core_docker.align_workspace_dir_owner(self._Shell(), str(workspace), 1000, 1000)
+        assert workspace.stat().st_mode & 0o777 == 0o755
+
+    def test_shared_mode_is_skipped(self, monkeypatch):
+        _root_host(monkeypatch)
         monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
-        chowns = self._record_chown(monkeypatch)
-        data = tmp_path / "data"
-        data.mkdir()
-        assert core_docker.align_bind_mount_source_owner(data) is None
-        assert chowns == []
+        c = self._Recorder()
+        assert core_docker.align_workspace_dir_owner(c, "/workspace", 1000, 1000) is False
+        assert c.calls == []
 
-    def test_absent_dir_is_a_noop(self, monkeypatch, tmp_path):
-        """An old '..:/workspace' instance has no data/ dir - a clean no-op."""
-        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
-        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
-        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
-        chowns = self._record_chown(monkeypatch)
-        assert core_docker.align_bind_mount_source_owner(tmp_path / "nope") is None
-        assert chowns == []
+    def test_a_path_is_shell_quoted(self, monkeypatch):
+        _root_host(monkeypatch)
+        c = self._Recorder()
+        core_docker.align_workspace_dir_owner(c, "/work space", 1000, 1000)
+        assert "'/work space'" in c.calls[0][0][2]
 
 
 class _FakeNet:

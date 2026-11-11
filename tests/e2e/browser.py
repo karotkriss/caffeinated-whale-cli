@@ -69,8 +69,13 @@ class Chrome:
         self._replies: dict[int, dict] = {}
         self._cv = threading.Condition()
         threading.Thread(target=self._read, daemon=True).start()
+        # The first reply waits out Chrome's own startup, and a session's FIRST launch on a
+        # runner loaded by bench builds has taken over 30s (seen in CI, while later launches
+        # in the same job answered at once), so it gets a startup-sized bound.
         target = next(
-            t for t in self.send("Target.getTargets")["targetInfos"] if t["type"] == "page"
+            t
+            for t in self.send("Target.getTargets", timeout=120)["targetInfos"]
+            if t["type"] == "page"
         )
         self.session = self.send(
             "Target.attachToTarget", {"targetId": target["targetId"], "flatten": True}

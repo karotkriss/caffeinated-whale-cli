@@ -600,8 +600,9 @@ def init(
         help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
         "host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0): "
         "aligning to 0 would collide with the container's own root user and break bench's PATH, "
-        "so that case already falls back to a safe default automatically; pass --uid to choose a "
-        "specific uid instead. Must be a positive, non-root integer.",
+        "so that case already falls back to a safe default automatically; as root, pass --uid to "
+        "choose a specific uid instead. Must be a positive, non-root integer; a non-root user may "
+        "pass only their own uid.",
     ),
 ) -> None:
     """
@@ -643,7 +644,7 @@ def init(
         cwcli init my-project --version 16.26.3
         cwcli init my-project --frappe-branch version-16 --admin-password mypass
         cwcli init my-project --frappe-url https://github.com/me/frappe --frappe-branch my-feature
-        cwcli init my-project --uid 1001
+        sudo cwcli init my-project --uid 1001
     """
     # Reject an invalid --uid before ANY project dir / container work. A usage
     # error (exit 2), the same shape Typer gives a non-numeric --uid at parse time.
@@ -716,7 +717,6 @@ def init(
                 bench_parent=bench_parent,
                 bench_image_tag=bench_image_tag,
                 stream_output=verbose,
-                uid=uid,
                 db_root_password=db_root_password,
                 on_event=renderer,
             )
@@ -732,7 +732,6 @@ def init(
                     bench_image_tag=bench_image_tag,
                     auto_start=True,
                     stream_output=verbose,
-                    uid=uid,
                     db_root_password=db_root_password,
                     on_event=renderer,
                 )

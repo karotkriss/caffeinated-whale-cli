@@ -629,6 +629,21 @@ class TestUidOverride:
         assert calls["instance"] == []
         assert calls["bench"] == []
 
+    def test_another_users_uid_as_non_root_refuses_before_stage_one(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+        monkeypatch.setattr(axi_mod.core_init.os, "getuid", lambda: 1001)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "1005"],
+        )
+
+        assert result.exit_code == 2
+        assert "uid.not_permitted" in result.stdout or "not your own uid" in result.stdout
+        assert calls["instance"] == []
+        assert calls["bench"] == []
+
     def test_negative_uid_refuses_before_stage_one(self, monkeypatch):
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
@@ -653,12 +668,14 @@ class TestUidOverride:
         assert result.exit_code == 2
         assert calls["instance"] == []
 
-    def test_valid_uid_threads_into_both_stages_and_the_auto_start(self, monkeypatch):
-        """A valid --uid is passed to init_instance, init_bench, AND the end-of-init
-        auto-start (the same invocation), so the auto-start aligns to the SAME id the
-        bench was built under rather than re-aligning to the host uid."""
+    def test_valid_uid_threads_into_the_bench_stage_and_the_auto_start(self, monkeypatch):
+        """A valid --uid is passed to init_bench (which aligns frappe and hands it the
+        workspace dir) AND the end-of-init auto-start (the same invocation), so the
+        auto-start aligns to the SAME id the bench was built under rather than
+        re-aligning to the host uid. Stage 1 creates no bench files, so it needs none."""
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
+        monkeypatch.setattr(axi_mod.core_init.os, "getuid", lambda: 0)
 
         result = runner.invoke(
             axi_mod.app,
@@ -666,7 +683,7 @@ class TestUidOverride:
         )
 
         assert result.exit_code == 0
-        assert calls["instance"][0]["uid"] == 1005
+        assert "uid" not in calls["instance"][0]
         assert calls["bench"][0]["uid"] == 1005
         assert calls["start"][0]["uid_override"] == 1005
 

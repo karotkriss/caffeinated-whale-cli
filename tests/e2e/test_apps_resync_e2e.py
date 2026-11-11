@@ -97,9 +97,25 @@ def _installed_apps(inst) -> list[str]:
 
 
 def _remove_app_source(inst, *, required: bool = True) -> None:
-    """Remove the fetched app after it has been uninstalled from every site."""
+    """Remove the fetched app after it has been uninstalled from every site.
+
+    bench's remove-app guard reads each site's ``Installed Applications`` table, not
+    the ``installed_apps`` global an uninstall writes. Frappe v14 rebuilds that table
+    right after clearing the cached global, so a worker or scheduler re-caching the
+    pre-uninstall value in between leaves ``payments`` listed (seen on the v14 CI
+    leg). Rebuilding the table from the committed global first removes that race; an
+    app genuinely still installed stays listed, so the guard still refuses it.
+    """
+    refresh = (
+        "import frappe; "
+        f"frappe.init(site={inst.site!r}); frappe.connect(); "
+        "frappe.get_single('Installed Applications').update_versions(); "
+        "frappe.db.commit(); frappe.destroy()"
+    )
     code, out = harness.exec_in_frappe(
-        inst.name, f"cd {inst.bench} && bench remove-app --no-backup {_APP}"
+        inst.name,
+        f"cd {inst.bench}/sites && ../env/bin/python -c {shlex.quote(refresh)} && "
+        f"cd {inst.bench} && bench remove-app --no-backup {_APP}",
     )
     if required:
         assert code == 0, out

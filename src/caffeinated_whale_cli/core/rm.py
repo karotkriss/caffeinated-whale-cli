@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 from collections.abc import Callable
@@ -666,12 +667,13 @@ def _archive_project_directory(
 
 
 def _empty_dir_as_root(project_dir: Path, emit: OnEvent) -> bool:
-    """Shared mode: empty ``project_dir`` through a short-lived root container.
+    """Empty ``project_dir`` through a short-lived root container.
 
     In shared mode the container ``frappe`` user is aligned to the cwcli SERVICE
-    uid, so the bench under ``data/`` is service-owned and a member's ``rmtree``
-    fails with EACCES. The Docker daemon, which wrote those files, deletes them
-    instead: only ``project_dir`` is mounted, with no network, and the empty dir
+    uid, and on a host whose uid is unusable in the image (a system account) it is
+    aligned to the image default; either way the bench under ``data/`` is not the
+    invoking user's and their ``rmtree`` fails with EACCES. The Docker daemon, which
+    wrote those files, deletes them instead: only ``project_dir`` is mounted, with no network, and the empty dir
     itself is then removed host-side by the caller. Permissions are never loosened.
 
     Uses a local ``frappe/bench`` image, the one every cwcli frappe service runs,
@@ -701,6 +703,43 @@ def _empty_dir_as_root(project_dir: Path, emit: OnEvent) -> bool:
     return False
 
 
+def _workspace_aligned_away(project_dir: Path, failed: str | None = None) -> bool:
+    """Whether the bench files in the project dir belong to a uid other than the invoker's.
+
+    The container ``frappe`` user writes them as its alignment target, which is not
+    the invoking user when an image account already holds the host uid (a fallback
+    to 1000), when root's ``init --uid`` chose another uid, or after a one-off
+    ``sudo cwcli start`` re-owned the benches to root's target (see
+    ``core.docker.align_container_user_to_host``). Checks each entry of
+    ``project_dir`` (the ``data/`` workspace, or a bench itself on the legacy
+    ``..:/workspace`` layout), each bench dir in ``data/``, and the path ``rmtree``
+    failed on with its parent, when those lie inside ``project_dir`` (Python 3.10
+    and 3.11 report only the bare entry name, so the entry checks do not depend
+    on it); any of them owned by another uid means the remaining files are not the
+    invoking user's to delete.
+    """
+    if not hasattr(os, "getuid"):
+        return False
+    candidates: list[Path] = []
+    for parent in (project_dir, project_dir / "data"):
+        try:
+            candidates.extend(parent.iterdir())
+        except OSError:
+            pass
+    if failed:
+        path = Path(failed)
+        candidates.extend(
+            p for p in (path, path.parent) if p == project_dir or project_dir in p.parents
+        )
+    for candidate in candidates:
+        try:
+            if candidate.lstat().st_uid != os.getuid():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _delete_project_directory(
     project_name: str,
     emit: OnEvent,
@@ -715,7 +754,10 @@ def _delete_project_directory(
 
     In shared mode a permission failure (service-owned bench files) is retried
     through :func:`_empty_dir_as_root`; if that also fails, the failure names the
-    directory left on disk and the command that finishes the removal.
+    directory left on disk and the command that finishes the removal. The same
+    retry runs when the bench files are owned by another uid
+    (:func:`_workspace_aligned_away`), since they are then not the invoking
+    user's either.
     """
     project_dir = PROJECTS_DIR / project_name
 
@@ -742,23 +784,26 @@ def _delete_project_directory(
         return False
 
     shared = shared_home.shared_mode()
+    root_owned_retry = False
     try:
         try:
             shutil.rmtree(project_dir)
-        except PermissionError:
-            if not shared or not _empty_dir_as_root(project_dir, emit):
+        except PermissionError as denied:
+            root_owned_retry = shared or _workspace_aligned_away(project_dir, denied.filename)
+            if not root_owned_retry or not _empty_dir_as_root(project_dir, emit):
                 raise
             shutil.rmtree(project_dir)
         emit(RmNotice(text=f"Removed project directory {project_dir}"))
         return True
     except Exception as e:
-        service_owned = shared and isinstance(e, PermissionError)
+        service_owned = root_owned_retry and isinstance(e, PermissionError)
         finish = f"sudo rm -rf '{project_dir}'"
+        owner = "the cwcli service account" if shared else "another uid"
         emit(
             RmWarning(
                 text=f"Could not remove project directory '{project_dir}': {e}",
                 hint=(
-                    f"Its remaining files belong to the cwcli service account; finish with {finish}."
+                    f"Its remaining files belong to {owner}; finish with {finish}."
                     if service_owned
                     else None
                 ),

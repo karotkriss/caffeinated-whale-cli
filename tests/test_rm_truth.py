@@ -14,6 +14,8 @@ These tests pin the corrected behavior:
 - a copy of the project directory is archived before deletion.
 """
 
+import os
+import stat
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -267,6 +269,26 @@ class TestSharedModeServiceOwnedDirectory:
         ]
         assert f"sudo rm -rf '{project_dir}'" in capsys.readouterr().err
 
+    def test_aligned_away_helper_failure_names_what_is_left(self, cwcli_home, monkeypatch, capsys):
+        """Per-user mode, bench files owned by another uid, and the root helper also
+        fails (no local image): rm still names the dir left behind and how to finish."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: (project_dir / "data").stat().st_uid + 1)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", lambda *a: False)
+        failures = []
+
+        assert _delete_project_directory("proj", failures=failures) is False
+        assert project_dir.exists()
+        assert failures == [
+            f"project directory '{project_dir}' was left on disk; "
+            f"remove it with sudo rm -rf '{project_dir}'"
+        ]
+        err = capsys.readouterr().err
+        assert "another uid" in err and "service account" not in err
+
     def test_shared_mode_non_permission_failure_keeps_the_plain_message(
         self, cwcli_home, monkeypatch, capsys
     ):
@@ -285,6 +307,48 @@ class TestSharedModeServiceOwnedDirectory:
         helper.assert_not_called()
         assert failures == ["could not remove project directory for 'proj'"]
         assert "service account" not in capsys.readouterr().err
+
+    def test_a_workspace_owned_by_another_uid_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch
+    ):
+        """Per-user mode on a host whose uid an image account holds: init handed the
+        workspace to frappe's fallback uid, so its bench files are not the invoking
+        user's either."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        another_uid = (project_dir / "data").stat().st_uid + 1
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: another_uid)
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert core_rm._delete_project_directory("proj", _render_event, failures=failures) is True
+        assert not project_dir.exists()
+        assert failures == []
+        assert helper.call_args.args[0] == project_dir
+
+    def test_a_workspace_handed_to_a_uid_override_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch
+    ):
+        """Root's `cwcli init --uid <n>` handed the workspace to <n>, and a different,
+        non-root user removes it: the bench files frappe wrote as <n> are not theirs
+        to delete, so the same root-helper retry finishes the removal."""
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        (project_dir / "data").mkdir()
+        override_uid = (project_dir / "data").stat().st_uid  # the uid --uid chose
+        self._denied_once(monkeypatch)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        monkeypatch.setattr(core_rm.os, "getuid", lambda: override_uid + 7)  # the invoker
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        failures = []
+
+        assert core_rm._delete_project_directory("proj", _render_event, failures=failures) is True
+        assert not project_dir.exists()
+        assert failures == []
+        assert helper.call_args.args[0] == project_dir
 
     def test_per_user_mode_never_uses_the_helper(self, cwcli_home, monkeypatch):
         _make_project_dir(core_rm.PROJECTS_DIR, "proj")
@@ -377,6 +441,58 @@ class TestRemoveProjectEndToEnd:
             volume.remove.assert_not_called()
         # The project directory is still removed regardless of --no-volumes.
         assert not project_dir.exists()
+
+    @pytest.mark.parametrize("layout", [("data",), ()], ids=["data-mount", "legacy-mount"])
+    @pytest.mark.parametrize("remove_volumes", [True, False], ids=["rm", "rm-no-volumes"])
+    def test_a_bench_a_sudo_start_reowned_finishes_through_the_root_helper(
+        self, cwcli_home, monkeypatch, remove_volumes, layout
+    ):
+        """The invoker built the instance, so ``data/`` is theirs, but one `sudo cwcli
+        start` handed the bench to root's alignment target (uid 1000). A later plain
+        `cwcli rm`, with or without --no-volumes, hits EACCES inside that bench and
+        must finish the verified delete through the root helper, not leave it behind.
+        Holds for the legacy `..:/workspace` layout (bench directly in the project
+        dir) and when rmtree names only the bare entry, as Python 3.10/3.11 do."""
+        self._patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        bench = project_dir.joinpath(*layout, "frappe-bench")
+        (bench / "logs").mkdir(parents=True)
+        (bench / "logs" / "bench.log").write_text("log\n")
+        invoker = os.getuid()
+        real_lstat = core_rm.Path.lstat
+
+        def lstat(path):
+            st = real_lstat(path)
+            if path == bench or bench in path.parents:
+                fields = list(st)
+                fields[stat.ST_UID] = invoker + 1
+                return os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(core_rm.Path, "lstat", lstat)
+        monkeypatch.setattr(core_rm.shared_home, "shared_mode", lambda: False)
+        real_rmtree = core_rm.shutil.rmtree
+        calls = []
+
+        def rmtree(path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "Permission denied", "bench.log")
+            real_rmtree(path)
+
+        monkeypatch.setattr(core_rm.shutil, "rmtree", rmtree)
+        helper = MagicMock(return_value=True)
+        monkeypatch.setattr(core_rm, "_empty_dir_as_root", helper)
+        _patch_attr(monkeypatch, "get_project_containers", lambda name: [_make_container()])
+        _patch_attr(monkeypatch, "get_project_volumes", lambda name: [])
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
+        monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = _remove_project("proj", remove_volumes=remove_volumes, no_backup=True)
+
+        assert result["dir_removed"] is True
+        assert not project_dir.exists()
+        assert helper.call_args.args[0] == project_dir
 
     def test_missing_project_is_not_found(self, cwcli_home, monkeypatch):
         self._patch_docker(monkeypatch)

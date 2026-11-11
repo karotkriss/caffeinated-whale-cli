@@ -1,22 +1,22 @@
-"""Root-uid host handling for ``cwcli init`` / ``cwcli axi init`` (issue #229).
+"""Unusable-uid handling for ``cwcli init`` / ``cwcli axi init`` (issue #229).
 
 On a host running as uid 0 (a common CI-runner shape), remapping the container
 ``frappe`` user to 0 collides with the container's own root row in
-``/etc/passwd`` and ``bench init`` fails with exit 127. The fix keeps ``frappe``
-at the image default on a root host, warns once, and keeps the bind-mount data
-dir writable by that user. ``--uid <n>`` is the explicit escape hatch.
+``/etc/passwd`` and ``bench init`` fails with exit 127; a uid a system account in
+the image already holds (a shared install's service account, a runner's system
+user) fails the same way. The fix gives ``frappe`` the image default for any such
+uid, warns once, and makes the workspace dir writable by that user. ``--uid <n>``
+is the explicit escape hatch.
 
-The uid DECISION TABLE and the two host-side helpers live in
-``tests/test_core_docker.py`` (``resolve_frappe_alignment_ids``,
-``align_container_user_to_host``, ``align_bind_mount_source_owner``). The axi
-surface lives in ``tests/test_axi_init.py::TestUidOverride``. This module covers
-the core validator, the human CLI surface, and the two init seams that wire it
-together.
+The uid DECISION TABLE and the helpers live in ``tests/test_core_docker.py``
+(``resolve_frappe_alignment_ids``, ``container_account_uids``,
+``align_container_user_to_host``, ``align_workspace_dir_owner``). The axi surface
+lives in ``tests/test_axi_init.py::TestUidOverride``. This module covers the core
+validator, the human CLI surface, and the init seams that wire it together.
 """
 
 from __future__ import annotations
 
-import urllib.request
 from types import SimpleNamespace
 
 import pytest
@@ -30,11 +30,9 @@ from caffeinated_whale_cli.main import app
 from caffeinated_whale_cli.utils import config_utils, db_utils, docker_utils
 
 from .test_core_init import (
-    COMPOSE_TEMPLATE,
     PROJECT,
     FakeContainer,
     bench_kwargs,
-    instance_setup,
     use_container,
 )
 
@@ -56,8 +54,22 @@ class TestCheckUidOverride:
     def test_none_is_accepted(self):
         core_init.check_uid_override(None)  # no raise
 
-    def test_a_positive_uid_is_accepted(self):
+    def test_root_may_pass_any_positive_uid(self, monkeypatch):
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 0)
         core_init.check_uid_override(1001)  # no raise
+
+    def test_a_non_root_user_may_pass_their_own_uid(self, monkeypatch):
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        core_init.check_uid_override(1001)  # no raise
+
+    def test_a_non_root_user_naming_another_uid_is_a_usage_error(self, monkeypatch):
+        """A non-root user cannot hand the workspace to another uid: it would be
+        neither theirs to write nor to delete (it used to fail later with EPERM)."""
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        with pytest.raises(CwcliError) as exc:
+            core_init.check_uid_override(1005)
+        assert exc.value.kind is ErrorKind.USAGE
+        assert exc.value.code == "uid.not_permitted"
 
     def test_zero_is_a_usage_error(self):
         with pytest.raises(CwcliError) as exc:
@@ -106,6 +118,15 @@ class TestHumanCliRejectsBadUid:
         result = runner.invoke(app, ["init", "proj", "--uid", "-3"])
         assert result.exit_code == 2
 
+    def test_another_users_uid_as_non_root_is_a_usage_error_before_any_work(self, monkeypatch):
+        self._bypass_docker_precheck(monkeypatch)
+        monkeypatch.setattr(core_init.os, "getuid", lambda: 1001)
+        monkeypatch.setattr(
+            core_init, "init_instance", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
+        )
+        result = runner.invoke(app, ["init", "proj", "--uid", "1005"])
+        assert result.exit_code == 2
+
     def test_non_numeric_uid_is_a_parse_time_usage_error(self, monkeypatch):
         monkeypatch.setattr(
             core_init, "init_instance", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
@@ -117,10 +138,11 @@ class TestHumanCliRejectsBadUid:
 # ------------------------------------------------------------------ init_bench: warn once
 
 
-class TestInitBenchSurfacesTheRootHostNote:
-    def test_the_root_host_fallback_is_reported_as_a_warning(self, monkeypatch):
-        """On a root host with no --uid, init_bench surfaces the fallback once as a
-        non-silent ``init.uid_align_root_host`` warning (not a silent remap)."""
+class TestInitBenchSurfacesTheFallbackNote:
+    def test_the_unusable_uid_fallback_is_reported_as_a_warning(self, monkeypatch):
+        """When the requested uid is unusable (root, or a system account in the
+        image), init_bench surfaces the fallback once as a non-silent
+        ``init.uid_align_root_host`` warning (not a silent remap)."""
         _patch_common(monkeypatch)
         container = FakeContainer()
         use_container(monkeypatch, container)
@@ -129,8 +151,12 @@ class TestInitBenchSurfacesTheRootHostNote:
         )
         monkeypatch.setattr(
             core_init.core_docker,
-            "resolve_frappe_alignment_ids",
-            lambda uid=None: (1000, 1000, "Host is running as uid 0 (root): ... Pass --uid <n>."),
+            "frappe_alignment_target",
+            lambda c, uid=None: (
+                1000,
+                1000,
+                "Using uid 1000 because the host is running as uid 0 (root).",
+            ),
         )
 
         result = core_init.init_bench(PROJECT, **bench_kwargs())
@@ -141,43 +167,88 @@ class TestInitBenchSurfacesTheRootHostNote:
 
     def test_no_note_on_a_normal_host(self, monkeypatch):
         """A non-root host resolves its own ids with no note, so init succeeds clean
-        (no root-host warning) - the unchanged common path."""
+        (no fallback warning) - the unchanged common path."""
         _patch_common(monkeypatch)
         container = FakeContainer()
         # use_container wires a non-root host resolver (no note), the common path;
-        # assert init_bench leaks no root-host warning when resolve returns none.
+        # assert init_bench leaks no fallback warning when resolve returns none.
         use_container(monkeypatch, container)
         result = core_init.init_bench(PROJECT, **bench_kwargs())
         codes = [w.code for w in result.warnings]
         assert "init.uid_align_root_host" not in codes
 
 
-# ------------------------------------------------------------------ init_instance: data dir
+# ------------------------------------------------------------------ init_bench: workspace dir
 
 
-class TestInitInstanceAlignsTheDataDir:
-    def test_the_created_data_dir_owner_follows_the_alignment_target(self, monkeypatch, tmp_path):
-        """init_instance chowns the freshly created bind-mount source dir to the same
-        target frappe is aligned to, threading --uid through."""
+class TestInitBenchOwnsTheWorkspaceDir:
+    def test_the_workspace_dir_follows_the_alignment_target(self, monkeypatch):
+        """bench init creates the bench inside the workspace dir as frappe, so
+        init_bench hands that dir to the SAME target frappe was aligned to (on a
+        root host the dir was created by root, with --uid it is that uid), before
+        creating anything in it."""
         _patch_common(monkeypatch)
-        instance_setup(monkeypatch, tmp_path, seed_compose=False)
+        container = FakeContainer()
+        use_container(monkeypatch, container)
         monkeypatch.setattr(
-            urllib.request, "urlretrieve", lambda url, dest: dest.write_text(COMPOSE_TEMPLATE)
+            core_init.core_docker, "align_container_user_to_host", lambda *a, **k: (True, None)
         )
-        monkeypatch.setattr(core_init, "_ports_still_in_use", lambda ports, emit: [])
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "frappe_alignment_target",
+            lambda c, uid=None: (uid or 1000, uid or 1000, None),
+        )
+        spy: list[tuple] = []
 
+        def fake_owner(c, path, uid, gid):
+            spy.append((path, uid, gid))
+            container.exec_run_calls.append("REOWN-WORKSPACE")
+            return True
+
+        monkeypatch.setattr(core_init.core_docker, "align_workspace_dir_owner", fake_owner)
+
+        events: list = []
+        core_init.init_bench(PROJECT, **bench_kwargs(), uid=1005, on_event=events.append)
+
+        assert spy == [("/workspace", 1005, 1005)]
+        traces = [e.text for e in events if isinstance(e, core_init.InitTrace)]
+        assert any("/workspace owner to uid 1005" in t for t in traces)
+        # ...before init makes anything inside it.
+        calls = container.exec_run_calls
+        first_mkdir = next(i for i, c in enumerate(calls) if c.startswith("mkdir -p"))
+        assert calls.index("REOWN-WORKSPACE") < first_mkdir
+
+    def test_a_failed_align_still_hands_the_workspace_dir_to_the_target(self, monkeypatch):
+        """A failed align degrades to a warning and the bench must still build, so on
+        a root host (target 1000:1000) the root-created workspace dir is still handed
+        to frappe; without it `bench init`, run as frappe, cannot create the bench."""
+        _patch_common(monkeypatch)
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "align_container_user_to_host",
+            lambda *a, **k: (False, "usermod failed"),
+        )
+        monkeypatch.setattr(
+            core_init.core_docker,
+            "frappe_alignment_target",
+            lambda c, uid=None: (1000, 1000, "Using uid 1000 because the host is root."),
+        )
         spy: list[tuple] = []
         monkeypatch.setattr(
             core_init.core_docker,
-            "align_bind_mount_source_owner",
-            lambda path, uid_override=None: (spy.append((str(path), uid_override)) or 1005),
+            "align_workspace_dir_owner",
+            lambda c, path, uid, gid: spy.append((path, uid, gid)) or True,
         )
 
-        core_init.init_instance(PROJECT, port=18000, uid=1005)
+        result = core_init.init_bench(PROJECT, **bench_kwargs())
 
-        data_dir = str(tmp_path / PROJECT / "data")
-        assert spy == [(data_dir, 1005)]
+        assert spy == [("/workspace", 1000, 1000)]
+        assert [w.code for w in result.warnings].count("init.uid_align_failed") == 1
 
+
+class TestInitThreadsTheUidIntoTheAutoStart:
     def test_default_start_threads_uid_into_the_auto_start(self, monkeypatch, tmp_path):
         """The human init's end-of-init auto-start reuses the SAME --uid so it aligns
         to the id the bench was built under, not the host uid."""

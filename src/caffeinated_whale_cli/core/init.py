@@ -251,8 +251,10 @@ def check_uid_override(uid: int | None) -> None:
     aliases the container's own root user and breaks bench's PATH), and a negative
     uid is not a real account; both raise a ``USAGE`` error. A non-numeric value is
     rejected earlier by Typer's ``int`` coercion at parse time. ``None`` (the flag
-    was not passed) is always fine. The frontends call this before stage 1, so a
-    bad value never leaves a project dir or containers behind.
+    was not passed) is always fine. A non-root user may pass only their own uid:
+    another uid would leave a workspace they can neither write nor delete. The
+    frontends call this before stage 1, so a bad value never leaves a project dir or
+    containers behind.
     """
     if uid is not None and uid <= 0:
         raise CwcliError(
@@ -260,6 +262,14 @@ def check_uid_override(uid: int | None) -> None:
             "uid.invalid",
             "--uid must be a positive, non-root integer: 0 collides with the container's own "
             "root user and breaks bench's PATH the same way an unset --uid does on a root host.",
+        )
+    if uid is not None and hasattr(os, "getuid") and os.getuid() not in (0, uid):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "uid.not_permitted",
+            f"--uid {uid} is not your own uid ({os.getuid()}): only root can align the "
+            "container 'frappe' user to another uid, because the workspace it creates would "
+            "not be yours to write or delete. Run init as root, or omit --uid.",
         )
 
 
@@ -699,7 +709,6 @@ def init_instance(
     bench_image_tag: str | None = None,
     auto_start: bool = False,
     stream_output: bool = False,
-    uid: int | None = None,
     db_root_password: str | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[InstanceUp]:
@@ -723,16 +732,6 @@ def init_instance(
     ``stream_output`` is the consumption-mode flag: True means a renderer is
     consuming :class:`InitOutput` events live (compose pull runs without
     ``--quiet``, exactly as today's verbose mode).
-
-    ``uid`` mirrors :func:`init_bench`'s override and matters ONLY when the
-    container ``frappe`` user is aligned to an id other than this process's own -
-    a root host (where it falls back to the image default rather than remapping to
-    0) or an explicit ``--uid``. The freshly created bind-mount source dir
-    (``project_dir/data``) is owned by this process, so it is chowned to that same
-    target (see :func:`core.docker.align_bind_mount_source_owner`) or ``frappe``
-    could never write the bench workspace it provisions. A no-op on the common
-    non-root path, where the dir is already owned by the id ``frappe`` is aligned
-    to.
 
     ``db_root_password`` becomes the new instance's MariaDB root password (see
     :mod:`core.db_password`): written to the project's secret file and handed to
@@ -906,19 +905,6 @@ def init_instance(
     if remember_password is not None:
         path = db_password.remember(project_name, remember_password)
         emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
-
-    # Make the bind-mount source dir writable by the container 'frappe' user when
-    # it is aligned to an id other than this process's own - a root host (frappe
-    # falls back to the image default, not 0) or an explicit --uid. Runs on a retry
-    # too (a prior failed init may have left it root-owned); a no-op on the common
-    # non-root path and for an old '..:/workspace' instance with no data/ dir.
-    aligned_uid = core_docker.align_bind_mount_source_owner(data_dir, uid_override=uid)
-    if aligned_uid is not None:
-        emit(
-            InitTrace(
-                text=f"Set {data_dir} owner to uid {aligned_uid} for the container 'frappe' user."
-            )
-        )
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]
 
@@ -1208,7 +1194,9 @@ def init_bench(
     of the host's own uid/gid. Its main use is a root-uid host (a common CI-runner
     shape), where the alignment already falls back to a safe non-root default
     rather than colliding with the container's own root user (see that function);
-    ``uid`` is the explicit escape hatch when a caller wants a specific uid.
+    ``uid`` is the explicit escape hatch when a caller wants a specific uid. A uid
+    that a system account in the image already holds falls back to that same
+    default whatever its source (see :data:`core.docker.DEFAULT_FRAPPE_UID`).
 
     ``db_root_password`` defaults to the one :func:`init_instance` stored for
     this instance, else the compose default ``123`` (:func:`core.db_password.resolve`);
@@ -1278,20 +1266,35 @@ def init_bench(
         frappe_container, chown_home=True, bench_paths=[bench_full_path], uid_override=uid
     )
     emit(InitStepEnd(phase="align_uid"))
+    target_uid, target_gid, note = core_docker.frappe_alignment_target(frappe_container, uid)
     if remap_err:
         emit(InitNotice(code="init.uid_align_failed", text=remap_err))
         warnings.append(Message("init.uid_align_failed", remap_err))
-    else:
-        # Surface the root-host fallback once, non-silently: on a root host with no
-        # --uid the container 'frappe' user is left at the image default instead of
-        # being remapped to 0 (which breaks bench). No note when a target other than
-        # root was resolved, or when --uid was given (the caller chose it).
-        _, _, note = core_docker.resolve_frappe_alignment_ids(uid)
-        if note:
-            emit(InitNotice(code="init.uid_align_root_host", text=note))
-            warnings.append(Message("init.uid_align_root_host", note))
-        elif remapped:
-            emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
+    elif note:
+        # Surface an unusable-uid fallback once, non-silently: when the requested
+        # uid is 0 (a root host) or belongs to a system account in the image, the
+        # container 'frappe' user gets the image default instead (any other choice
+        # breaks bench). No note when a usable uid was resolved.
+        emit(InitNotice(code="init.uid_align_root_host", text=note))
+        warnings.append(Message("init.uid_align_root_host", note))
+    elif remapped:
+        emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
+    # The workspace dir benches are created in was made by this process, so when
+    # 'frappe' is aligned to another uid it must own that dir too, or `bench init`
+    # cannot create the bench (also repairs a dir a failed init left root-owned).
+    if (
+        target_uid is not None
+        and target_gid is not None
+        and core_docker.align_workspace_dir_owner(
+            frappe_container, bench_parent_path, target_uid, target_gid
+        )
+    ):
+        emit(
+            InitTrace(
+                text=f"Set {bench_parent_path} owner to uid {target_uid} for the "
+                "container 'frappe' user."
+            )
+        )
 
     _ensure_directory(frappe_container, bench_parent_path)
 

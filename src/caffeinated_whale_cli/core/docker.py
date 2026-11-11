@@ -518,49 +518,87 @@ _CHOWN_HOME_SHALLOW_DIRS = (
 )
 
 
-# The frappe/bench image's own default uid/gid for the `frappe` user, used as the
-# alignment target when the resolved host uid is 0 (root). Remapping `frappe` to 0
-# collides with the container's OWN `root` row in /etc/passwd, and
-# `docker exec -u frappe` then resolves $HOME via getpwuid(0), which returns the
-# FIRST matching row (root, listed before frappe), not the named one - the exec
-# lands with HOME=/root, silently drops every PATH entry bench needs (pyenv shims,
-# nvm's node), and `bench init` fails with exit 127. Root already has unrestricted
-# host filesystem permissions, so it never needed the remap and `cwcli rm` still
-# works: leaving `frappe` at the image default is a genuine no-op, not a workaround
-# (karotkriss/caffeinated-whale-cli#229).
-ROOT_HOST_FALLBACK_UID = 1000
-ROOT_HOST_FALLBACK_GID = 1000
+# The frappe/bench image's own default uid/gid for the `frappe` user, the alignment
+# target whenever the requested uid is unusable. A uid is unusable when another
+# account in the container's /etc/passwd already has it: 0 (`root`), but equally a
+# system account such as `systemd-network` (998) or `redis` (100), which is where a
+# shared install's `useradd --system` service account or a CI runner's system user
+# lands. `docker exec -u frappe` resolves the user by NUMBER, and that lookup
+# returns the FIRST passwd row with the uid (the system account, listed before
+# frappe), so the exec lands with that account's HOME (`/root`, `/`,
+# `/var/lib/redis`), silently drops every PATH entry bench needs (pyenv shims,
+# nvm's node), and `bench init` fails with exit 127 while the workspace fills with
+# files the host names as that system account. Root already has unrestricted host
+# filesystem permissions, so leaving `frappe` at the image default costs a root
+# host nothing (karotkriss/caffeinated-whale-cli#229).
+# ponytail: assumes the image's own frappe uid (1000) is free; a custom image that
+# gave 1000 to another account would need this read from the image instead.
+DEFAULT_FRAPPE_UID = 1000
+DEFAULT_FRAPPE_GID = 1000
+
+
+def container_account_uids(container) -> dict[int, str]:
+    """uid -> name of every account in the container's ``/etc/passwd`` except ``frappe``.
+
+    The accounts whose uid ``frappe`` must never be aligned to (see
+    :data:`DEFAULT_FRAPPE_UID`). The first row wins for a duplicated uid, matching
+    the lookup that resolves the exec's HOME. ``{}`` when the file cannot be read,
+    which leaves the uid-0 guard in :func:`resolve_frappe_alignment_ids` in force.
+    """
+    try:
+        code, out = container.exec_run(["cat", "/etc/passwd"])
+    except DockerException:
+        return {}
+    if code != 0:
+        return {}
+    accounts: dict[int, str] = {}
+    for line in _decode(out).splitlines():
+        fields = line.split(":")
+        if len(fields) < 3 or fields[0] == "frappe":
+            continue
+        try:
+            accounts.setdefault(int(fields[2]), fields[0])
+        except ValueError:
+            continue
+    return accounts
+
+
+def frappe_alignment_target(
+    container, uid_override: int | None = None
+) -> tuple[int | None, int | None, str | None]:
+    """:func:`resolve_frappe_alignment_ids` checked against this container's own accounts."""
+    return resolve_frappe_alignment_ids(uid_override, taken=container_account_uids(container))
 
 
 def resolve_frappe_alignment_ids(
     uid_override: int | None = None,
+    *,
+    taken: dict[int, str] | None = None,
 ) -> tuple[int | None, int | None, str | None]:
     """The uid/gid target :func:`align_container_user_to_host` remaps ``frappe`` to.
 
     The single source of truth for the alignment target, shared by the align itself
-    and init's host-side bind-mount chown so the two can never disagree. Returns
+    and init's workspace-dir chown so the two can never disagree. Returns
     ``(uid, gid, note)``; ``note`` is a non-silent explanation the caller should
-    surface when a fallback was applied (currently only the root-host case).
-    ``(None, None, None)`` on a non-POSIX host (Windows), where there is nothing to
-    align to.
+    surface when a fallback was applied. ``(None, None, None)`` on a non-POSIX host
+    (Windows), where there is nothing to align to. ``taken`` maps the uids other
+    container accounts already hold to their names (:func:`container_account_uids`).
 
-    Precedence: an explicit ``uid_override`` (the ``--uid`` escape hatch, already
-    validated positive and non-root by the frontend) wins over everything - it is
-    not persisted, so a later ``start`` in shared mode re-aligns to the service
-    identity and the v3.1.1 workspace self-heal re-owns accordingly. Otherwise the
-    shared-mode service uid/gid (stable across users; see below), else the host's
-    own uid/gid. A resolved target of 0 (a root host with no override, or a shared
-    box whose service account is unprovisioned) falls back to the image default
-    (:data:`ROOT_HOST_FALLBACK_UID`/``_GID``) with a note, since aligning ``frappe``
-    to 0 breaks bench (see the constant's comment). A properly provisioned shared
-    install resolves to its non-zero service uid FIRST, so the root fallback is
-    never reached there - the service uid wins over a root host.
+    Precedence: an explicit ``uid_override`` (init's ``--uid`` escape hatch, already
+    validated positive and non-root by the frontend) wins - it is not persisted, so
+    a later ``start`` re-aligns to the service identity or the host uid; otherwise
+    the shared-mode service uid/gid (stable across users; see below); else the
+    host's own uid/gid. A resolved uid that is 0 or already belongs to another
+    container account is unusable (see :data:`DEFAULT_FRAPPE_UID`) and falls back to
+    the image default with a note, whatever its source; the gid is kept unless it is
+    0, since a shared duplicate gid is harmless and keeps a shared install's group
+    access.
     """
     if not hasattr(os, "getuid"):
         return (None, None, None)
     if uid_override is not None:
-        return (uid_override, uid_override, None)
-    if shared_home.shared_mode():
+        uid, gid = uid_override, uid_override
+    elif shared_home.shared_mode():
         # Shared mode: align to the STABLE cwcli service uid/gid, not whoever ran
         # cwcli. With a shared container and two users, aligning to os.getuid()
         # ping-pongs the frappe user's uid on every start - each swing risking a
@@ -574,45 +612,76 @@ def resolve_frappe_alignment_ids(
         gid = svc_gid if svc_gid is not None else os.getgid()
     else:
         uid, gid = os.getuid(), os.getgid()
+    owner = "root" if uid == 0 else (taken or {}).get(uid)
+    if owner is None:
+        return (uid, gid, None)
     if uid == 0:
-        note = (
-            "Host is running as uid 0 (root): left the container 'frappe' user at its default "
-            f"uid {ROOT_HOST_FALLBACK_UID} instead of remapping it to 0, which would collide "
-            "with the container's own root user and break bench's PATH. Pass --uid <n> to align "
-            "to a specific uid instead."
-        )
-        return (ROOT_HOST_FALLBACK_UID, ROOT_HOST_FALLBACK_GID, note)
-    return (uid, gid, None)
+        why = "the host is running as uid 0 (root)"
+    else:
+        why = f"uid {uid} already belongs to the container's own '{owner}' account"
+    note = (
+        f"Using uid {DEFAULT_FRAPPE_UID} for the container 'frappe' user because {why}; "
+        f"giving 'frappe' that uid would hand bench the {owner} account's home and break "
+        "its PATH (`bench init` exits 127)."
+    )
+    if os.getuid() == 0:
+        note += " As root, pass --uid <n> to init to align to a specific uid instead."
+    return (DEFAULT_FRAPPE_UID, DEFAULT_FRAPPE_GID if gid == 0 else gid, note)
 
 
-def align_bind_mount_source_owner(path, uid_override: int | None = None) -> int | None:
-    """Chown the host-side bind-mount source dir so the container ``frappe`` user can write it.
+def _syncs_workspace_owner(uid: int, gid: int) -> bool:
+    """Whether align must reconcile the bench workspace's owner with ``uid:gid``.
 
-    On a root host (or an explicit ``--uid`` that differs from this process's uid),
-    :func:`align_container_user_to_host` deliberately does NOT remap ``frappe`` to
-    this process's uid (root would collide with the container's own root user; an
-    override is the caller's explicit choice), so a directory this process created
-    stays unwritable by ``frappe`` and ``bench init`` cannot mkdir the bench inside
-    the mount. Chown it to the same alignment target instead. Idempotent, so it also
-    repairs a prior failed init's root-owned dir on a retry.
+    On a normal box ``frappe`` is aligned to the invoking user, who built and owns
+    the workspace, so this is False and the owner probe runs only when align remaps
+    ``frappe`` (a container recreation, or a plain start after a ``sudo cwcli
+    start``). Shared mode aligns to the service account, and a root
+    host, a colliding uid, or init's ``--uid`` align to a uid other than the
+    invoking user's: there the workspace can be owned by an earlier, different uid
+    (an instance an older cwcli built as uid 0 or as a system account), and the
+    re-owned ``frappe`` user could not write its own bench.
+    """
+    return shared_home.shared_mode() or (uid, gid) != (os.getuid(), os.getgid())
 
-    A no-op (returns ``None``) on a non-POSIX host, in shared mode (its
-    group-writable model owns bind-mount permissions), when ``path`` is absent (an
-    old ``..:/workspace`` instance has no ``data/`` dir), or when the target already
-    matches this process (the common non-root path - byte-identical to before this
-    existed). Returns the uid it chowned to when it acted.
+
+def align_workspace_dir_owner(container, path: str, uid: int, gid: int) -> bool:
+    """Give the aligned ``frappe`` user the workspace dir ``bench init`` creates benches in.
+
+    When ``frappe`` is aligned to a uid other than the invoking user's (a root
+    host, a colliding uid, or init's ``--uid``), the bind-mounted workspace dir this
+    process created is not writable by ``frappe`` and ``bench init`` cannot create
+    the bench inside it. Re-owns ``path`` (not recursively) to ``uid:gid`` from
+    inside the container as root, which works on any host uid, and only when its
+    owner differs, so a retry after a failed init repairs a dir an older cwcli left
+    root-owned. Skipped in shared mode, whose group-writable state tree owns
+    bind-mount permissions, and a no-op when ``path`` is absent or when the target
+    is the invoking user. Returns True when it re-owned the dir.
+
+    When the kept gid is the invoking user's own primary group (a non-root host
+    whose uid an image account holds), the dir also gets group write, so the
+    invoking user can still write it after handing it to ``uid`` (the credential
+    bridge places its socket and shim there).
     """
     if not hasattr(os, "getuid") or shared_home.shared_mode():
-        return None
-    if not os.path.exists(path):
-        return None
-    target_uid, target_gid, _ = resolve_frappe_alignment_ids(uid_override)
-    if target_uid is None or target_gid is None:
-        return None
-    if (target_uid, target_gid) == (os.getuid(), os.getgid()):
-        return None
-    os.chown(path, target_uid, target_gid)
-    return target_uid
+        return False
+    if (uid, gid) == (os.getuid(), os.getgid()):
+        return False
+    q = shlex.quote(path)
+    script = (
+        f"[ -d {q} ] || exit 0; "
+        f'[ "$(stat -c %u:%g {q})" != "{uid}:{gid}" ] '
+        f"&& chown {uid}:{gid} {q} && echo REOWNED"
+    )
+    if uid != os.getuid() and gid == os.getgid():
+        # The one sanctioned exception to "permissions are never loosened": group
+        # write on this one dir (never recursive, never other), granted only to the
+        # invoking user's own group, so the owner keeps access to its workspace.
+        script += f"; chmod g+rwx {q}"
+    try:
+        _, out = container.exec_run(["bash", "-c", script], user="root")
+    except DockerException:
+        return False
+    return "REOWNED" in _decode(out)
 
 
 def align_container_user_to_host(
@@ -649,8 +718,11 @@ def align_container_user_to_host(
     1.28 GB/36.7k files it contains, measured at 79s (minutes on a slow disk)
     versus ~3s narrowed.
 
-    In SHARED mode (``shared_home.shared_mode()``) each path in ``bench_paths`` (the
-    resolved bench dirs) AND the real source dir of any app symlinked outside a bench
+    In SHARED mode (``shared_home.shared_mode()``), and whenever the target is not
+    the invoking user's own uid/gid (a root host, a colliding uid, or init's
+    ``--uid``; see ``_syncs_workspace_owner``), each path in
+    ``bench_paths`` (the resolved bench dirs) AND the real source dir of any app
+    symlinked outside a bench
     (``apps/<app> -> /workspace/.hdsrc/<app>`` on a devcontainer bench; see
     ``_external_app_source_dirs``) is re-owned to the target identity when its CURRENT
     owner differs, not merely when the ids change this call. Covering the app repos is
@@ -663,16 +735,19 @@ def align_container_user_to_host(
     bricked by v3.1.0 has ``frappe`` remapped to the service uid ALREADY (its ids
     match now), so gating the re-own on an id change alone would never recover it;
     gating on the real owner mismatch (stat'd per path) recovers it in place on the
-    next ``cwcli start``/``restart``. A normal box - where align targets
-    ``os.getuid()`` and the id already owns the workspace - reads no mismatch and
-    emits no workspace chown. ``/workspace`` is a bind mount, not the image overlay,
+    next ``cwcli start``/``restart``; the same re-own repairs a bench an older cwcli
+    built on a root host as uid 0 or as a system account. A normal box - where align
+    targets ``os.getuid()``, which already owns the workspace - probes the owner only
+    when align remaps ``frappe`` (``ids_changed``), and re-owns only a bench another
+    uid holds, such as one a one-off ``sudo cwcli start`` handed to uid 1000. ``/workspace`` is a bind mount, not the image overlay,
     so ``chown -R`` there is cheap (no copy-up).
 
-    ``uid_override`` (the ``--uid`` escape hatch) and the root-host fallback are
-    both resolved by :func:`resolve_frappe_alignment_ids`, the shared target
-    computation - so a root host is left at the image default instead of being
-    remapped to 0 (which breaks bench; see that function), and a properly
-    provisioned shared install still wins with its service uid.
+    ``uid_override`` (init's ``--uid`` escape hatch), the target and the unusable-uid
+    fallback are resolved by :func:`frappe_alignment_target`, the shared target
+    computation checked against this container's own accounts - so ``frappe`` is
+    never given uid 0 or a uid a system account in the image already holds (which
+    breaks bench; see :data:`DEFAULT_FRAPPE_UID`), and a properly provisioned shared
+    install still wins with its service uid when that uid is free.
 
     Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
     string when a step failed (the caller surfaces it as a warning and the bench
@@ -683,25 +758,30 @@ def align_container_user_to_host(
     uid to align to, and Docker Desktop handles bind-mount ownership itself, so
     the host never hits the Linux permission error this remap exists to prevent.
     """
-    host_uid, host_gid, _note = resolve_frappe_alignment_ids(uid_override)
-    if host_uid is None or host_gid is None:  # non-POSIX (Windows): nothing to align to.
+    if not hasattr(os, "getuid"):  # non-POSIX (Windows): nothing to align to.
         return (False, None)
-    in_shared_mode = shared_home.shared_mode()
+    host_uid, host_gid, _note = frappe_alignment_target(container, uid_override)
+    if host_uid is None or host_gid is None:
+        return (False, None)
     cur_uid = _read_frappe_id(container, "-u")
     cur_gid = _read_frappe_id(container, "-g")
     if cur_uid is None or cur_gid is None:
         return (False, "could not read the container 'frappe' user's uid/gid")
     ids_changed = cur_uid != host_uid or cur_gid != host_gid
 
-    # Shared mode only: which bench dirs are actually owned by someone other than
-    # the target identity. An instance already bricked by v3.1.0 has `frappe`
-    # remapped to the service uid ALREADY (so ids match, `ids_changed` is False),
-    # yet its bind-mounted workspace is still owned by the pre-shared uid - gating
-    # the re-own on `ids_changed` alone would leave it bricked. Gating on the real
-    # owner mismatch recovers it in place on the next `cwcli start`/`restart`, and
-    # a normal shared box whose workspace already matches gets no chown -R.
+    # Shared mode, a target other than the invoking user (`_syncs_workspace_owner`), or
+    # a remap of `frappe` (a plain start after a one-off `sudo cwcli start` moves it
+    # back to the invoker, whose bench root re-owned away): which bench dirs are
+    # actually owned by someone other than the target identity.
+    # An instance already bricked by v3.1.0 has `frappe` remapped to the service uid
+    # ALREADY (so ids match, `ids_changed` is False), yet its bind-mounted workspace is
+    # still owned by the pre-shared uid - gating the re-own on `ids_changed` alone
+    # would leave it bricked. The same holds for a bench an older cwcli built as uid 0
+    # or as a system account on a root host. Gating on the real owner mismatch
+    # recovers it in place on the next `cwcli start`/`restart`, and a box whose
+    # workspace already matches gets no chown -R.
     reown_paths: list[str] = []
-    if in_shared_mode and bench_paths:
+    if bench_paths and (ids_changed or _syncs_workspace_owner(host_uid, host_gid)):
         # Each bench dir PLUS the real source dir of any app symlinked outside it
         # (a devcontainer bench points `apps/<app>` at a shared tree like
         # `/workspace/.hdsrc/<app>`, which a `chown -R <bench>` does not follow).
@@ -765,11 +845,11 @@ def align_container_user_to_host(
             f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
             for path in _CHOWN_HOME_SHALLOW_DIRS
         )
-    # Shared mode only: reconcile the bind-mounted bench workspace's ownership
-    # with the service identity. `reown_paths` already holds exactly the bench
-    # dirs whose owner differs from the target (a migrated instance's workspace
-    # still owned by the pre-shared uid, OR one the remap just moved away from) -
-    # a normal box has none. Existence-guarded so a dir that vanished between the
+    # Reconcile the bind-mounted bench workspace's ownership with the target.
+    # `reown_paths` already holds exactly the bench dirs whose owner differs from
+    # it (a migrated instance's workspace still owned by the pre-shared uid, one a
+    # root host or an older cwcli left on another uid, or one a sudo start handed
+    # away before this remap) - a normal box with no remap has none. Existence-guarded so a dir that vanished between the
     # stat and here is a no-op.
     steps.extend(
         f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"

@@ -227,8 +227,12 @@ def use_container(monkeypatch, container, *, project_containers=None):
     monkeypatch.setattr(
         core_init.core_docker,
         "resolve_frappe_alignment_ids",
-        lambda uid=None: ((uid, uid, None) if uid else (1000, 1000, None)),
+        lambda uid=None, **_: ((uid, uid, None) if uid else (1000, 1000, None)),
     )
+    # ...and make that host the invoking user too, so the workspace-dir re-own that
+    # follows a target other than the invoking uid stays a no-op on any runner uid.
+    monkeypatch.setattr(core_init.core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_init.core_docker.os, "getgid", lambda: 1000)
 
 
 def bench_kwargs(**overrides):
