@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-12
+
+### Added
+
+- **Every branch, tag or commit field in the web UI is an autocomplete** - Check out ref, Check out ref discarding local changes, Install apps and Add a community integration use the Install sheet's combobox, fed by one shared lookup of the repository each field acts on.
+  - Typed text commits as you type, so a commit hash needs no list row, and a failed lookup leaves a working text field.
+  - The list stays the width of its field, so long branch names no longer run off a phone.
+- **Pick a branch, tag or commit for each app in the app pickers** - New site and New bench take a ref per picked app.
+  - A remote app is fetched at that ref; an app the bench already holds is checked out at it first, which moves that app for every site on the bench, and the picker, the dialog and the plan all say so before Create site runs.
+  - `--app-ref` refuses a ref that names no app being added.
+
+### Fixed
+
+- **The container `frappe` user never gets a uid another image account holds** - on a root host, or a host whose user is a system account such as a shared install's service account or a CI runner, `bench` lost its PATH, `bench init` exited 127 and the workspace ended up owned by a system account. cwcli now falls back to the image's own uid 1000 and says so once.
+  - A plain `cwcli start` repairs an instance an older cwcli left on uid 0 or a system account by re-owning its bench, deleting nothing.
+  - `cwcli rm` still removes a workspace owned by another uid.
+- **Stale start-on-boot units no longer flood the journal** - a unit whose `cwcli` was removed (for example after moving from a per-user to the shared install) retried every 10 seconds forever.
+  - systemd units now stop after a few failed starts, and the auto-inspect and credential-bridge units find whichever `cwcli` install remains.
+  - `cwcli status` and `cwcli doctor` name a stale unit and the command that rewrites or removes it; `enable` of the unit's daemon rewrites it in place.
+
+### Changed
+
+- **Typer is capped below 0.29** - 0.29 changed the parameter API behind `cwcli axi ... --help`, so a fresh install resolves a version that works.
+
 ## [3.7.0] - 2026-11-02
 
 ### Added
