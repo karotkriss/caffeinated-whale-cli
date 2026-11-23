@@ -517,7 +517,9 @@ class TestDetail:
             "inspect",
             lambda project, **kw: Result(
                 status=Status.OK,
-                data=InspectReport(project=project, served_from="cache", degraded=False, benches=[]),
+                data=InspectReport(
+                    project=project, served_from="cache", degraded=False, benches=[]
+                ),
             ),
         )
         status, body = _get(daemon.base + "/api/v1/instances/p")
@@ -1943,6 +1945,37 @@ class TestJobsEndpoint:
         assert seen["args"] == {"version": "16"}
         assert seen["ui_context"]["token"] == _TOKEN
         assert "not-persisted" not in json.dumps(body)
+
+    def test_remove_app_is_a_job_whose_consent_rides_the_spec(self, daemon, monkeypatch):
+        """The page's Remove app posts an `apps-uninstall` job naming the app and site;
+        `consent` is read from the spec (the typed confirmation), never assumed."""
+        seen = []
+
+        def create(verb, target, args, **kwargs):
+            seen.append((verb, target, args, kwargs["consent"]))
+            return {
+                "id": "20261024120000-abcdef123456",
+                "verb": verb,
+                "target": target,
+                "args": args,
+                "state": "queued",
+                "consent": kwargs["consent"],
+            }
+
+        monkeypatch.setattr(serve_cmd.core_jobs, "create_job", create)
+        spec = {
+            "verb": "apps-uninstall",
+            "target": {"project": "p", "bench": "0", "site": "s.localhost", "app": "payments"},
+            "args": {"backup_first": True},
+        }
+
+        status, body = _post(daemon.base + "/api/v1/jobs", {**spec, "consent": True})
+        assert status == 202
+        assert body["data"]["consent"] is True
+        assert _post(daemon.base + "/api/v1/jobs", spec)[0] == 202
+
+        assert [c[3] for c in seen] == [True, False]
+        assert seen[0][:3] == ("apps-uninstall", spec["target"], spec["args"])
 
     def test_interrupt_and_detach_dispatch_to_the_named_job(self, daemon, monkeypatch):
         calls = []

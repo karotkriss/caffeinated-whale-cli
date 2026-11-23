@@ -126,6 +126,9 @@ ALLOWED_VERBS = frozenset(
         "rm",
         "rm-site",
         "rm-bench",
+        # Remove ONE app from ONE site (the page's Remove app): `core.apps.uninstall_apps`
+        # with its own consent gate, after a verified backup of the site unless unticked.
+        "apps-uninstall",
         # Publishing a site at its public name (core.publish): DNS record, proxy host and
         # certificate. New site, Drop site and Move start them after they succeed when
         # asked to (``_follow_ups``).
@@ -1666,6 +1669,31 @@ def _dispatch(
             on_event=emit,
         )
         return _refresh_after_apps(project, checkout_result, emit)
+    if verb == "apps-uninstall":
+        # The web UI's Remove app: ONE app off ONE site, through the SAME core path as
+        # `cwcli apps uninstall` (the consent gate is the core's own, never the page's).
+        # frappe is refused before any read: a site cannot exist without it.
+        app = str(target.get("app") or "")
+        if not site or not app:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "app.site_required",
+                "Removing an app needs target.site and target.app.",
+            )
+        if app == "frappe":
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "app.frappe_protected",
+                "frappe cannot be removed from a site; drop the site instead.",
+            )
+        # The backup rides only on a consented run: without consent the core answers
+        # NEEDS_CHOICE and nothing (not even a backup) has happened yet.
+        if consent and args.get("backup_first", True):
+            _backup_first(project, bench, [site], "before-app-remove", emit)
+        uninstall_result = core_apps.uninstall_apps(
+            project, [app], bench=bench, sites=[site], consent=consent, on_event=emit
+        )
+        return _refresh_after_apps(project, uninstall_result, emit)
     if verb == "rm":
         return _remove_instance(project, args, consent, emit)
     if verb == "rm-site":

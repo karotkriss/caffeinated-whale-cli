@@ -40,6 +40,11 @@ const health = computed(() => inst.value?.benches?.find((b) => String(b.index) =
 const running = computed(() => inst.value?.container_running)
 const ctx = computed(() => ({ project, host, bench: String(index), benchName: bench.value ? benchName(bench.value) : index, site: siteName }))
 const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(verb, ctx.value) })
+// Per-app menu: Remove app, the only verb that acts on one app of one site. frappe has
+// no live entry: a site cannot exist without it (drop the site instead).
+const appMenu = (name) => (name === 'frappe'
+  ? [{ group: 'Danger zone', options: [{ label: 'Remove app (frappe cannot be removed)', icon: 'lucide-trash-2', disabled: true }] }]
+  : [dangerGroup(['app.uninstall'], { ...ctx.value, app: name })])
 // Clone and move are this machine's dialogs over its own backup store; a remote site keeps the rest.
 const more = computed(() => [
   jobOption('Back up site', 'lucide-database-backup', 'backup'),
@@ -188,12 +193,13 @@ const heroFacts = computed(() => [
         <Badge size="sm" :theme="site.installed_apps_verified ? 'green' : 'gray'" variant="outline" :label="site.installed_apps_verified ? 'verified' : 'remembered'" />
       </div>
       <p class="mt-1 text-p-sm text-ink-gray-5">{{ site.installed_apps_verified ? 'Read live by a full inspect.' : 'From the cache. A full inspect re-reads them from the running container.' }}</p>
-      <List class="-mx-3 list-row-px-3 mt-3" :columns="{ base: ['minmax(0,1fr)', '6rem'], md: ['minmax(12rem,1.5fr)', '7rem', 'minmax(0,1fr)', '8rem'] }" :row-height="44">
+      <List class="-mx-3 list-row-px-3 mt-3" :columns="{ base: ['minmax(0,1fr)', '6rem', '2.5rem'], md: ['minmax(12rem,1.5fr)', '7rem', 'minmax(0,1fr)', '8rem', '2.5rem'] }" :row-height="44">
         <ListHeader>
           <ListHeaderCell>App</ListHeaderCell>
           <ListHeaderCell>Version</ListHeaderCell>
           <ListHeaderCell class="max-md:hidden">Branch at install</ListHeaderCell>
           <ListHeaderCell class="max-md:hidden">Source</ListHeaderCell>
+          <ListHeaderCell />
         </ListHeader>
         <ListRows :items="apps" row-key="name" v-slot="{ item }">
           <ListRow :on-click="appOpener(host, item.name)">
@@ -203,6 +209,11 @@ const heroFacts = computed(() => [
             <ListCell class="max-md:hidden"><span class="truncate font-mono text-sm text-ink-gray-6">{{ item.branch || 'unknown' }}</span></ListCell>
                       <!-- Captain note 53: where the app comes from, with the source's icon. The catalog is this machine's, so a remote site's source is the plain name. -->
             <ListCell class="gap-1.5 overflow-hidden max-md:hidden"><template v-if="!host"><img v-if="hostIcon(catalogAppFor(item.name, project, index).source?.host)" :src="hostIcon(catalogAppFor(item.name, project, index).source?.host)" class="size-3.5 rounded-sm" alt="" /><span v-else :class="sourceIcon(catalogAppFor(item.name, project, index))" class="size-3.5 text-ink-gray-5" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ sourceLabel(catalogAppFor(item.name, project, index)) }}</span></template><span v-else class="truncate text-sm text-ink-gray-5">on {{ hostName(host) }}</span></ListCell>
+            <ListCell class="justify-end">
+              <Dropdown :options="appMenu(item.name)" align="end">
+                <Button size="xs" variant="ghost" icon="lucide-ellipsis" :aria-label="`Actions for ${item.name}`" />
+              </Dropdown>
+            </ListCell>
           </ListRow>
         </ListRows>
       </List>

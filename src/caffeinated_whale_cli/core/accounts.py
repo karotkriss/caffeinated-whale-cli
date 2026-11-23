@@ -59,6 +59,7 @@ ADMIN_VERBS = frozenset(
         "rm",
         "rm-site",
         "rm-bench",
+        "apps-uninstall",
         "move-sites",
         "unpublish-site",
         "restore-set",
