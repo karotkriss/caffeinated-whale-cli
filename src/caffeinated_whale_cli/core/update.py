@@ -467,9 +467,10 @@ def _sites_with_app(
 
     The live query is one exec and one Frappe process for the whole bench
     (``core.bench_read``). A site it could not read is left out, reported in
-    ``warnings`` with its cause and, when ``unreadable`` is given, named there: the
-    app's code has moved under a site that will not be migrated, which is a failure
-    of the run, not a footnote (captain, a staging server, 2026-10-28).
+    ``warnings`` with its cause and, when ``unreadable`` is given, named there.
+    Whether such a site fails the run is ``_unreadable_with_app``'s decision: only
+    one known to have an updated app does, since the code moved under a site that
+    was not migrated (captain, a staging server, 2026-10-28).
     """
     cached = db_utils.get_cached_project_data(project_name)
     if cached:
