@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import types
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -429,6 +430,15 @@ def test_instance_restart_brings_back_only_the_benches_that_were_serving(monkeyp
     assert calls.index("stop") > max(i for i, c in enumerate(calls) if isinstance(c, tuple))
     assert result.data["restarted_benches"] == ["/workspace/b0", "/workspace/b2"]
     assert jobs._result_ok(result) is True
+
+
+def test_an_update_that_succeeded_with_warnings_is_marked_warned():
+    warned = types.SimpleNamespace(ok=True, warned=True)
+    clean = types.SimpleNamespace(ok=True, warned=False)
+
+    assert jobs._result_warned(Result(status=Status.OK, data=warned)) is True
+    assert jobs._result_warned(Result(status=Status.OK, data=clean)) is False
+    assert jobs._result_warned(Result(status=Status.OK, data={"ok": True})) is False
 
 
 def test_instance_restart_brings_back_a_bench_serving_under_bench_start(monkeypatch):

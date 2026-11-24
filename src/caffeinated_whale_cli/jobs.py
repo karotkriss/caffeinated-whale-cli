@@ -2038,6 +2038,12 @@ def _result_ok(result: Result) -> bool:
     return True
 
 
+def _result_warned(result: Result) -> bool:
+    """A job that succeeded but left something the reader should see (an update's
+    unreadable site that is not known to have the app)."""
+    return bool(getattr(result.data, "warned", False))
+
+
 def _cause(*texts: Any) -> dict[str, str] | None:
     """The failure's plain cause, read only from the failing step's own output and
     message, when a known shape matches."""
@@ -2107,6 +2113,7 @@ def run_job(job_id: str) -> int:
             state=state,
             finished_at=_now(),
             exit_code=0 if ok else 1,
+            warned=ok and _result_warned(result),
             result=_scrub(_plain(result.data), scrub_values),
             warnings=_scrub(_plain(result.warnings), scrub_values),
         )

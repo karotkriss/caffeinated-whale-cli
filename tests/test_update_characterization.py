@@ -416,6 +416,28 @@ def test_multi_app_success_banner_counts_only_the_apps_that_updated(monkeypatch,
     assert "Successfully updated 2 app(s)" in _out(capsys)
 
 
+def test_an_unrelated_unreadable_site_finishes_with_warnings_and_exits_zero(monkeypatch, capsys):
+    # One site cannot be opened and nothing says it has the app: the update is not
+    # failed for it, and the output says "finished with warnings" and still names it.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire(monkeypatch, container)
+
+    def discover(project, bench_path, app, container, warnings, unreadable=None):
+        unreadable.append("broken.localhost")
+        return ["a.localhost"]
+
+    monkeypatch.setattr(core_update, "_sites_with_app", discover)
+    monkeypatch.setattr(core_update.db_utils, "get_cached_project_data", lambda p: {})
+
+    update_mod.run_app_update("proj", ["payments"], verbose=True)  # no typer.Exit
+
+    out = " ".join(_out(capsys).split())
+    assert "finished with warnings" in out
+    assert "Successfully updated 1 app(s)" not in out
+    assert "broken.localhost" in out and "not known to have the updated app" in out
+    assert "migrated: a.localhost" in out
+
+
 def test_no_apps_refuses_before_touching_the_project(monkeypatch, capsys):
     # run_app_update's own guard: at least one app is required.
     container = FakeFrappeContainer(available_apps=["frappe"])

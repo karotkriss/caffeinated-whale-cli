@@ -29,7 +29,7 @@ function currentStep(job) {
   return job.state === 'queued' ? 'queued' : 'starting'
 }
 const done = (job) => !ACTIVE_STATES.has(job.state)
-const tone = (job) => (job.state === 'succeeded' ? 'ok' : job.state === 'failed' ? 'bad' : job.state === 'needs_choice' || job.state === 'interrupted' || job.state === 'unknown' ? 'warn' : 'run')
+const tone = (job) => (job.state === 'succeeded' ? (job.warned ? 'warn' : 'ok') : job.state === 'failed' ? 'bad' : job.state === 'needs_choice' || job.state === 'interrupted' || job.state === 'unknown' ? 'warn' : 'run')
 
 let timer = null
 async function tick() {
