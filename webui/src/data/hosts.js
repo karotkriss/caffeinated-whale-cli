@@ -77,6 +77,9 @@ export const LINK = {
   service_account_only: { label: 'service account only', theme: 'gray', dot: 'bg-surface-gray-5' },
 }
 export const linkLook = (state) => LINK[state] || LINK.connecting
+// The link state's word in its theme's ink, where a Badge would be too heavy (the sidebar).
+const TONE = { green: 'text-ink-green-6', amber: 'text-ink-amber-6', red: 'text-ink-red-6', gray: 'text-ink-gray-5' }
+export const linkTone = (state) => TONE[linkLook(state).theme]
 
 // What a person can do about each state, in one sentence.
 export function linkAdvice(h) {

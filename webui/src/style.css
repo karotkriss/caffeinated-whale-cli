@@ -65,6 +65,11 @@ html { background: var(--surface-base); }
    its longest row, which ran past the dialog and off a phone; the rows truncate. */
 [data-slot='content'][data-selection] { max-width: var(--reka-combobox-trigger-width); }
 
+/* frappe-ui's tooltip bubble has no width cap, so a long tooltip (a remote host's link
+   advice) ran as one line off both edges of the window. It wraps inside the room
+   reka-ui measures beside its trigger instead. */
+[data-slot='bubble'] { max-width: min(20rem, var(--reka-tooltip-content-available-width, 20rem)); overflow-wrap: anywhere; }
+
 /* frappe-ui's SettingsHeader and SettingsBody keep px-[4.4rem] (70 px each side) at
    every width, which left a 217 px content column inside a 358 px phone dialog. The
    panel's first child is the header; the scroll viewport is the body. */
