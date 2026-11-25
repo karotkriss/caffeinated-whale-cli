@@ -332,7 +332,7 @@ export const ACTIONS = {
   },
   // Remove ONE app from ONE site: `cwcli apps uninstall` on the core's own consent gate
   // (the agent surface deliberately has none). frappe never reaches here: the site page
-  // offers no entry for it, and the job refuses it before any read.
+  // shows its entry disabled, and the job refuses it before any read.
   'app.uninstall': {
     job: true,
     danger: true,

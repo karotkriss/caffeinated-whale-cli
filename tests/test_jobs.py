@@ -1030,9 +1030,15 @@ def test_apps_uninstall_refuses_frappe_and_a_half_named_target_before_any_work(m
 
 
 def test_apps_uninstall_is_an_admin_job_that_is_never_scheduled(fake_spawn):
-    assert "apps-uninstall" in jobs.ALLOWED_VERBS
     assert accounts.admin_only("apps-uninstall")
-    assert "apps-uninstall" in schedules.NEVER
+    with pytest.raises(CwcliError) as error:
+        schedules.validate(
+            {
+                "verb": "apps-uninstall",
+                "target": {"project": "p", "site": "s.localhost", "app": "payments"},
+            }
+        )
+    assert error.value.code == "schedule.never"
     record = jobs.create_job(
         "apps-uninstall",
         {"project": "p", "site": "s.localhost", "app": "payments"},
