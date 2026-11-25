@@ -199,9 +199,10 @@ watch(() => route.name, (name) => {
             <div v-for="h in hostList" :key="h.id" class="mt-4" role="group" :aria-labelledby="`cw-machine-${h.id}`">
               <Tooltip :text="(h.state === 'connected' ? 'Connected. ' : '') + (linkAdvice(h).includes(h.name) ? linkAdvice(h) : `${h.name}: ${linkAdvice(h) || linkLook(h.state).label}`)" side="right">
                 <div class="flex h-7 items-center gap-2 px-1" :class="collapsed && 'justify-center'">
-                  <span class="flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /></span>
+                  <!-- Collapsed rail: the link dot is a badge on the icon's corner, so the icon alone centres on the rail's icon column. -->
+                  <span class="relative flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /><span v-if="collapsed" class="absolute -right-0.5 -top-0.5 size-1.5 rounded-full" :class="linkLook(h.state).dot" /></span>
                   <h3 :id="`cw-machine-${h.id}`" :class="collapsed && 'sr-only'" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>
-                  <span class="flex min-w-0 shrink-0 items-center gap-1 text-xs" :class="[linkTone(h.state), !collapsed && 'max-w-[45%]']"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span v-if="!collapsed" class="truncate" :class="h.state === 'connected' && 'sr-only'">{{ linkLook(h.state).label }}</span></span>
+                  <span v-if="!collapsed" class="flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 text-xs" :class="linkTone(h.state)"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span class="truncate" :class="h.state === 'connected' && 'sr-only'">{{ linkLook(h.state).label }}</span></span>
                 </div>
               </Tooltip>
               <div class="space-y-0.5" :class="!collapsed && 'ml-3 border-l border-outline-gray-2 pl-1.5'">
