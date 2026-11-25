@@ -193,13 +193,15 @@ watch(() => route.name, (name) => {
               </div>
             </template>
             <!-- Each remote machine is a group of its own: a machine heading (server icon, name, link state) that
-                 cannot be mistaken for a project row, with that machine's projects nested on a rail under it. -->
+                 cannot be mistaken for a project row, with that machine's projects nested on a rail under it.
+                 The normal connected state is the green dot alone (its word stays for screen readers and the
+                 tooltip), so the machine name gets the room; every other state keeps its word visible. -->
             <div v-for="h in hostList" :key="h.id" class="mt-4" role="group" :aria-labelledby="`cw-machine-${h.id}`">
-              <Tooltip :text="linkAdvice(h).includes(h.name) ? linkAdvice(h) : `${h.name}: ${linkAdvice(h) || linkLook(h.state).label}`" side="right">
+              <Tooltip :text="(h.state === 'connected' ? 'Connected. ' : '') + (linkAdvice(h).includes(h.name) ? linkAdvice(h) : `${h.name}: ${linkAdvice(h) || linkLook(h.state).label}`)" side="right">
                 <div class="flex h-7 items-center gap-2 px-1" :class="collapsed && 'justify-center'">
                   <span class="flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /></span>
                   <h3 :id="`cw-machine-${h.id}`" :class="collapsed && 'sr-only'" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>
-                  <span class="flex min-w-0 shrink-0 items-center gap-1 text-xs" :class="[linkTone(h.state), !collapsed && 'max-w-[45%]']"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span v-if="!collapsed" class="truncate">{{ linkLook(h.state).label }}</span></span>
+                  <span class="flex min-w-0 shrink-0 items-center gap-1 text-xs" :class="[linkTone(h.state), !collapsed && 'max-w-[45%]']"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span v-if="!collapsed" class="truncate" :class="h.state === 'connected' && 'sr-only'">{{ linkLook(h.state).label }}</span></span>
                 </div>
               </Tooltip>
               <div class="space-y-0.5" :class="!collapsed && 'ml-3 border-l border-outline-gray-2 pl-1.5'">

@@ -36,6 +36,7 @@ import pytest
 
 from ..publish_fakes import NPM_EMAIL, NPM_PASSWORD, FakeNpm
 from . import harness
+from .browser import open_signed_in
 
 pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
@@ -827,3 +828,34 @@ class TestPresenceIsReportedNeverActedOn:
         assert view["state"] == "connected", view
         jobs_after = _api(lab.remote, "/api/v1/jobs", token=REMOTE_TOKEN)[1]["data"]
         assert [j["id"] for j in jobs_after] == [j["id"] for j in jobs_before]
+
+
+class TestTheSidebar:
+    def test_a_connected_machines_heading_gives_its_name_the_room(self, lab, chrome, monkeypatch):
+        """The sidebar heading of a connected machine shows the green dot alone: the word
+        "connected" took up to 45% of a 15rem row and cut an ordinary machine name short, so
+        the word now stays only for screen readers (and the tooltip). Every other state keeps
+        its word visible; the unreachable case is covered by the link tests above."""
+        assert lab.ensure_connected()["state"] == "connected"
+        # The browser signs in to the HUB, whose admin account lives in the hub's own home.
+        monkeypatch.setenv("CWCLI_HOME", str(lab.hub_home))
+        open_signed_in(chrome, lab.hub, "cwe2e-remote-sidebar-password")
+        chrome.viewport(1280, 800)
+        chrome.navigate(lab.hub + "/instances")
+        group = (
+            "[...document.querySelectorAll('nav [role=group]')]"
+            ".find((g) => g.querySelector('h3')?.textContent.trim() === 'Remote box')"
+        )
+        chrome.wait(
+            f"!!({group})?.querySelector('.text-ink-green-6')",
+            timeout=90,
+            desc="the connected machine's heading",
+        )
+        state = chrome.eval(
+            f"(() => {{ const s = ({group}).querySelector('h3').nextElementSibling;"
+            " return { text: s.textContent.trim(), width: s.getBoundingClientRect().width } })()"
+        )
+        # Still announced to a screen reader ...
+        assert state["text"] == "connected", state
+        # ... but drawn as the 6px dot only, not the dot plus the word.
+        assert state["width"] < 10, state
