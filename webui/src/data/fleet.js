@@ -326,3 +326,20 @@ export function duration(seconds) {
   const h = Math.floor(s / 3600)
   return `${h}h ${Math.floor((s % 3600) / 60)}m`
 }
+
+// --- why a bench is degraded (BenchStatus.reasons, from core.status) ---------------
+// The probe's own words: which check failed (supervisor, process, web), the state it
+// saw, and the cwcli command that addresses it. `cwcli status` renders the same list,
+// so a page and the CLI never disagree about the cause.
+
+export const reasonsOf = (inst) => (inst?.benches || []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))
+export const reasonShort = (r) => `${r.subject} ${r.state}`
+// The card and row word: `degraded · worker:default FATAL`, then `+1` per further reason.
+export const degradedWord = (reasons) => (reasons?.length ? `degraded · ${reasonShort(reasons[0])}${reasons.length > 1 ? ` +${reasons.length - 1}` : ''}` : 'degraded')
+// A tooltip or title: every reason's sentence, then when the probe saw them.
+export function reasonsTitle(inst) {
+  const rs = reasonsOf(inst)
+  if (!rs.length) return undefined
+  const many = (inst.benches || []).length > 1
+  return rs.map((r) => `${many ? benchName(r.bench) + ': ' : ''}${r.text}`).join(' ') + (inst.probed_at ? ` Seen ${ago(inst.probed_at * 1000)}.` : '')
+}

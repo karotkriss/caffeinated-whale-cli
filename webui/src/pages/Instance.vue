@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Button, Dropdown, Alert, TextInput, Tabs, TabList, TabTrigger, TabPanel, LoadingText, Badge } from 'frappe-ui'
+import { Button, Dropdown, Alert, TextInput, Tabs, TabList, TabTrigger, TabPanel, LoadingText, Badge, Tooltip } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import StatusBadge from '../components/StatusBadge.vue'
 import PageHero from '../components/PageHero.vue'
 import MaintenanceAlert from '../components/MaintenanceAlert.vue'
+import HealthReasons from '../components/HealthReasons.vue'
 import PerformancePanel from '../components/PerformancePanel.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import UpdatePill from '../components/UpdatePill.vue'
@@ -18,7 +19,7 @@ import StatusDot from '../components/StatusDot.vue'
 import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import CommandLine from '../components/CommandLine.vue'
-import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago, instancePath, benchPath, sitePath } from '../data/fleet'
+import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago, instancePath, benchPath, sitePath, reasonsTitle } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { useTabQuery } from '../data/tabs'
 import { can } from '../data/session'
@@ -115,6 +116,13 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
     <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on ${machine}`" description="It may have been removed or live on another Docker daemon. Search (Ctrl+K) finds the benches and sites cwcli remembers for it." />
     <Alert v-else-if="inst && !running" theme="gray" :title="`${project} is stopped`" description="Benches, sites and apps below are remembered from the cwcli cache. Process health and logs need the container running." />
     <template v-if="running">
+      <HealthReasons
+        v-for="b in (inst.benches || []).filter((b) => b.reasons?.length)"
+        :key="'reasons' + b.index"
+        :bench="b"
+        :inst="inst"
+        :ctx="{ project, host, bench: String(b.index), benchName: benchName(b) }"
+      />
       <MaintenanceAlert
         v-for="b in inst.benches || []"
         :key="b.index"
@@ -175,7 +183,7 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
               <ListCell>
                 <StatusBadge v-if="running && inst?.probe_error" token="unknown" />
                 <span v-else-if="!running || health[item.index]?.overall === 'running'" class="flex items-center gap-1.5 text-sm text-ink-gray-6"><StatusDot :token="running ? 'running' : 'offline'" />{{ running ? 'running' : 'stopped' }}</span>
-                <StatusBadge v-else :token="health[item.index]?.overall" />
+                <Tooltip v-else :text="reasonsTitle({ benches: [health[item.index]].filter(Boolean), probed_at: inst?.probed_at })"><StatusBadge :token="health[item.index]?.overall" /></Tooltip>
               </ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.sites.length }}</span></ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.available_apps.length }}</span></ListCell>

@@ -2181,6 +2181,22 @@ hint to run `cwcli start` to bring it under cwcli's supervisor. In this mode the
 per-process supervisord `state` is unavailable (there is no supervisord to ask);
 `up` comes straight from `ps`. `status` only reads - it never launches supervisord.
 
+**A degraded bench names what is wrong.** `degraded` folds every check into one
+token, so each bench also carries `reasons`: one entry per failed check, computed
+from the same facts the token was (so the list is empty exactly when the bench is
+not degraded). Each names the check (`supervisor`, `process` or `web`), its subject
+(the program label, `supervisord`, or `web`), the state the probe saw (supervisord's
+`FATAL`/`BACKOFF`/`EXITED`/`STOPPED`, `down` for a process `ps` did not find, `no
+response` or `not listening` for the web probe), one plain sentence, and the cwcli
+command that addresses it (`cwcli restart <project> --process <label>`, or `cwcli
+start <project>` when the supervisor itself is gone or the bench runs outside cwcli's
+supervisor). A dead supervisor is one reason, not one per program. The human `status`
+prints each as a `✗` fault under the bench heading with its `Fix:` line, `cwcli axi
+status` carries them as `benches[i].reasons`, and the web UI shows the same list on
+the instance, bench and site pages (with the fix as a button), names the first reason
+beside `degraded` on the Instances cards and Sites rows and in the sidebar's tooltip,
+and raises one notification per degraded instance.
+
 **Maintenance mode is called out plainly, and `status` offers to take sites out of it.**
 A site stuck in maintenance mode answers HTTP 503 (`SessionStopped`) to every user with no other signal - the state a `migrate` / `apps update` killed mid-run (a closed terminal, a `kill`, an OOM kill, a reboot) or a failed `bench update` leaves behind.
 `status` reads maintenance mode for every site of every bench it reports, the way Frappe answers it, not from one file:

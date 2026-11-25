@@ -12,6 +12,7 @@ import DevModeBadge from '../components/DevModeBadge.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import MaintenanceAlert from '../components/MaintenanceAlert.vue'
+import HealthReasons from '../components/HealthReasons.vue'
 import { apiBase, getJson } from '../data/api'
 import { jobList } from '../data/jobs'
 import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '../data/catalog'
@@ -154,6 +155,7 @@ const heroFacts = computed(() => [
     <div class="mt-4 max-w-sm"><CommandLine :command="`cwcli inspect ${project} --update`" /></div>
   </div>
   <div v-else class="space-y-8 px-3 pb-20 pt-5 sm:px-5">
+    <HealthReasons v-if="running && !inst?.probe_error" :bench="health" :inst="inst" :ctx="ctx" :site="siteName" />
     <MaintenanceAlert v-if="running" :maintenance="health?.maintenance" :ctx="ctx" :site="siteName" />
     <section class="grid gap-4 md:grid-cols-3">
       <div class="rounded-6 border border-outline-gray-1 p-4">

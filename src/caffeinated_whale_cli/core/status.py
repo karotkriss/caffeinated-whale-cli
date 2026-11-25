@@ -97,7 +97,8 @@ raises ``DOCKER``. No print/prompt/``typer.Exit``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import shlex
+from dataclasses import dataclass, field, replace
 
 from docker.errors import APIError, NotFound
 
@@ -112,6 +113,28 @@ OFFLINE = "offline"
 ONLINE = "online"
 RUNNING = "running"
 DEGRADED = "degraded"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HealthReason:
+    """One check behind a bench's ``degraded``, as the probe saw it (serializable).
+
+    ``overall`` folds every check into one token, and a reader who sees only the
+    token knows something is wrong but not what. Each reason names the check that
+    failed (``supervisor``, ``process`` or ``web``), its subject (the program label,
+    ``supervisord``, or ``web``), the state the check observed (supervisord's
+    ``FATAL``/``BACKOFF``/``EXITED``/``STOPPED``, ``down`` for a process ``ps`` did not
+    find, ``no response``/``not listening`` for the web probe), one plain sentence,
+    and the cwcli command that addresses it. Every frontend (the human ``status``,
+    ``axi status``, the web UI) renders these rather than deriving its own, so they
+    always name the same faults ``overall`` was computed from.
+    """
+
+    check: str
+    subject: str
+    state: str
+    text: str
+    fix: str | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -185,6 +208,10 @@ class BenchStatus:
     # genuinely up but not yet under cwcli supervision. ``supervisor_up`` (which
     # means *cwcli's* supervisord) stays False in this state.
     not_cwcli_supervised: bool = False
+    #: Why ``overall`` is ``degraded`` - one :class:`HealthReason` per failed check,
+    #: computed from the same facts ``overall`` folds, so it is empty exactly when
+    #: the bench is not degraded.
+    reasons: list[HealthReason] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -585,14 +612,18 @@ def _bench_status(
             supervision.supervisorctl_states(frappe_container, bench_path)
         )
         processes = _merge_health(expected, snapshot.processes, states)
-        overall = _overall(
-            started=marker is not None,
+        reasons = _reasons(
             supervisor_up=True,
-            all_healthy=_all_healthy(processes),
+            processes=processes,
             web_code=web_code,
             web_listening=web_listening,
             web_probed=probed,
+            web_port=web_port,
+            web_site=web_site,
+            project_name=project_name,
+            bench_flag=bench_flag,
         )
+        overall = _overall(started=marker is not None, reasons=reasons)
     else:
         # No cwcli supervisord for this bench. Before reporting all-down, fall back
         # to detecting whatever DOES run the Procfile (honcho / ``bench start`` - how
@@ -604,14 +635,19 @@ def _bench_status(
             processes = _merge_health(expected, fallback.processes, {})
             # A manager is alive, so drive ``overall`` off the real process state
             # (there is no supervisord ``state``; ``up`` comes from ``ps``).
-            overall = _overall(
-                started=True,
+            reasons = _reasons(
                 supervisor_up=True,
-                all_healthy=_all_healthy(processes),
+                processes=processes,
                 web_code=web_code,
                 web_listening=web_listening,
                 web_probed=probed,
+                not_cwcli_supervised=True,
+                web_port=web_port,
+                web_site=web_site,
+                project_name=project_name,
+                bench_flag=bench_flag,
             )
+            overall = _overall(started=True, reasons=reasons)
             # One hint per report, not per bench: the text is generic, so N benches
             # under honcho would otherwise repeat it verbatim N times.
             if not any(w.code == "supervisor.not_cwcli" for w in warnings):
@@ -620,14 +656,21 @@ def _bench_status(
             # Genuinely not running under any manager: keep the marker-based
             # never-started (online) vs supervisor-died (degraded) distinction.
             processes = _merge_health(expected, [], {})
-            overall = _overall(
-                started=marker is not None,
-                supervisor_up=False,
-                all_healthy=_all_healthy(processes),
-                web_code=web_code,
-                web_listening=web_listening,
-                web_probed=probed,
+            # A bench never started has nothing wrong with it, so no reason either.
+            reasons = (
+                []
+                if marker is None
+                else _reasons(
+                    supervisor_up=False,
+                    processes=processes,
+                    web_code=web_code,
+                    web_port=web_port,
+                    web_site=web_site,
+                    project_name=project_name,
+                    bench_flag=bench_flag,
+                )
             )
+            overall = _overall(started=marker is not None, reasons=reasons)
 
     return BenchStatus(
         index=index,
@@ -644,6 +687,7 @@ def _bench_status(
         maintenance=bench_maintenance,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,
+        reasons=reasons,
     )
 
 
@@ -712,18 +756,22 @@ def _bench_status_fused(
     )
     maintenance = _site_maintenance(bench_maintenance, web_site)
     _maintenance_warnings(bench_maintenance, project_name, bench_flag, warnings)
+    reasons = _reasons(
+        supervisor_up=True,
+        processes=fused.processes,
+        web_code=None,
+        web_listening=fused.web_listening,
+        web_probed=probed,
+        web_port=web_port,
+        web_site=web_site,
+        project_name=project_name,
+        bench_flag=bench_flag,
+    )
     return BenchStatus(
         index=index,
         bench_path=bench_path,
         label=label,
-        overall=_overall(
-            started=True,
-            supervisor_up=True,
-            all_healthy=_all_healthy(fused.processes),
-            web_code=None,
-            web_listening=fused.web_listening,
-            web_probed=probed,
-        ),
+        overall=_overall(started=True, reasons=reasons),
         supervisor_up=True,
         web_port=web_port,
         web_port_verified=web_port is not None,
@@ -733,6 +781,7 @@ def _bench_status_fused(
         maintenance_mode=maintenance,
         maintenance=bench_maintenance,
         processes=fused.processes,
+        reasons=reasons,
     )
 
 
@@ -817,30 +866,109 @@ def _all_healthy(processes: list[ProcessHealth]) -> bool:
     return True
 
 
-def _overall(
-    *,
-    started: bool,
-    supervisor_up: bool,
-    all_healthy: bool,
-    web_code: str | None,
-    web_listening: bool | None = None,
-    web_probed: bool = True,
-) -> str:
+def _overall(*, started: bool, reasons: list[HealthReason]) -> str:
     """The pre-computed lifecycle aggregate (see module docstring's table).
 
-    Unlike the honcho model, a stable partial stack (``all_healthy`` False - a
-    program is BACKOFF/FATAL/EXITED/STOPPED/down while supervisord keeps the rest
-    alive) is a genuine ``degraded``. When ``web_probed`` is False (watch mode
-    suppressed the web probe), a missing web code alone must NOT degrade the
-    aggregate - only supervisor-down or an unhealthy program does.
+    A never-started bench is ``online``; a started one is ``degraded`` exactly when
+    :func:`_reasons` found a failed check, else ``running``. Deriving the token from
+    the reasons list (rather than computing both from the inputs separately) is what
+    keeps the two from ever disagreeing: a bench cannot say ``degraded`` with nothing
+    to show for it, nor list a fault while claiming ``running``.
     """
     if not started:
         return ONLINE
+    return DEGRADED if reasons else RUNNING
+
+
+# One line of plain detail per supervisord state, for a reason's sentence.
+_STATE_DETAIL = {
+    "FATAL": "supervisord gave up restarting it",
+    "BACKOFF": "it keeps exiting and supervisord is retrying it",
+    "EXITED": "it exited and was not restarted",
+    "STOPPED": "it was stopped",
+}
+
+
+def _reasons(
+    *,
+    supervisor_up: bool,
+    processes: list[ProcessHealth],
+    web_code: str | None,
+    web_listening: bool | None = None,
+    web_probed: bool = True,
+    web_port: int | None = None,
+    web_site: str | None = None,
+    not_cwcli_supervised: bool = False,
+    project_name: str = "",
+    bench_flag: str = "",
+) -> list[HealthReason]:
+    """Every failed check behind a started bench's ``degraded``, in reading order.
+
+    Unlike the honcho model, a stable partial stack (a program BACKOFF/FATAL/EXITED/
+    STOPPED/down while supervisord keeps the rest alive) is a genuine fault and is
+    named per program. A dead supervisor is ONE reason, not one per program: every
+    program is down because of it, and the fix is one command. When ``web_probed``
+    is False (watch mode suppressed the web probe) a missing web code alone is not
+    a fault - only supervisor-down or an unhealthy program is.
+    """
+    start = f"cwcli start {project_name}{bench_flag}"
     if not supervisor_up:
-        return DEGRADED
-    if not all_healthy:
-        return DEGRADED
-    if not web_probed:
-        return RUNNING
-    web_ok = web_listening if web_listening is not None else web_code not in (None, "000")
-    return RUNNING if web_ok else DEGRADED
+        return [
+            HealthReason(
+                check="supervisor",
+                subject="supervisord",
+                state="down",
+                text=(
+                    "The bench was started but its supervisor is not running, so none of "
+                    "its processes are."
+                ),
+                fix=start,
+            )
+        ]
+    out: list[HealthReason] = []
+    for p in processes:
+        if p.state is not None:
+            if p.state in _HEALTHY_STATES:
+                continue
+            state = p.state
+            detail = _STATE_DETAIL.get(state, "")
+        elif not p.up:
+            state = "down"
+            detail = "it is not in the process list"
+        else:
+            continue
+        out.append(
+            HealthReason(
+                check="process",
+                subject=p.label,
+                state=state,
+                text=f"{p.label} is {state}" + (f": {detail}." if detail else "."),
+                fix=(
+                    start
+                    if not_cwcli_supervised
+                    else f"cwcli restart {project_name}{bench_flag} --process "
+                    f"{shlex.quote(p.label)}"
+                ),
+            )
+        )
+    if web_probed:
+        web_ok = web_listening if web_listening is not None else web_code not in (None, "000")
+        if not web_ok:
+            state = "not listening" if web_listening is False else "no response"
+            where = f"port {web_port}" if web_port is not None else "its port"
+            if web_site:
+                where += f" for {web_site}"
+            out.append(
+                HealthReason(
+                    check="web",
+                    subject="web",
+                    state=state,
+                    text=f"The web server on {where} gave {state}.",
+                    fix=(
+                        start
+                        if not_cwcli_supervised
+                        else f"cwcli restart {project_name}{bench_flag} --process web"
+                    ),
+                )
+            )
+    return out

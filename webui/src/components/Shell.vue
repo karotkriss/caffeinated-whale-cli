@@ -43,7 +43,7 @@ function cycleScheme() { setScheme(SCHEME_CYCLE[scheme.value] || 'light') }
 import StartGateDialog from './StartGateDialog.vue'
 import PortWarningDialog from './PortWarningDialog.vue'
 import AddHostDialog from './AddHostDialog.vue'
-import { fleet, instances, localInstances, doctor, details, countSites, instancePath } from '../data/fleet'
+import { fleet, instances, localInstances, doctor, details, countSites, instancePath, reasonsTitle } from '../data/fleet'
 import { hostList, hasHosts, linkLook, linkAdvice, linkTone, loadHosts } from '../data/hosts'
 import { dockerDown, dockerGates } from '../data/docker'
 import EmptyState from './EmptyState.vue'
@@ -188,7 +188,7 @@ watch(() => route.name, (name) => {
               <SidebarLabel class="mt-4">{{ hostList.length ? 'This machine' : 'Instances' }}</SidebarLabel>
               <div class="space-y-0.5">
                 <SidebarItem v-for="i in localInstances" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && !route.params.host">
-                  <template #prefix><StatusDot :token="i.overall" /></template>
+                  <template #prefix><StatusDot :token="i.overall" :title="reasonsTitle(i)" /></template>
                 </SidebarItem>
               </div>
             </template>
@@ -207,7 +207,7 @@ watch(() => route.name, (name) => {
               </Tooltip>
               <div class="space-y-0.5" :class="!collapsed && 'ml-3 border-l border-outline-gray-2 pl-1.5'">
                 <SidebarItem v-for="i in hostInstances(h.id)" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && route.params.host === h.id">
-                  <template #prefix><StatusDot :token="i.overall" /></template>
+                  <template #prefix><StatusDot :token="i.overall" :title="reasonsTitle(i)" /></template>
                 </SidebarItem>
                 <p v-if="!hostInstances(h.id).length && !collapsed && h.state === 'connected'" class="px-2 py-1 text-xs text-ink-gray-4">no instances</p>
               </div>

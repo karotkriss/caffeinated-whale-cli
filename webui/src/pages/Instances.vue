@@ -15,7 +15,7 @@ import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import { loadUpdates, updatesFor } from '../data/updates'
 import { createJob, activeJobs } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
-import { fleet, instances, details, publishedRange, countSites, cacheProjects, setFocus, instancePath, ago } from '../data/fleet'
+import { fleet, instances, details, publishedRange, countSites, cacheProjects, setFocus, instancePath, ago, reasonsOf, degradedWord, reasonsTitle } from '../data/fleet'
 import { applySetting, settings } from '../data/settings'
 import { menuOption } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
@@ -190,8 +190,8 @@ const hostMenu = (h) => [
             <Tooltip v-if="staleInstance(i)" :text="linkAdvice(hostList.find((h) => h.id === i.host))">
               <span class="flex items-center gap-1 text-xs text-ink-gray-5"><span class="size-1.5 rounded-full" :class="DOT.unknown" />unknown · {{ lastSeen(i) }}</span>
             </Tooltip>
-            <Tooltip v-else-if="QUIET[i.overall] !== null" :text="`container ${i.docker_status}`">
-              <span class="flex items-center gap-1 text-xs text-ink-gray-5"><span class="size-1.5 rounded-full" :class="DOT[i.overall] || DOT.unknown" />{{ QUIET[i.overall] || i.overall }}</span>
+            <Tooltip v-else-if="QUIET[i.overall] !== null" :text="reasonsTitle(i) || `container ${i.docker_status}`">
+              <span class="flex min-w-0 items-center gap-1 text-xs text-ink-gray-5"><span class="size-1.5 shrink-0 rounded-full" :class="DOT[i.overall] || DOT.unknown" /><span class="truncate">{{ i.overall === 'degraded' ? degradedWord(reasonsOf(i)) : QUIET[i.overall] || i.overall }}</span></span>
             </Tooltip>
           </span>
           <span class="mt-0.5 flex items-center gap-1.5 text-sm text-ink-gray-5"><RemoteHostBadge :host="i.host" /><span class="truncate">{{ meta(i) }}</span></span>

@@ -3,7 +3,7 @@
 // remembered in this browser, the panel shows unread only, the badge counts unread.
 import { computed, reactive } from 'vue'
 import { advisories } from './advisories'
-import { doctor } from './fleet'
+import { doctor, instances, reasonsOf, reasonShort, benchName, instancePath } from './fleet'
 import { jobList, jobLabel, jobPath, jobWhere } from './jobs'
 import { schedules } from './schedules'
 
@@ -36,6 +36,14 @@ export const notifications = computed(() => {
       const stamp = digest === 'daily' ? new Date().toDateString() : `w${Math.floor(Date.now() / (7 * 86400e3))}`
       out.push({ id: `digest:${digest}:${stamp}`, kind: 'digest', theme: failed ? 'amber' : 'gray', title: `Scheduled runs, last ${digest === 'daily' ? 'day' : 'week'}: ${ok} ok, ${failed} failed`, detail: `${runs.length} runs`, to: '/schedules', at: null })
     }
+  }
+  // A degraded instance: which checks failed, in the probe's words. The id carries the
+  // reason set, so a fault that changes (or a new one) is unread again.
+  for (const i of instances.value) {
+    const rs = reasonsOf(i)
+    if (i.overall !== 'degraded' || !rs.length) continue
+    const many = (i.benches || []).length > 1
+    out.push({ id: `degraded:${i.key}:${rs.map(reasonShort).join(',')}`, kind: 'health', theme: 'amber', title: `${i.project} is degraded`, detail: rs.map((r) => `${many ? benchName(r.bench) + ' ' : ''}${reasonShort(r)}`).join(' · '), to: instancePath(i), at: i.probed_at ? new Date(i.probed_at * 1000).toISOString() : null })
   }
   for (const c of doctor.data?.checks || []) {
     if (c.status !== 'pass') out.push({ id: `health:${c.id}:${c.status}`, kind: 'health', theme: c.status === 'fail' ? 'red' : 'amber', title: c.title, detail: c.detail, to: '/settings/health', at: null })

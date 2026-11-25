@@ -1264,3 +1264,100 @@ def wire_bench_left_down_by_bench_update(monkeypatch):
         core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
     )
     return container
+
+
+class TestReasons:
+    """``BenchStatus.reasons`` names every check behind ``degraded`` - and ONLY then.
+
+    The token used to be the whole answer: a reader saw ``degraded`` and had to
+    work out which program, port, or supervisor was behind it from the rest of the
+    report. The reasons are computed from the same facts the token folds, so the
+    two can never disagree, and every frontend renders them rather than deriving
+    its own.
+    """
+
+    def test_a_running_or_never_started_bench_has_no_reason(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        assert _bench(core_status.status("proj").data).reasons == []
+        wire(FakeContainer(marker=None, web_code="200"), benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.overall == "online" and _bench(report).reasons == []
+
+    def test_a_dead_supervisor_is_one_reason_naming_cwcli_start(self, wire):
+        c = FakeContainer(marker=_MARKER, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj").data)
+        assert bench.overall == "degraded"
+        # Every program is down because of it; one reason, not seven.
+        assert [(r.check, r.subject, r.state) for r in bench.reasons] == [
+            ("supervisor", "supervisord", "down")
+        ]
+        assert bench.reasons[0].fix == "cwcli start proj"
+
+    def test_a_fatal_program_is_named_with_its_state_and_restart(self, wire):
+        ps = _PS_SINGLE.replace(
+            "105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        ctl = _CTL_SINGLE.replace(
+            "worker_default   RUNNING   pid 105, uptime 0:05:00\n",
+            "worker_default   FATAL   Exited too quickly\n",
+        )
+        wire(
+            FakeContainer(marker=_MARKER, ps=ps, ctl_status=ctl, web_code="200"),
+            benches=[{"path": BENCH}],
+        )
+        bench = _bench(core_status.status("proj").data)
+        (reason,) = bench.reasons
+        assert (reason.check, reason.subject, reason.state) == (
+            "process",
+            "worker:default",
+            "FATAL",
+        )
+        assert "gave up" in reason.text
+        assert reason.fix == "cwcli restart proj --process worker:default"
+
+    def test_a_silent_web_server_is_named_with_its_port_and_site(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj").data)
+        (reason,) = bench.reasons
+        assert (reason.check, reason.subject, reason.state) == ("web", "web", "no response")
+        assert "port 8000" in reason.text
+        assert reason.fix == "cwcli restart proj --process web"
+
+    def test_a_fused_read_names_the_port_that_refused(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj", fused=True).data)
+        assert [(r.check, r.state) for r in bench.reasons] == [("web", "not listening")]
+
+    def test_under_honcho_a_missing_process_points_at_cwcli_start(self, wire):
+        # There is no supervisord to restart one program; bringing the bench under
+        # cwcli supervision is the fix the hint already names.
+        ps = _PS_HONCHO.replace(
+            "205 200 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        c = FakeContainer(marker=None, ps=ps, cwds={200: BENCH}, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj").data)
+        (reason,) = bench.reasons
+        assert (reason.check, reason.subject, reason.state) == ("process", "worker:default", "down")
+        assert reason.fix == "cwcli start proj"
+
+    def test_a_multi_bench_fix_carries_the_bench_selector(self, wire):
+        c = FakeContainer(marker=_MARKER, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH, "index": 0}, {"path": "/workspace/other", "index": 1}])
+        report = core_status.status("proj", bench="0").data
+        assert _bench(report).reasons[0].fix == "cwcli start proj --bench 0"
+
+    def test_without_a_web_probe_a_missing_code_is_not_a_reason(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj", probe_web=False).data)
+        assert bench.overall == "running" and bench.reasons == []
+
+    def test_degraded_exactly_when_a_reason_exists(self):
+        # The invariant every frontend leans on: the token is derived FROM the list.
+        reason = core_status.HealthReason(
+            check="process", subject="web", state="FATAL", text="web is FATAL.", fix=None
+        )
+        assert core_status._overall(started=True, reasons=[reason]) == "degraded"
+        assert core_status._overall(started=True, reasons=[]) == "running"
+        assert core_status._overall(started=False, reasons=[reason]) == "online"
