@@ -122,7 +122,7 @@ const failure = computed(() => {
   const failedPart = job.verb === 'publish-site' && Object.entries(job.result?.parts || {}).find(([, p]) => p.state === 'failed')
   // Frappe answering 503 SessionStopped is maintenance mode, its own cause with its own
   // fix: the same clear the site and bench pages offer, then Retry.
-  if (failedPart?.[1].code === 'publish.maintenance') return { title: 'Publishing stopped: the site is in maintenance mode', description: `${failedPart[1].message} Take it out of maintenance mode, then Retry checks it again.`, maintenance: true }
+  if (failedPart?.[1]?.code === 'publish.maintenance') return { title: 'Publishing stopped: the site is in maintenance mode', description: `${failedPart[1].message} Take it out of maintenance mode, then Retry checks it again.`, maintenance: true }
   if (failedPart) return { title: `Publishing stopped at the ${PUBLISH_PART[failedPart[0]]}`, description: `${failedPart[1].message} The site itself was not touched; Retry repeats only what is missing.` }
   if (job.verb === 'unpublish-site' && job.result?.failed?.length) return { title: 'Part of the public address was not removed', description: `${job.result.failed.join(' ')} It stays recorded, so Retry finishes it.` }
   const cause = job.cause
