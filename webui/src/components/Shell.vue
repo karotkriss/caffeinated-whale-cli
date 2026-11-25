@@ -7,7 +7,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useIntervalFn, useMediaQuery } from '@vueuse/core'
-import { DesktopShell, Sidebar, SidebarItem, SidebarLabel, ScrollArea, Alert, Dialog, KeyboardShortcut, Badge, Button, useKeyboardShortcut } from 'frappe-ui'
+import { DesktopShell, Sidebar, SidebarItem, SidebarLabel, ScrollArea, Alert, Dialog, KeyboardShortcut, Badge, Button, Tooltip, useKeyboardShortcut } from 'frappe-ui'
 import StatusDot from './StatusDot.vue'
 import { isDirectorySource } from '../data/integrations'
 import { loadUpdates, updateCount } from '../data/updates'
@@ -44,7 +44,7 @@ import StartGateDialog from './StartGateDialog.vue'
 import PortWarningDialog from './PortWarningDialog.vue'
 import AddHostDialog from './AddHostDialog.vue'
 import { fleet, instances, localInstances, doctor, details, countSites, instancePath } from '../data/fleet'
-import { hostList, hasHosts, linkLook, loadHosts } from '../data/hosts'
+import { hostList, hasHosts, linkLook, linkAdvice, linkTone, loadHosts } from '../data/hosts'
 import { dockerDown, dockerGates } from '../data/docker'
 import EmptyState from './EmptyState.vue'
 import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
@@ -192,16 +192,23 @@ watch(() => route.name, (name) => {
                 </SidebarItem>
               </div>
             </template>
-            <!-- Each remote host is its own section, labelled by the host with its link dot. -->
-            <template v-for="h in hostList" :key="h.id">
-              <SidebarLabel class="mt-4"><span class="flex items-center gap-1.5"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span class="truncate">{{ h.name }}</span></span></SidebarLabel>
-              <div class="space-y-0.5">
+            <!-- Each remote machine is a group of its own: a machine heading (server icon, name, link state) that
+                 cannot be mistaken for a project row, with that machine's projects nested on a rail under it. -->
+            <div v-for="h in hostList" :key="h.id" class="mt-4" role="group" :aria-labelledby="`cw-machine-${h.id}`">
+              <Tooltip :text="`${h.name}: ${linkAdvice(h)}`" side="right">
+                <div class="flex h-7 items-center gap-2 px-1" :class="collapsed && 'justify-center'">
+                  <span class="flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /></span>
+                  <h3 v-if="!collapsed" :id="`cw-machine-${h.id}`" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>
+                  <span class="flex min-w-0 shrink-0 items-center gap-1 text-xs" :class="[linkTone(h.state), !collapsed && 'max-w-[45%]']"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span v-if="!collapsed" class="truncate">{{ linkLook(h.state).label }}</span></span>
+                </div>
+              </Tooltip>
+              <div class="space-y-0.5" :class="!collapsed && 'ml-3 border-l border-outline-gray-2 pl-1.5'">
                 <SidebarItem v-for="i in hostInstances(h.id)" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && route.params.host === h.id">
                   <template #prefix><StatusDot :token="i.overall" /></template>
                 </SidebarItem>
-                <p v-if="!hostInstances(h.id).length" class="px-2 py-1 text-xs text-ink-gray-4">{{ h.state === 'connected' ? 'no instances' : linkLook(h.state).label }}</p>
+                <p v-if="!hostInstances(h.id).length && !collapsed" class="px-2 py-1 text-xs text-ink-gray-4">no instances</p>
               </div>
-            </template>
+            </div>
           </ScrollArea>
           <div class="cw-a-side-foot relative space-y-0.5 border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
             <SidebarItem v-if="session.user" :label="session.user.name || session.user.username" icon="lucide-circle-user-round" :active="false" @click="openSettings('account')">
