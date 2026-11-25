@@ -36,7 +36,7 @@ def _assess(common, sites, **kwargs):
 
 
 class TestTheRead:
-    def test_only_the_three_keys_survive_the_parse(self):
+    def test_only_the_decision_keys_survive_the_parse(self):
         raw = _raw(
             {"maintenance_mode": 1, "db_host": "mariadb"},
             {"a.localhost": {"db_password": "secret", "maintenance_mode": 0}},
@@ -520,6 +520,85 @@ class TestClear:
 
         assert result.data.verified is False
         assert any(w.code == "maintenance.unverified" for w in result.warnings)
+
+
+class TestReadsDuringMaintenance:
+    """Frappe v16 serves a site's reads in maintenance and refuses its writes
+    (``allow_reads_during_maintenance`` on by default, frappe/frappe#46303), so its
+    ping answers 200 in maintenance or out of it: a 200 must not clear the file model."""
+
+    class _Served:
+        """A bench whose web server answers every site's ping with ``answer``."""
+
+        def __init__(self, common, sites, answer, version='__version__ = "16.0.0"'):
+            self.common, self.sites, self.answer, self.version = common, sites, answer, version
+
+        def exec_run(self, cmd, **_):
+            if maintenance_fakes.is_read(cmd):
+                return (
+                    0,
+                    maintenance_fakes.read_output(
+                        common=self.common, sites=self.sites, version=self.version
+                    ),
+                )
+            if maintenance_fakes.is_probe(cmd):
+                return (
+                    0,
+                    maintenance_fakes.probe_output(cmd, dict.fromkeys(self.sites, self.answer)),
+                )
+            return (1, b"")  # no migrate lock dir
+
+    def _inspect(self, common, sites, answer=("200", False), **kw):
+        bench = self._Served(common, sites, answer, **kw)
+        return m.inspect(bench, BENCH, project="proj", port=8000)
+
+    def test_a_v16_site_answering_200_is_still_in_maintenance_read_only(self):
+        report = self._inspect({"maintenance_mode": 1, "pause_scheduler": 1}, {"a.localhost": {}})
+        assert report.down == ["a.localhost"]
+        assert report.sites[0].read_only is True
+        assert report.sites[0].http_code == "200"
+        assert "read-only" in report.summary
+        assert "every site overrides it today" not in report.summary
+        assert report.question == (
+            "Take a.localhost out of maintenance mode and resume the scheduler?"
+        )
+
+    def test_a_v15_site_answering_200_is_out_of_maintenance_as_before(self):
+        report = self._inspect(
+            {"maintenance_mode": 1}, {"a.localhost": {}}, version='__version__ = "15.80.0"'
+        )
+        assert report.down == []
+
+    def test_the_key_is_read_site_over_common_on_any_version(self):
+        # v16 with reads turned off answers 503 SessionStopped, as v15 always did.
+        off = _assess(
+            {"maintenance_mode": 1, "allow_reads_during_maintenance": 1},
+            {"a.localhost": {"allow_reads_during_maintenance": 0}},
+        )
+        assert off.sites[0].read_only is False
+        on = _assess(
+            {"maintenance_mode": 1, "allow_reads_during_maintenance": 1},
+            {"a.localhost": {}},
+            version='__version__ = "15.80.0"',
+        )
+        assert on.sites[0].read_only is True
+        unknown = _assess({"maintenance_mode": 1}, {"a.localhost": {}}, version="")
+        assert unknown.sites[0].read_only is False
+
+    def test_a_session_stopped_answer_is_never_read_only(self):
+        report = self._inspect({"maintenance_mode": 1}, {"a.localhost": {}}, ("503", True))
+        assert report.sites[0].read_only is False
+        assert "1 site answers HTTP 503" in report.summary
+
+    def test_the_clear_says_writes_may_lag_behind_a_200(self, wire):
+        bench = wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}))
+        bench._on = lambda site: False  # v16: every ping answers 200
+        seen, emit = _events()
+
+        out = m.clear("proj", consent=True, on_event=emit).data
+
+        assert out.ok and out.cleared_bench_flags == ["maintenance_mode"]
+        assert "writes may stay refused" in seen[-1].message
 
 
 class TestStaleOwnerRecord:

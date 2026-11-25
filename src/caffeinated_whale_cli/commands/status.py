@@ -120,9 +120,9 @@ def status(
     `cwcli ls` gives) instead of erring - a bare `status` reads like "how is
     everything", not a missing-argument mistake.
 
-    When sites are in maintenance mode (HTTP 503), an interactive terminal is asked
-    whether to take them out; ``--clear-maintenance`` does it without asking, and
-    exits 1 if any site still answers maintenance mode or its state could not be read.
+    When sites are in maintenance mode (HTTP 503, or read-only on Frappe v16), an
+    interactive terminal is asked whether to take them out; ``--clear-maintenance``
+    does it without asking, and exits 1 if any site still answers maintenance mode or its state could not be read.
     """
     if project_name is None:
         try:

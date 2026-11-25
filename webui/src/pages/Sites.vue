@@ -200,7 +200,7 @@ const hasMenu = (r) => !!r.pub || (canPublish(r.host) && isPublicName(r.site.nam
                 <span class="truncate text-base-medium text-ink-gray-9">{{ item.site.name }}</span>
                 <Badge v-if="item.isDefault" size="sm" theme="gray" variant="subtle" label="default" />
                 <DevModeBadge :state="item.devMode" quiet-off />
-                <Tooltip v-if="item.maintenance" text="In maintenance mode (HTTP 503, or its scheduler stopped) until it is taken out of it"><span class="flex shrink-0"><Badge class="max-lg:hidden" size="sm" theme="red" variant="subtle" label="maintenance" /><span class="lucide-wrench size-3.5 text-ink-red-5 lg:hidden" role="img" aria-label="In maintenance mode" /></span></Tooltip>
+                <Tooltip v-if="item.maintenance" text="In maintenance mode (HTTP 503 or read-only, or its scheduler stopped) until it is taken out of it"><span class="flex shrink-0"><Badge class="max-lg:hidden" size="sm" theme="red" variant="subtle" label="maintenance" /><span class="lucide-wrench size-3.5 text-ink-red-5 lg:hidden" role="img" aria-label="In maintenance mode" /></span></Tooltip>
                 <Tooltip v-if="item.pub" :text="`${item.pub.url} · ${pubWord(item.pub).text}`"><span class="lucide-globe size-3.5 shrink-0 lg:hidden" :class="pubWord(item.pub).cls" role="img" :aria-label="`Public address ${pubWord(item.pub).short}`" /></Tooltip>
               </span>
               <span class="flex items-center gap-1.5 text-xs text-ink-gray-5"><span v-if="item.host" class="lucide-server size-3 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate">{{ whereLine(item) }}</span><span class="flex shrink-0 items-center gap-1 lg:hidden"><StatusDot :token="item.token" />{{ item.word }}</span></span>
