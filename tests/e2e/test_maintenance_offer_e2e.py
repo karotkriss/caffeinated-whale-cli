@@ -111,13 +111,19 @@ def _in_maintenance(inst, port: int) -> bool:
         return True
     if code != "200":
         return False
+    code, out = _login(inst, port)
+    return code == "503" and "InReadOnlyMode" in out
+
+
+def _login(inst, port: int) -> tuple[str, str]:
+    """An Administrator login, a write (it stores a session): (http_code, body)."""
     _code, out = harness.exec_in_frappe(
         inst.name,
         f"curl -s --max-time 10 -H 'Host: {inst.site}' -w ' %{{http_code}}' "
         f"--data-urlencode usr=Administrator --data-urlencode pwd={shlex.quote(SESSION_ADMIN_PW)} "
         f"http://localhost:{port}/api/method/login",
     )
-    return out.rsplit(" ", 1)[-1].strip() == "503" and "InReadOnlyMode" in out
+    return out.rsplit(" ", 1)[-1].strip(), out
 
 
 def _marked_pids(inst) -> list[str]:
@@ -243,10 +249,10 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
         assert common.get("maintenance_mode") == 0
         assert common.get("pause_scheduler") == 0  # the scheduler resumed with it
         harness.wait_until(
-            lambda: _ping(inst, port) == ("200", False) and not _in_maintenance(inst, port),
+            lambda: _login(inst, port)[0] == "200",
             timeout=150,
             interval=5,
-            desc="the site answers the ping with 200 and accepts a write again",
+            desc="the site accepts a write again: an Administrator login answers 200",
         )
     finally:
         _signal_marked(inst, "KILL")
