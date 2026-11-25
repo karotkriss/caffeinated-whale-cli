@@ -17,7 +17,8 @@ the files and the answer disagree for up to a minute), then proves, in both mode
 - **non-TTY**: ``cwcli status`` never asks, names ``--clear-maintenance``, exits 0
   and keeps stdout to its one token;
 - **TTY**: on a real pty ``cwcli status`` asks; answering yes clears both flags
-  (the scheduler resumes with them) and the site answers Frappe's ping with 200.
+  (the scheduler resumes with them), and the site answers Frappe's ping with 200 and
+  accepts a write again.
 
 Frappe v16 serves reads in maintenance mode by default
 (``allow_reads_during_maintenance``, frappe/frappe#46303) and refuses only writes, so
@@ -241,7 +242,12 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
         common = _common(inst)
         assert common.get("maintenance_mode") == 0
         assert common.get("pause_scheduler") == 0  # the scheduler resumed with it
-        assert _ping(inst, port) == ("200", False)
+        harness.wait_until(
+            lambda: _ping(inst, port) == ("200", False) and not _in_maintenance(inst, port),
+            timeout=150,
+            interval=5,
+            desc="the site answers the ping with 200 and accepts a write again",
+        )
     finally:
         _signal_marked(inst, "KILL")
         try:
