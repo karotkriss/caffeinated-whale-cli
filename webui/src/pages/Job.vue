@@ -250,8 +250,8 @@ const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
 // The dependency questions: consent to the required apps, or a pick between sources.
 const depRows = computed(() => (record.value?.choice?.kind === 'confirm_required_apps' ? record.value.choice.options || [] : []))
 const sourceOptions = computed(() => (record.value?.choice?.kind === 'select_app_source' ? record.value.choice.options || [] : []))
-// The name typed back is the most specific thing the job acts on: a dropped
-// site's name, else the instance's (scale, rm, rm-bench).
+// The name typed back is the most specific thing the job acts on: a removed
+// app's name (Remove app), else a dropped site's, else the instance's (scale, rm, rm-bench).
 const consentTarget = computed(() => record.value?.target?.app || record.value?.target?.site || record.value?.target?.project)
 const typedName = ref('')
 const consentTyped = computed(() => !!consentTarget.value && typedName.value.trim() === consentTarget.value)
