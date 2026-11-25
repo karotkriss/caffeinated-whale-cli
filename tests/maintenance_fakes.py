@@ -34,6 +34,7 @@ def read_output(
     procfile: str = "web: bench serve --port 8000\n",
     currentsite: str = "",
     version: str = '__version__ = "16.0.0"',
+    reads_default: str = "0",
     owners: dict | None = None,
     procs: dict | None = None,
 ) -> bytes:
@@ -46,6 +47,7 @@ def read_output(
     lines += [f"{sentinel} procfile -", procfile]
     lines += [f"{sentinel} currentsite -", currentsite]
     lines += [f"{sentinel} version -", version]
+    lines += [f"{sentinel} readsdefault -", reads_default]
     for name, value in (owners or {}).items():
         lines += _file_block("owner", name, value)
     for pid, argv in (procs or {}).items():

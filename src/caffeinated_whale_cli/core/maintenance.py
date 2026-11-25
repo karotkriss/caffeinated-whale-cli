@@ -26,10 +26,12 @@ with, and this module models all three rather than reading one file:
    restart would drop every healthy site on the bench too.
 4. **Reads may be served.** With ``allow_reads_during_maintenance`` truthy (site over
    common, like every key), Frappe answers a site in maintenance read-only instead:
-   reads succeed and every write is refused with HTTP 503 ``InReadOnlyMode``. Frappe
-   v16 made it the DEFAULT (frappe/frappe#46303, on version-16 since 2026-11-19); v15
-   and earlier default it off. Such a site answers the ping with 200 in maintenance or
-   out of it, so a 200 says nothing about it and only the config files can.
+   reads succeed and every write is refused with HTTP 503 ``InReadOnlyMode``.
+   frappe/frappe#46303 made it the DEFAULT (first released in v16.61.0); every earlier
+   release, v16.60.x included, defaults it off. The version number does not say which
+   a bench runs, so the read looks for that default in the installed ``frappe/app.py``.
+   Such a site answers the ping with 200 in maintenance or out of it, so a 200 says
+   nothing about it and only the config files can.
 
 A live HTTP probe (``/api/method/ping`` with each site's ``Host``) is the final word
 wherever a caller can afford requests; the file model explains WHY.
@@ -92,6 +94,7 @@ done
 emit procfile -; cat Procfile 2>/dev/null
 emit currentsite -; cat sites/currentsite.txt 2>/dev/null
 emit version -; grep -m1 '^__version__' apps/frappe/frappe/__init__.py 2>/dev/null
+emit readsdefault -; grep -cE "allow_reads_during_maintenance['\"], *True" apps/frappe/frappe/app.py 2>/dev/null
 for f in "$r"/*.json; do [ -f "$f" ] || continue; s="${f##*/}"; emit owner "${s%.json}"; put "$f"; done
 real=$(pwd -P)
 for d in /proc/[0-9]*; do
@@ -128,8 +131,8 @@ class SiteMaintenance:
     ``served_as``, which is in maintenance), or ``"cached"`` (no file sets it any
     more; the web server is still answering from Frappe's config cache).
     ``read_only`` is True when Frappe serves the site's reads in maintenance and
-    refuses its writes (``allow_reads_during_maintenance``, the v16 default), so its
-    ping answers 200 either way.
+    refuses its writes (``allow_reads_during_maintenance``, on by default since
+    frappe/frappe#46303), so its ping answers 200 either way.
     ``http_code``/``session_stopped`` are the live probe's answer when one ran.
     """
 
@@ -218,6 +221,10 @@ class MaintenanceClearReport:
     scheduler_resumed: bool = False
     answering: list[str] = field(default_factory=list)
     still_down: list[str] = field(default_factory=list)
+    #: Cleared sites Frappe served read-only in maintenance: their ping answers 200
+    #: either way, so the clear could not check them, and their writes can stay
+    #: refused until Frappe's config cache expires (up to a minute).
+    read_only: list[str] = field(default_factory=list)
     verified: bool = False
     owners: list[MaintenanceOwner] = field(default_factory=list)
 
@@ -274,8 +281,8 @@ def _file_record(text: str, *, keys: tuple[str, ...] | None = _KEYS) -> dict:
 def read_bench(container, bench_path: str) -> dict | None:
     """Every fact the maintenance decision needs, in ONE exec; None when it failed.
 
-    ``{"common", "sites", "procfile", "currentsite", "frappe_init", "owners",
-    "procs"}``: config records keep only :data:`_KEYS`; ``procs`` is ``[pid, argv]``
+    ``{"common", "sites", "procfile", "currentsite", "frappe_init", "reads_default",
+    "owners", "procs"}``: config records keep only :data:`_KEYS`; ``procs`` is ``[pid, argv]``
     for every process whose working directory is inside the bench.
     """
     try:
@@ -320,6 +327,8 @@ def read_bench(container, bench_path: str) -> dict | None:
             raw[kind] = text
         elif kind == "version":
             raw["frappe_init"] = text
+        elif kind == "readsdefault":
+            raw["reads_default"] = text.strip()
     return raw
 
 
@@ -363,14 +372,13 @@ def _served_as(raw: dict, common: dict, sites: set[str]) -> str | None:
     return pinned if pinned in sites else None
 
 
-def _reads_allowed(config: dict, common: dict, major: int | None) -> bool:
+def _reads_allowed(config: dict, common: dict, default: bool) -> bool:
     """Frappe's ``conf.get("allow_reads_during_maintenance", <default>)`` for one site:
-    its own key, else the bench-wide one, else the default of the installed Frappe (on
-    from v16; an unknown version keeps the v15 answer, off)."""
+    its own key, else the bench-wide one, else the installed Frappe's default."""
     for source in (config, common):
         if "allow_reads_during_maintenance" in source:
             return bool(source["allow_reads_during_maintenance"])
-    return major is not None and major >= 16
+    return default
 
 
 def _owners(raw: dict, sites: set[str]) -> list[MaintenanceOwner]:
@@ -424,7 +432,7 @@ def assess(
     names = set(configs)
     flags = supervision.bench_wide_flags(common) or []
     served_as = _served_as(raw, common or {}, names)
-    major = _frappe_major(raw)
+    reads_default = (raw.get("reads_default") or "0") != "0"
     sites: list[SiteMaintenance] = []
     own_flags: dict[str, bool | None] = {}
     own_set: list[str] = []
@@ -454,7 +462,7 @@ def assess(
                     on=True,
                     cause="served_as" if target != name else cause,
                     served_as=target if target != name else None,
-                    read_only=_reads_allowed(config, common, major),
+                    read_only=_reads_allowed(config, common, reads_default),
                 )
             )
     down = [s.site for s in sites if s.on]
@@ -934,7 +942,7 @@ def clear(
             bench_ops.forget_maintenance_owner(container, bench_path, name)
 
     read_only = [s.site for s in report.sites if s.read_only and s.site in steps["scope"]]
-    answering, still_down, unanswered = _verify(
+    answering, still_down, unanswered, unchecked = _verify(
         container,
         port=port,
         sites=steps["scope"],
@@ -943,7 +951,13 @@ def clear(
         read_only=read_only,
     )
     ok = ok and not still_down
-    verified = port is not None and bool(steps["scope"]) and not unanswered and not unknown
+    verified = (
+        port is not None
+        and bool(steps["scope"])
+        and not unanswered
+        and not unknown
+        and not unchecked
+    )
     if unanswered:
         warnings.append(
             Message(
@@ -973,6 +987,7 @@ def clear(
             scheduler_resumed="pause_scheduler" in cleared_flags,
             answering=answering,
             still_down=still_down,
+            read_only=unchecked,
             verified=verified,
             owners=report.owners,
         ),
@@ -999,16 +1014,15 @@ def _verify(
     timeout: float,
     emit: OnEvent,
     read_only: list[str] | None = None,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     """Poll while any site still answers maintenance (503/SessionStopped), within
-    ``timeout``. Returns ``(answering, still_down, unanswered)``: a site that answers
-    nothing (web not listening, probe failed) is neither, and is not waited for.
-
-    A ``read_only`` site answers the ping with 200 even while Frappe's config cache
-    still holds it in maintenance, so its success message says writes may stay
-    refused until that cache expires rather than claiming more than the ping shows."""
+    ``timeout``. Returns ``(answering, still_down, unanswered, unchecked)``: a site
+    that answers nothing (web not listening, probe failed) is neither, and is not
+    waited for. A ``read_only`` site answering 200 is ``unchecked``, never
+    ``answering``: Frappe answers its ping with 200 even while its config cache still
+    holds it in maintenance."""
     if not sites or port is None:
-        return [], [], []
+        return [], [], [], []
     emit(MaintenanceStepStart(phase="verify", message="Check every site answers again"))
     deadline = time.monotonic() + timeout
     answers: dict[str, tuple[str, bool]] = {}
@@ -1021,7 +1035,12 @@ def _verify(
             break
         time.sleep(min(_VERIFY_INTERVAL_S, max(0.0, deadline - time.monotonic())))
     unanswered = [s for s in sites if answers.get(s, ("000", False))[0] == "000"]
-    answering = [s for s in sites if s not in still_down and s not in unanswered]
+    unchecked = [
+        s for s in (read_only or []) if s in sites and s not in still_down and s not in unanswered
+    ]
+    answering = [
+        s for s in sites if s not in still_down and s not in unanswered and s not in unchecked
+    ]
     if still_down:
         detail = ", ".join(
             f"{s} (HTTP {answers[s][0]}" + (", still SessionStopped" if answers[s][1] else "") + ")"
@@ -1041,12 +1060,13 @@ def _verify(
             )
         )
     else:
-        message = f"No site answers maintenance mode: {', '.join(answering)}"
-        lagging = [s for s in answering if s in (read_only or [])]
-        if lagging:
-            message += (
-                f"; {', '.join(lagging)} served reads in maintenance mode too, so writes "
-                "may stay refused until Frappe's config cache expires (within a minute)"
+        parts = []
+        if answering:
+            parts.append(f"No site answers maintenance mode: {', '.join(answering)}")
+        if unchecked:
+            parts.append(
+                f"Maintenance mode cleared: {', '.join(unchecked)}. "
+                "Writes can take up to a minute to resume."
             )
-        emit(MaintenanceStepEnd(phase="verify", status="ok", message=message))
-    return answering, still_down, unanswered
+        emit(MaintenanceStepEnd(phase="verify", status="ok", message="; ".join(parts)))
+    return answering, still_down, unanswered, unchecked

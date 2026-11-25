@@ -120,9 +120,10 @@ def status(
     `cwcli ls` gives) instead of erring - a bare `status` reads like "how is
     everything", not a missing-argument mistake.
 
-    When sites are in maintenance mode (HTTP 503, or read-only on Frappe v16), an
+    When sites are in maintenance mode (HTTP 503, or read-only on Frappe v16.61+), an
     interactive terminal is asked whether to take them out; ``--clear-maintenance``
-    does it without asking, and exits 1 if any site still answers maintenance mode or its state could not be read.
+    does it without asking, and exits 1 if any site still answers maintenance mode or
+    its state could not be read.
     """
     if project_name is None:
         try:
@@ -277,10 +278,17 @@ def _clear_bench(
             )
         return 1
     if outcome.ok:
-        unchecked = [s for s in outcome.sites if s not in outcome.answering]
+        unchecked = [
+            s for s in outcome.sites if s not in outcome.answering and s not in outcome.read_only
+        ]
         if outcome.answering:
             stderr_console.print(
                 f"[green]Out of maintenance mode:[/green] {', '.join(outcome.answering)}"
+            )
+        if outcome.read_only:
+            stderr_console.print(
+                f"Maintenance mode cleared: {', '.join(outcome.read_only)}. "
+                "Writes can take up to a minute to resume."
             )
         if unchecked:
             stderr_console.print(

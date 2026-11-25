@@ -18,13 +18,16 @@ the files and the answer disagree for up to a minute), then proves, in both mode
   and keeps stdout to its one token;
 - **TTY**: on a real pty ``cwcli status`` asks; answering yes clears both flags
   (the scheduler resumes with them), and the site answers Frappe's ping with 200 and
-  accepts a write again.
+  accepts a write again. A site that answered SessionStopped is reported "Out of
+  maintenance mode"; a read-only one, whose ping cannot tell, "Maintenance mode
+  cleared ... Writes can take up to a minute to resume".
 
-Frappe v16 serves reads in maintenance mode by default
-(``allow_reads_during_maintenance``, frappe/frappe#46303) and refuses only writes, so
+Frappe v16.61.0 and later serve reads in maintenance mode by default
+(``allow_reads_during_maintenance``, frappe/frappe#46303) and refuse only writes, so
 there the ping answers 200 throughout and the wait instead watches a write - an
 Administrator login, which writes a session row - be refused with 503
-``InReadOnlyMode``. v14/v15 answer the ping itself with 503 ``SessionStopped``.
+``InReadOnlyMode``. v14/v15 (and v16 before that release) answer the ping itself with
+503 ``SessionStopped``.
 
 A ``finally`` always puts the flags back to 0 and removes the throwaway site, so
 sibling tests on the shared instance are undisturbed.
@@ -186,6 +189,8 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
             interval=5,
             desc="the site answers 503 SessionStopped, or refuses a write with InReadOnlyMode",
         )
+        read_only = _ping(inst, port) == ("200", False)
+        cleared = "Maintenance mode cleared:" if read_only else "Out of maintenance mode:"
 
         # --- refusal while a real migrate runs on the bench -----------------------
         subprocess.Popen(
@@ -239,7 +244,7 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
             harness.expect_prompt_ready(child)
             child.send("y")
             child.sendline("")
-            child.expect("Out of maintenance mode:", timeout=240)
+            child.expect(cleared, timeout=240)
             child.expect(pexpect.EOF, timeout=120)
         finally:
             child.close()

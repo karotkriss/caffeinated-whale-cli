@@ -207,7 +207,19 @@ class _Bench:
     """A stateful fake bench for :func:`m.clear`: every write the clear makes lands in
     the configs, and the probe answers what Frappe would after ``lag`` probes."""
 
-    def __init__(self, common, sites, *, lag=0, refuse=(), procs=None, owners=None, unserved=False):
+    def __init__(
+        self,
+        common,
+        sites,
+        *,
+        lag=0,
+        refuse=(),
+        procs=None,
+        owners=None,
+        unserved=False,
+        reads_default="0",
+    ):
+        self.reads_default = reads_default
         self.common = dict(common)
         self.sites = {k: dict(v) for k, v in sites.items()}
         self.lag = lag
@@ -232,7 +244,11 @@ class _Bench:
             return (
                 0,
                 maintenance_fakes.read_output(
-                    common=self.common, sites=self.sites, owners=self.owners, procs=self.procs
+                    common=self.common,
+                    sites=self.sites,
+                    owners=self.owners,
+                    procs=self.procs,
+                    reads_default=self.reads_default,
                 ),
             )
         if maintenance_fakes.is_probe(cmd):
@@ -523,22 +539,26 @@ class TestClear:
 
 
 class TestReadsDuringMaintenance:
-    """Frappe v16 serves a site's reads in maintenance and refuses its writes
-    (``allow_reads_during_maintenance`` on by default, frappe/frappe#46303), so its
-    ping answers 200 in maintenance or out of it: a 200 must not clear the file model."""
+    """Frappe serves a site's reads in maintenance and refuses its writes when
+    ``allow_reads_during_maintenance`` is on, which frappe/frappe#46303 made the
+    default (first in v16.61.0; v16.60.2 still defaults it off). Such a site answers
+    its ping with 200 in maintenance or out of it, so a 200 must not clear the file
+    model. ``reads_default`` is the read exec's count of ``frappe/app.py`` lines that
+    default the key to True: 1 on a bench carrying #46303, 0 before it."""
 
     class _Served:
         """A bench whose web server answers every site's ping with ``answer``."""
 
-        def __init__(self, common, sites, answer, version='__version__ = "16.0.0"'):
-            self.common, self.sites, self.answer, self.version = common, sites, answer, version
+        def __init__(self, common, sites, answer, reads_default):
+            self.common, self.sites, self.answer = common, sites, answer
+            self.reads_default = reads_default
 
         def exec_run(self, cmd, **_):
             if maintenance_fakes.is_read(cmd):
                 return (
                     0,
                     maintenance_fakes.read_output(
-                        common=self.common, sites=self.sites, version=self.version
+                        common=self.common, sites=self.sites, reads_default=self.reads_default
                     ),
                 )
             if maintenance_fakes.is_probe(cmd):
@@ -548,11 +568,11 @@ class TestReadsDuringMaintenance:
                 )
             return (1, b"")  # no migrate lock dir
 
-    def _inspect(self, common, sites, answer=("200", False), **kw):
-        bench = self._Served(common, sites, answer, **kw)
+    def _inspect(self, common, sites, answer=("200", False), reads_default="1"):
+        bench = self._Served(common, sites, answer, reads_default)
         return m.inspect(bench, BENCH, project="proj", port=8000)
 
-    def test_a_v16_site_answering_200_is_still_in_maintenance_read_only(self):
+    def test_a_site_answering_200_on_a_read_only_frappe_is_still_in_maintenance(self):
         report = self._inspect({"maintenance_mode": 1, "pause_scheduler": 1}, {"a.localhost": {}})
         assert report.down == ["a.localhost"]
         assert report.sites[0].read_only is True
@@ -563,42 +583,74 @@ class TestReadsDuringMaintenance:
             "Take a.localhost out of maintenance mode and resume the scheduler?"
         )
 
-    def test_a_v15_site_answering_200_is_out_of_maintenance_as_before(self):
-        report = self._inspect(
-            {"maintenance_mode": 1}, {"a.localhost": {}}, version='__version__ = "15.80.0"'
-        )
+    def test_a_site_answering_200_on_an_older_frappe_is_out_of_maintenance(self):
+        report = self._inspect({"maintenance_mode": 1}, {"a.localhost": {}}, reads_default="0")
         assert report.down == []
 
-    def test_the_key_is_read_site_over_common_on_any_version(self):
-        # v16 with reads turned off answers 503 SessionStopped, as v15 always did.
+    @pytest.mark.parametrize(
+        ("reads_default", "read_only"),
+        [("1", True), ("0", False), ("", False)],
+        ids=["v16.61-with-46303", "v16.60-without-46303", "app-py-unreadable"],
+    )
+    def test_the_unprobed_read_follows_the_installed_frappe_not_its_major(
+        self, reads_default, read_only
+    ):
+        report = _assess(
+            {"maintenance_mode": 1},
+            {"a.localhost": {}},
+            version='__version__ = "16.0.0"',
+            reads_default=reads_default,
+        )
+        assert report.down == ["a.localhost"]
+        assert report.sites[0].read_only is read_only
+        said = "read-only" if read_only else "1 site answers HTTP 503"
+        assert said in m.describe(report)
+
+    def test_an_explicit_key_wins_site_over_common_over_the_default(self):
         off = _assess(
             {"maintenance_mode": 1, "allow_reads_during_maintenance": 1},
             {"a.localhost": {"allow_reads_during_maintenance": 0}},
+            reads_default="1",
         )
         assert off.sites[0].read_only is False
         on = _assess(
             {"maintenance_mode": 1, "allow_reads_during_maintenance": 1},
             {"a.localhost": {}},
-            version='__version__ = "15.80.0"',
+            reads_default="0",
         )
         assert on.sites[0].read_only is True
-        unknown = _assess({"maintenance_mode": 1}, {"a.localhost": {}}, version="")
-        assert unknown.sites[0].read_only is False
 
     def test_a_session_stopped_answer_is_never_read_only(self):
         report = self._inspect({"maintenance_mode": 1}, {"a.localhost": {}}, ("503", True))
         assert report.sites[0].read_only is False
         assert "1 site answers HTTP 503" in report.summary
 
-    def test_the_clear_says_writes_may_lag_behind_a_200(self, wire):
-        bench = wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}))
-        bench._on = lambda site: False  # v16: every ping answers 200
+    def test_a_read_only_clear_is_done_but_not_verified(self, wire):
+        bench = wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}, reads_default="1"))
+        bench._on = lambda site: False  # every ping answers 200, in maintenance or out
+        seen, emit = _events()
+
+        result = m.clear("proj", consent=True, on_event=emit)
+        out = result.data
+
+        assert out.ok and out.cleared_bench_flags == ["maintenance_mode"]
+        assert out.read_only == ["a.localhost"]
+        assert out.answering == [] and out.still_down == []
+        assert out.verified is False
+        assert seen[-1].status == "ok"
+        assert seen[-1].message == (
+            "Maintenance mode cleared: a.localhost. Writes can take up to a minute to resume."
+        )
+
+    def test_a_503_site_on_the_same_clear_is_still_verified(self, wire):
+        wire(_Bench({"maintenance_mode": 1}, {"a.localhost": {}}))
         seen, emit = _events()
 
         out = m.clear("proj", consent=True, on_event=emit).data
 
-        assert out.ok and out.cleared_bench_flags == ["maintenance_mode"]
-        assert "writes may stay refused" in seen[-1].message
+        assert out.answering == ["a.localhost"] and out.read_only == []
+        assert out.verified is True
+        assert seen[-1].message == "No site answers maintenance mode: a.localhost"
 
 
 class TestStaleOwnerRecord:
