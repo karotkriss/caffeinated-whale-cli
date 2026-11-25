@@ -452,12 +452,17 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         site_trouble = bool(
             report.failed_migrations
             or report.unknown_migrations
-            or report.unreadable_sites
+            or report.unreadable_with_app
             or report.requirements in ("failed", "unknown")
             or report.failed_maintenance_enable
             or report.failed_maintenance_disable
         )
-        if not site_trouble:
+        if report.warned:
+            console.print(
+                f"\n[bold yellow]![/bold yellow] Updated {successful_apps} app(s), "
+                "finished with warnings:"
+            )
+        elif not site_trouble:
             console.print(
                 f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]"
             )
@@ -520,6 +525,9 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             )
 
     if report.ok:
+        if report.warned:
+            _report_unreadable(report)
+            _report_bench_state(report)
         return
 
     console.print("\n[bold red]Update completed with errors:[/bold red]")
@@ -600,13 +608,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             tail = (pull_tails or {}).get(site, "").strip()
             for text_line in tail.splitlines()[-4:]:
                 console.print("      " + text_line, markup=False, highlight=False, style="dim")
-    if report.unreadable_sites:
-        console.print(
-            f"[bold red]✗ {len(report.unreadable_sites)} site(s) could not be opened, so "
-            "they were not migrated:[/bold red]"
-        )
-        for site in report.unreadable_sites:
-            console.print(f"  • {site}: the warning above names the cause")
+    _report_unreadable(report)
     _report_bench_state(report)
 
     if report.failed_builds:
@@ -659,6 +661,28 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             console.print(f"  • {site}: still in maintenance mode - run: {command}")
 
 
+def _report_unreadable(report: UpdateReport) -> None:
+    """The sites discovery could not open, none of them migrated. One known to have an
+    updated app fails the run (red); one nobody knows to have it is a warning (yellow)
+    that leaves the run succeeded, still listed so it is never silent."""
+    failing = [s for s in report.unreadable_sites if s in report.unreadable_with_app]
+    unrelated = [s for s in report.unreadable_sites if s not in report.unreadable_with_app]
+    if failing:
+        console.print(
+            f"[bold red]✗ {len(failing)} site(s) could not be opened, so they were not "
+            "migrated:[/bold red]"
+        )
+        for site in failing:
+            console.print(f"  • {site}: the warning above names the cause")
+    if unrelated:
+        console.print(
+            f"[bold yellow]![/bold yellow] {len(unrelated)} site(s) could not be opened and "
+            "are not known to have the updated app, so they were left untouched:"
+        )
+        for site in unrelated:
+            console.print(f"  • {site}: the warning above names the cause")
+
+
 def _report_bench_state(report: UpdateReport) -> None:
     """What the bench was left in when any site did not migrate: which sites did,
     which did not and why, and the maintenance state - never implied."""
@@ -686,7 +710,11 @@ def _report_bench_state(report: UpdateReport) -> None:
     for s in report.failed_maintenance_enable:
         why[s] = "could not enter maintenance mode"
     for s in report.unreadable_sites:
-        why[s] = "could not be opened, so it was never migrated"
+        why[s] = (
+            "could not be opened, so it was never migrated"
+            if s in report.unreadable_with_app
+            else "could not be opened; not known to have the updated app, so left untouched"
+        )
     for s in sorted(set(report.affected_sites) - set(report.migrated_sites)):
         why.setdefault(s, "not reached")
     console.print(

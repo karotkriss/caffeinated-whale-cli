@@ -79,7 +79,7 @@ const columns = computed(() => (hasHosts.value
           <ListCell class="max-md:hidden"><span class="truncate text-sm text-ink-gray-7">{{ jobTarget(item) }}</span></ListCell>
           <ListCell v-if="hasHosts" class="gap-1.5 max-md:hidden"><span v-if="item.host" class="lucide-server size-3.5 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ item.host ? hostName(item.host) : 'this machine' }}</span></ListCell>
           <ListCell>
-            <JobState :state="item.state" />
+            <JobState :state="item.state" :warned="!!item.warned" />
           </ListCell>
           <ListCell class="max-md:hidden">
             <Tooltip :text="absolute(item.started_at || item.created_at)"><span class="whitespace-nowrap text-sm text-ink-gray-6">{{ relative(item.started_at || item.created_at) }}</span></Tooltip>

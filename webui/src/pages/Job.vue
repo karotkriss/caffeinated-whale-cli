@@ -54,7 +54,8 @@ const benchState = computed(() => {
   for (const s of failed) why[s] = 'migration failed'
   for (const s of unknown) why[s] = 'outcome unknown, may still be running'
   for (const s of noMaint) why[s] = 'could not enter maintenance mode'
-  for (const s of unreadable) why[s] = 'could not be opened, so it was never migrated'
+  const withApp = r.unreadable_with_app || []
+  for (const s of unreadable) why[s] = withApp.includes(s) ? 'could not be opened, so it was never migrated' : 'could not be opened; not known to have the updated app, so left untouched'
   for (const s of notReached) why[s] ||= 'not reached'
   const done = (r.migrated_sites || []).filter((s) => !failed.includes(s) && !unknown.includes(s))
   const stuck = r.failed_maintenance_disable || []
@@ -306,7 +307,7 @@ async function continueChoice(value) {
     <Breadcrumbs :items="[{ label: 'Jobs', route: '/jobs' }, ...(host ? [{ label: hostName(host), route: '/jobs' }] : []), { label: record ? jobLabel(record) : id, route: route.path }]" />
     <div v-if="record" class="flex items-center gap-2">
       <RemoteHostBadge :host="host" size="md" />
-      <JobState :state="record.state" size="md" />
+      <JobState :state="record.state" :warned="!!record.warned" size="md" />
       <Button v-if="schedulable" icon-left="lucide-calendar-clock" label="Schedule this…" @click="openSchedule(scheduleFromJob(record))" />
       <Button v-if="active" icon-left="lucide-panel-right-close" label="Detach" @click="detach" />
       <Button v-if="active" theme="red" icon-left="lucide-square" :label="record.state === 'interrupting' ? 'Cleaning up' : 'Interrupt'" :disabled="record.state === 'interrupting'" @click="interrupt" />
@@ -384,8 +385,9 @@ async function continueChoice(value) {
       </template>
       <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" :primary-action="passwordRejected ? { label: 'Enter the root password', onClick: enterRootPassword } : failure.maintenance ? { label: 'Take it out of maintenance', onClick: clearMaintenance } : undefined" />
       <DependencyTree v-if="refusedPlan" :plan="refusedPlan" />
-      <div v-if="benchState" class="rounded-6 border border-outline-red-2 bg-surface-red-1 px-4 py-3 text-sm">
-        <div class="font-medium text-ink-red-6">Bench state after this run</div>
+      <Alert v-if="record.warned" theme="amber" title="Finished with warnings" description="The update succeeded. A site that could not be opened is not known to have the updated app, so cwcli left it untouched. The bench state and the warnings below name it." />
+      <div v-if="benchState" class="rounded-6 border px-4 py-3 text-sm" :class="record.warned ? 'border-outline-amber-2 bg-surface-amber-1' : 'border-outline-red-2 bg-surface-red-1'">
+        <div class="font-medium" :class="record.warned ? 'text-ink-amber-6' : 'text-ink-red-6'">Bench state after this run</div>
         <dl class="mt-1 grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-ink-gray-8">
           <dt class="text-ink-gray-5">migrated</dt><dd>{{ benchState.done.length ? benchState.done.join(', ') : 'none' }}</dd>
           <dt class="text-ink-gray-5">not migrated</dt><dd>{{ benchState.notDone.length ? benchState.notDone.map(([s, w]) => `${s} (${w})`).join(', ') : 'none' }}</dd>

@@ -122,9 +122,17 @@ class UpdateReport:
     # A failed requirements step's own lines that name the failure (the installer's
     # `error:`/`cause:` lines, not bench's traceback after them); empty otherwise.
     requirements_cause: list[str]
-    # Sites discovery could not open (a rejected database login, a broken config):
-    # the code moved under them and they were NOT migrated, so the run is not ok.
+    # Every site discovery could not open (a rejected database login, a broken
+    # config): none of them was migrated, and each is listed so it is never silent.
     unreadable_sites: list[str]
+    # The subset known to have an updated app (the cache records it, or the app is
+    # frappe, which every site has): the code moved under them and they were NOT
+    # migrated, so the run is not ok. An unreadable site NOT in this list is
+    # unrelated to the update as far as anyone can tell: a warning, not a failure.
+    unreadable_with_app: list[str]
+    # The run succeeded but something was left that the reader should see: an
+    # unreadable site not known to have the app. Shown as "finished with warnings".
+    warned: bool
     # The post-update resynchronisation (core.supervision.resync_after_code_change):
     # `git pull` moved the code under processes that were already running, so they
     # are cycled and the migrated sites must genuinely serve afterwards.
@@ -459,9 +467,10 @@ def _sites_with_app(
 
     The live query is one exec and one Frappe process for the whole bench
     (``core.bench_read``). A site it could not read is left out, reported in
-    ``warnings`` with its cause and, when ``unreadable`` is given, named there: the
-    app's code has moved under a site that will not be migrated, which is a failure
-    of the run, not a footnote (captain, a staging server, 2026-10-28).
+    ``warnings`` with its cause and, when ``unreadable`` is given, named there.
+    Whether such a site fails the run is ``_unreadable_with_app``'s decision: only
+    one known to have an updated app does, since the code moved under a site that
+    was not migrated (captain, a staging server, 2026-10-28).
     """
     cached = db_utils.get_cached_project_data(project_name)
     if cached:
@@ -513,6 +522,35 @@ def _sites_with_app(
         elif app in [line.strip().split()[0] for line in site.list_apps if line.strip()]:
             found.append(site.name)
     return found
+
+
+def _unreadable_with_app(
+    project_name: str, bench_path: str, unreadable: list[str], apps: list[str]
+) -> list[str]:
+    """The unreadable sites that are KNOWN to have an app this run updates.
+
+    Only those fail the run: the code moved under a site that was not migrated. A
+    site named with ``--site`` always fails it, so the caller does not consult this
+    then. Otherwise a site nobody knows to have the app is unrelated to this update,
+    and failing the job for it blames the update for a problem it did not cause.
+    Known means the cache records one of the apps for the site, or an app is
+    ``frappe`` (every site has it). Anything the cache cannot say is treated as not
+    known.
+    """
+    if "frappe" in apps:
+        return list(unreadable)
+    try:
+        cached = db_utils.get_cached_project_data(project_name) or {}
+    except Exception:  # an unreadable cache cannot clear a site, so none is cleared
+        return list(unreadable)
+    has: dict[str, set[str]] = {}
+    for bench in cached.get("bench_instances", []):
+        if bench.get("path") == bench_path:
+            for site in bench.get("sites", []):
+                has[site.get("name")] = {
+                    line.split()[0] for line in site.get("installed_apps", []) if line.split()
+                }
+    return [s for s in unreadable if has.get(s, set()) & set(apps)]
 
 
 def _tree_is_dirty(container, app_path: str) -> bool:
@@ -604,6 +642,7 @@ def _build_report(
     failed_website_cache_clears: list[str],
     failed_maintenance_disable: list[str],
     unreadable_sites: list[str] | None = None,
+    unreadable_with_app: list[str] | None = None,
     requirements: str | None = None,
     requirements_cause: list[str] | None = None,
     app_imports: list[resolvers.AppImport] | None = None,
@@ -640,7 +679,7 @@ def _build_report(
         or unknown_migrations
         or failed_builds
         or unknown_builds
-        or unreadable_sites
+        or unreadable_with_app
         or requirements in ("failed", "unknown")
         or failed_cache_clears
         or failed_website_cache_clears
@@ -649,6 +688,7 @@ def _build_report(
         or not resync.ok
     )
     return UpdateReport(
+        warned=ok and bool(unreadable_sites),
         project=project_name,
         bench_path=bench_path,
         apps=list(apps),
@@ -664,6 +704,7 @@ def _build_report(
         failed_builds=list(failed_builds),
         unknown_builds=list(unknown_builds),
         unreadable_sites=list(unreadable_sites or []),
+        unreadable_with_app=list(unreadable_with_app or []),
         requirements=requirements,
         requirements_cause=list(requirements_cause or []),
         failed_cache_clears=list(failed_cache_clears),
@@ -2197,6 +2238,11 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
             unreadable_sites=unreadable_sites,
+            unreadable_with_app=(
+                list(unreadable_sites)
+                if sites_filter
+                else _unreadable_with_app(project_name, bench_path, unreadable_sites, apps)
+            ),
             requirements=requirements,
             requirements_cause=requirements_cause,
             app_imports=app_imports,

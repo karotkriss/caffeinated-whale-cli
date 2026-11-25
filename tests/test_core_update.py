@@ -42,6 +42,7 @@ def _no_dependency_tier(monkeypatch):
     (``test_update_dependencies.py``), so here it finds nothing."""
     monkeypatch.setattr(core_update, "_dependency_facts", lambda *a, **k: [])
 
+
 BENCH = "/workspace/frappe-bench"
 
 
@@ -461,9 +462,7 @@ class TestRequirementsBeforeMigrate:
     def _fast_poll(self, monkeypatch):
         monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
 
-    def test_a_plain_app_update_reinstalls_every_app_s_requirements_before_migrating(
-        self, wired
-    ):
+    def test_a_plain_app_update_reinstalls_every_app_s_requirements_before_migrating(self, wired):
         report = _update().data
 
         calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
@@ -679,6 +678,7 @@ class TestFrappeFork:
         report = _update(apps=["frappe"]).data
 
         assert report.unreadable_sites == ["a.localhost"]
+        assert report.unreadable_with_app == ["a.localhost"]  # every site has frappe
         assert report.migrated_sites == [] and report.ok is False
 
     def test_an_unreadable_site_excluded_by_site_does_not_fail_the_run(self, monkeypatch, wired):
@@ -693,6 +693,77 @@ class TestFrappeFork:
 
         assert report.unreadable_sites == []
         assert report.migrated_sites == ["a.localhost"] and report.ok is True
+
+    @staticmethod
+    def _one_unreadable_sibling(monkeypatch, cached_apps):
+        """``a.localhost`` has the app; ``b.localhost`` cannot be opened. ``cached_apps``
+        is what the cache records for ``b.localhost`` (None: nothing cached)."""
+
+        def discover(project, bench_path, app, container, warnings, unreadable=None):
+            unreadable.append("b.localhost")
+            return ["a.localhost"]
+
+        monkeypatch.setattr(core_update, "_sites_with_app", discover)
+        sites = [{"name": "b.localhost", "installed_apps": cached_apps}] if cached_apps else []
+        monkeypatch.setattr(
+            core_update.db_utils,
+            "get_cached_project_data",
+            lambda p: {"bench_instances": [{"path": BENCH, "sites": sites}]},
+        )
+
+    def test_an_unrelated_unreadable_site_is_a_warning_not_a_failure(self, monkeypatch, wired):
+        # The reported shape: the app's site migrates, a second site on the bench cannot
+        # be opened and nothing says it has the app. The job must not fail for it.
+        self._one_unreadable_sibling(monkeypatch, ["frappe 16.1.0 version-16"])
+
+        report = _update().data
+
+        assert report.migrated_sites == ["a.localhost"]
+        assert report.unreadable_sites == ["b.localhost"]  # still listed
+        assert report.unreadable_with_app == []
+        assert report.ok is True and report.warned is True
+
+    def test_an_unreadable_site_the_cache_knows_has_the_app_still_fails_the_run(
+        self, monkeypatch, wired
+    ):
+        self._one_unreadable_sibling(
+            monkeypatch, ["frappe 16.1.0 version-16", "payments 1.0.0 develop"]
+        )
+
+        report = _update().data
+
+        assert report.unreadable_with_app == ["b.localhost"]
+        assert report.ok is False and report.warned is False
+
+    @pytest.mark.parametrize("cached_apps", [["frappe 16.1.0 version-16"], None])
+    def test_an_unreadable_site_named_with_site_fails_the_run(
+        self, monkeypatch, wired, cached_apps
+    ):
+        # A site the caller asked to migrate is part of the job, not unrelated to it.
+        self._one_unreadable_sibling(monkeypatch, cached_apps)
+
+        report = _update(sites=["b.localhost"]).data
+
+        assert report.migrated_sites == []
+        assert report.unreadable_with_app == ["b.localhost"]
+        assert report.ok is False and report.warned is False
+
+    def test_a_real_failure_on_the_apps_site_still_fails_beside_an_unrelated_warning(
+        self, monkeypatch, wired
+    ):
+        self._one_unreadable_sibling(monkeypatch, None)
+        wired.fail_on = ["bench --site a.localhost migrate"]
+
+        report = _update().data
+
+        assert report.failed_migrations == ["a.localhost"]
+        assert report.unreadable_with_app == []
+        assert report.ok is False and report.warned is False
+
+    def test_a_clean_run_is_not_warned(self, wired):
+        report = _update().data
+
+        assert report.ok is True and report.warned is False
 
     def test_discovery_names_the_site_it_could_not_read(self, monkeypatch):
         # No `wired` here: that fixture fakes _sites_with_app itself, and this test
