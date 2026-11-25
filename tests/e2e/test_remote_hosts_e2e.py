@@ -860,7 +860,9 @@ class TestTheSidebar:
         # ... but drawn as the 6px dot only, not the dot plus the word.
         assert state["width"] < 10, state
 
-    def test_a_machine_heading_sits_on_the_collapsed_rails_icon_column(self, lab, chrome, monkeypatch):
+    def test_a_machine_heading_sits_on_the_collapsed_rails_icon_column(
+        self, lab, chrome, monkeypatch
+    ):
         """At phone width the sidebar collapses to a 48px icon rail. The machine heading used to
         centre its server icon and link dot as a pair, which pushed the icon 7.5px left of the
         column every other rail icon sits on. The dot is now a badge on the icon's corner, so the
