@@ -123,7 +123,7 @@ const failure = computed(() => {
   const failedPart = job.verb === 'publish-site' && Object.entries(job.result?.parts || {}).find(([, p]) => p.state === 'failed')
   // Frappe answering 503 SessionStopped is maintenance mode, its own cause with its own
   // fix: the same clear the site and bench pages offer, then Retry.
-  if (failedPart?.[1].code === 'publish.maintenance') return { title: 'Publishing stopped: the site is in maintenance mode', description: `${failedPart[1].message} Take it out of maintenance mode, then Retry checks it again.`, maintenance: true }
+  if (failedPart?.[1]?.code === 'publish.maintenance') return { title: 'Publishing stopped: the site is in maintenance mode', description: `${failedPart[1].message} Take it out of maintenance mode, then Retry checks it again.`, maintenance: true }
   if (failedPart) return { title: `Publishing stopped at the ${PUBLISH_PART[failedPart[0]]}`, description: `${failedPart[1].message} The site itself was not touched; Retry repeats only what is missing.` }
   if (job.verb === 'unpublish-site' && job.result?.failed?.length) return { title: 'Part of the public address was not removed', description: `${job.result.failed.join(' ')} It stays recorded, so Retry finishes it.` }
   const cause = job.cause
@@ -251,9 +251,9 @@ const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
 // The dependency questions: consent to the required apps, or a pick between sources.
 const depRows = computed(() => (record.value?.choice?.kind === 'confirm_required_apps' ? record.value.choice.options || [] : []))
 const sourceOptions = computed(() => (record.value?.choice?.kind === 'select_app_source' ? record.value.choice.options || [] : []))
-// The name typed back is the most specific thing the job acts on: a dropped
-// site's name, else the instance's (scale, rm, rm-bench).
-const consentTarget = computed(() => record.value?.target?.site || record.value?.target?.project)
+// The name typed back is the most specific thing the job acts on: a removed
+// app's name (Remove app), else a dropped site's, else the instance's (scale, rm, rm-bench).
+const consentTarget = computed(() => record.value?.target?.app || record.value?.target?.site || record.value?.target?.project)
 const typedName = ref('')
 const consentTyped = computed(() => !!consentTarget.value && typedName.value.trim() === consentTarget.value)
 

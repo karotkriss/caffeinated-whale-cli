@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from caffeinated_whale_cli import jobs
-from caffeinated_whale_cli.core import supervision
-from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core import accounts, schedules, supervision
+from caffeinated_whale_cli.core.envelope import Choice, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.core.update import UpdatePreflight
 from caffeinated_whale_cli.core.update_preflight import DATA_LOSS, PreflightFinding
@@ -953,6 +953,109 @@ def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(mon
     with pytest.raises(CwcliError) as error:
         jobs._dispatch("rm-site", {"project": "p"}, {}, True, {}, lambda e: None)
     assert error.value.code == "site.required"
+
+
+def test_apps_uninstall_runs_one_app_off_one_site_on_the_core_consent_gate(monkeypatch):
+    """The page's Remove app: the SAME `core.apps.uninstall_apps` the CLI runs, its own
+    consent gate intact, after a verified backup of that one site unless unticked."""
+    calls = []
+    backups = []
+    monkeypatch.setattr(
+        jobs.core_apps,
+        "uninstall_apps",
+        lambda project, apps, **kwargs: calls.append((project, apps, kwargs))
+        or (
+            Result(status=Status.OK)
+            if kwargs["consent"]
+            else Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_uninstall", param="consent", prompt="?"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_backup_first",
+        lambda project, bench, sites, reason, emit: backups.append((project, bench, sites, reason)),
+    )
+    target = {"project": "p", "bench": "1", "site": "s.localhost", "app": "payments"}
+
+    # Without consent the core's own gate answers, and no backup has run yet.
+    result = jobs._dispatch("apps-uninstall", target, {}, False, {}, lambda e: None)
+    assert result.status is Status.NEEDS_CHOICE
+    assert calls[-1][2]["consent"] is False
+    assert backups == []
+
+    # With consent: the site's backup first (default on), then exactly that app and site.
+    jobs._dispatch("apps-uninstall", target, {}, True, {}, lambda e: None)
+    assert backups == [("p", "1", ["s.localhost"], "before-app-remove")]
+    project, apps, kwargs = calls[-1]
+    assert (project, apps) == ("p", ["payments"])
+    assert (kwargs["bench"], kwargs["sites"], kwargs["consent"]) == ("1", ["s.localhost"], True)
+
+    # Unticked: no backup, the uninstall still consented.
+    jobs._dispatch("apps-uninstall", target, {"backup_first": False}, True, {}, lambda e: None)
+    assert len(backups) == 1 and calls[-1][2]["consent"] is True
+
+
+def test_apps_uninstall_takes_no_backup_when_the_core_refuses_the_removal(monkeypatch):
+    """A removal Frappe would refuse (another installed app requires this one) fails
+    before the site's backup, not after minutes of it."""
+    calls = []
+
+    def refuse(project, apps, **kwargs):
+        calls.append(kwargs["consent"])
+        raise CwcliError(jobs.ErrorKind.CONFLICT, "app.required_by", "hrms requires erpnext")
+
+    monkeypatch.setattr(jobs.core_apps, "uninstall_apps", refuse)
+    monkeypatch.setattr(jobs, "_backup_first", lambda *a, **k: pytest.fail("a backup ran"))
+    target = {"project": "p", "site": "s.localhost", "app": "erpnext"}
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("apps-uninstall", target, {}, True, {}, lambda e: None)
+    assert error.value.code == "app.required_by"
+    assert calls == [False]
+
+
+def test_apps_uninstall_refuses_frappe_and_a_half_named_target_before_any_work(monkeypatch):
+    monkeypatch.setattr(
+        jobs.core_apps, "uninstall_apps", lambda *a, **k: pytest.fail("the core was reached")
+    )
+    monkeypatch.setattr(jobs, "_backup_first", lambda *a, **k: pytest.fail("a backup ran"))
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch(
+            "apps-uninstall",
+            {"project": "p", "site": "s.localhost", "app": "frappe"},
+            {},
+            True,
+            {},
+            lambda e: None,
+        )
+    assert error.value.code == "app.frappe_protected"
+    for target in ({"project": "p", "site": "s.localhost"}, {"project": "p", "app": "payments"}):
+        with pytest.raises(CwcliError) as error:
+            jobs._dispatch("apps-uninstall", target, {}, True, {}, lambda e: None)
+        assert error.value.code == "app.site_required"
+
+
+def test_apps_uninstall_is_an_admin_job_that_is_never_scheduled(fake_spawn):
+    assert accounts.admin_only("apps-uninstall")
+    with pytest.raises(CwcliError) as error:
+        schedules.validate(
+            {
+                "verb": "apps-uninstall",
+                "target": {"project": "p", "site": "s.localhost", "app": "payments"},
+            }
+        )
+    assert error.value.code == "schedule.never"
+    record = jobs.create_job(
+        "apps-uninstall",
+        {"project": "p", "site": "s.localhost", "app": "payments"},
+        {},
+        consent=True,
+    )
+    assert record["consent"] is True
 
 
 def test_rm_bench_forwards_the_selector_consent_and_secret(monkeypatch):

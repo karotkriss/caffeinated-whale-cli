@@ -116,8 +116,8 @@ the delegated role, such a request never adds or updates a community integration
 runs (or retries) a ``self-update`` job (``auth.code_change_refused``; the bridge
 refuses it first): only this machine's own Admin installs code here.
 
-The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps
-checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
+The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps-uninstall``,
+``apps checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
 same core paths as the CLI, consent is a spec field the page sets only after a
 typed confirmation of the exact instance, bench, site or app name, and no
 request can express ``--no-backup``. The one ``force`` a request can carry is
@@ -3521,6 +3521,7 @@ def run_daemon(
         "apps-install",
         "apps-update",
         "apps-checkout",
+        "apps-uninstall",
         "new-site",
         "new-bench",
         "init",
@@ -3551,6 +3552,7 @@ def run_daemon(
         "apps-update",
         "migrate",
         "apps-install",
+        "apps-uninstall",
     }
 
     def _on_job(record: dict) -> None:

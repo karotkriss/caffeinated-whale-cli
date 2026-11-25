@@ -130,6 +130,7 @@ export const JOB_LABEL = {
   'apps-checkout': 'Check out app ref',
   'apps-install': 'Install apps',
   'apps-update': 'Update apps',
+  'apps-uninstall': 'Remove app',
   'check-updates': 'Check for updates',
   'clear-maintenance': 'Clear maintenance mode',
   'dev-mode': 'Developer mode',

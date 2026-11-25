@@ -126,6 +126,9 @@ ALLOWED_VERBS = frozenset(
         "rm",
         "rm-site",
         "rm-bench",
+        # Remove ONE app from ONE site (the page's Remove app): `core.apps.uninstall_apps`
+        # with its own consent gate, after a verified backup of the site unless unticked.
+        "apps-uninstall",
         # Publishing a site at its public name (core.publish): DNS record, proxy host and
         # certificate. New site, Drop site and Move start them after they succeed when
         # asked to (``_follow_ups``).
@@ -1119,7 +1122,7 @@ def _safety_backups(project: str, bench: str | None, emit: _Recorder) -> None:
 def _backup_first(
     project: str, bench: str | None, sites: list[str], reason: str, emit: _Recorder
 ) -> None:
-    """The optional 'Back up first' of migrate / app install (captain decision 5)."""
+    """The optional 'Back up first' of migrate / app install / app removal (captain decision 5)."""
     if not sites:
         emit.lifecycle("backup_first", "Back up first: no site named; nothing to back up.")
         return
@@ -1666,6 +1669,37 @@ def _dispatch(
             on_event=emit,
         )
         return _refresh_after_apps(project, checkout_result, emit)
+    if verb == "apps-uninstall":
+        # The web UI's Remove app: ONE app off ONE site, through the SAME core path as
+        # `cwcli apps uninstall` (the consent gate is the core's own, never the page's).
+        # frappe is refused before any read: a site cannot exist without it.
+        app = str(target.get("app") or "")
+        if not site or not app:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "app.site_required",
+                "Removing an app needs target.site and target.app.",
+            )
+        if app == "frappe":
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "app.frappe_protected",
+                "frappe cannot be removed from a site; drop the site instead.",
+            )
+        # The backup rides only on a consented run the core would carry out: the core is
+        # asked without consent first, so its refusals and non-consent answers arrive
+        # before minutes of backup work.
+        if consent and args.get("backup_first", True):
+            gate = core_apps.uninstall_apps(
+                project, [app], bench=bench, sites=[site], consent=False, on_event=emit
+            )
+            if gate.choice is None or gate.choice.param != "consent":
+                return gate
+            _backup_first(project, bench, [site], "before-app-remove", emit)
+        uninstall_result = core_apps.uninstall_apps(
+            project, [app], bench=bench, sites=[site], consent=consent, on_event=emit
+        )
+        return _refresh_after_apps(project, uninstall_result, emit)
     if verb == "rm":
         return _remove_instance(project, args, consent, emit)
     if verb == "rm-site":

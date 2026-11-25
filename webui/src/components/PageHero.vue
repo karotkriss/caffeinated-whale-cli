@@ -35,7 +35,7 @@ defineProps({
             <h1 class="truncate font-semibold leading-8 text-ink-gray-9" :class="active ? 'text-3xl tracking-tight sm:text-4xl' : 'text-2xl'">{{ title }}</h1>
             <slot name="badge" />
           </div>
-          <div class="flex items-center gap-2"><slot name="actions" /></div>
+          <div class="flex flex-wrap items-center gap-2"><slot name="actions" /></div>
         </div>
         <dl v-if="facts.length" class="relative mt-4 flex flex-wrap gap-x-8 gap-y-3 border-t border-outline-gray-1 pt-4">
           <div v-for="f in facts" :key="f.label" class="min-w-[7rem]">

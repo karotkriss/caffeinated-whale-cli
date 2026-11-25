@@ -330,6 +330,24 @@ export const ACTIONS = {
     request: (c, v) => ({ verb: 'apps-checkout', target: { project: c.project, bench: c.bench, app: c.app }, args: { ref: v.ref, reset: true } }),
     done: (c, out, v) => `${c.app} reset to ${v.ref}`,
   },
+  // Remove ONE app from ONE site: `cwcli apps uninstall` on the core's own consent gate
+  // (the agent surface deliberately has none). frappe never reaches here: the site page
+  // shows its entry disabled, and the job refuses it before any read.
+  'app.uninstall': {
+    job: true,
+    danger: true,
+    needsRunning: true,
+    label: 'Remove app',
+    icon: 'lucide-trash-2',
+    confirm: 'typed',
+    confirmTarget: (c) => c.app,
+    fields: [{ name: 'backup_first', type: 'checkbox', default: true, label: "Back up the site first: a verified set in cwcli's backup store; if it fails, nothing is removed" }],
+    cli: (c) => `cwcli apps uninstall ${q(c.project)} -a ${q(c.app)} --site ${q(c.site)}${benchFlag(c)}`,
+    says: (c, v) =>
+      `Removes ${c.app} from ${c.site}: every DocType ${c.app} owns on that site is dropped and its data tables are deleted. ${v?.backup_first ? `A verified backup of ${c.site} is taken first; if it fails, nothing is removed.` : `No backup is taken first beyond the one bench itself keeps inside the site.`} The app stays on the bench and on its other sites.`,
+    request: (c, v) => ({ verb: 'apps-uninstall', target: { project: c.project, bench: c.bench, site: c.site, app: c.app }, args: { backup_first: !!v?.backup_first }, consent: true }),
+    done: (c) => `${c.app} removed from ${c.site}`,
+  },
 
   // process
   'process.restart': {
@@ -352,7 +370,7 @@ export const ACTIONS = {
 // depends on them (removing an instance needs a live backup unless the volumes stay).
 export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
-  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' || id === 'site.unpublish' ? 'admin' : 'operator'
+  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' || id === 'app.uninstall' || id === 'site.unpublish' ? 'admin' : 'operator'
   if (!a?.read && !can(role)) return { ok: false, role, reason: `Needs the ${ROLE_LABEL[role]} role`, detail: `You are signed in as ${ROLE_LABEL[session.user?.role] === 'Admin' ? 'an' : 'a'} ${ROLE_LABEL[session.user?.role] || 'Viewer'}; ask an Admin if you need this.` }
   const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }
