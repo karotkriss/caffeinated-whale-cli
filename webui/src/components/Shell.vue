@@ -198,7 +198,7 @@ watch(() => route.name, (name) => {
               <Tooltip :text="`${h.name}: ${linkAdvice(h)}`" side="right">
                 <div class="flex h-7 items-center gap-2 px-1" :class="collapsed && 'justify-center'">
                   <span class="flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /></span>
-                  <h3 v-if="!collapsed" :id="`cw-machine-${h.id}`" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>
+                  <h3 :id="`cw-machine-${h.id}`" :class="collapsed && 'sr-only'" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>
                   <span class="flex min-w-0 shrink-0 items-center gap-1 text-xs" :class="[linkTone(h.state), !collapsed && 'max-w-[45%]']"><span class="size-1.5 shrink-0 rounded-full" :class="linkLook(h.state).dot" aria-hidden="true" /><span v-if="!collapsed" class="truncate">{{ linkLook(h.state).label }}</span></span>
                 </div>
               </Tooltip>
@@ -206,7 +206,7 @@ watch(() => route.name, (name) => {
                 <SidebarItem v-for="i in hostInstances(h.id)" :key="i.key" :label="i.project" :route="instancePath(i)" :active="route.params.project === i.project && route.params.host === h.id">
                   <template #prefix><StatusDot :token="i.overall" /></template>
                 </SidebarItem>
-                <p v-if="!hostInstances(h.id).length && !collapsed" class="px-2 py-1 text-xs text-ink-gray-4">no instances</p>
+                <p v-if="!hostInstances(h.id).length && !collapsed && h.state === 'connected'" class="px-2 py-1 text-xs text-ink-gray-4">no instances</p>
               </div>
             </div>
           </ScrollArea>
