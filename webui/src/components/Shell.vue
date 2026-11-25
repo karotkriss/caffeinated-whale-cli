@@ -195,7 +195,7 @@ watch(() => route.name, (name) => {
             <!-- Each remote machine is a group of its own: a machine heading (server icon, name, link state) that
                  cannot be mistaken for a project row, with that machine's projects nested on a rail under it. -->
             <div v-for="h in hostList" :key="h.id" class="mt-4" role="group" :aria-labelledby="`cw-machine-${h.id}`">
-              <Tooltip :text="`${h.name}: ${linkAdvice(h)}`" side="right">
+              <Tooltip :text="linkAdvice(h).includes(h.name) ? linkAdvice(h) : `${h.name}: ${linkAdvice(h) || linkLook(h.state).label}`" side="right">
                 <div class="flex h-7 items-center gap-2 px-1" :class="collapsed && 'justify-center'">
                   <span class="flex size-5 shrink-0 items-center justify-center rounded-4 border border-outline-gray-2 bg-surface-gray-1 text-ink-gray-6" aria-hidden="true"><span class="lucide-server size-3.5" /></span>
                   <h3 :id="`cw-machine-${h.id}`" :class="collapsed && 'sr-only'" class="min-w-0 flex-1 truncate text-sm font-medium leading-tighter text-ink-gray-8">{{ h.name }}</h3>

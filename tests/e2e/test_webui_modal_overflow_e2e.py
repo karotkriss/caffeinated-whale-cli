@@ -196,3 +196,58 @@ def test_settings_panes_and_dialogs_fit_the_dialog(chrome, ui, width, height):
         close_dialog(chrome, what)
 
     assert not failures, "\n".join(failures)
+
+
+@pytest.mark.standalone
+def test_a_remote_machines_sidebar_tooltip_stays_inside_the_window(chrome, ui):
+    """Hovering a remote machine's sidebar heading shows the link advice beside it. The
+    seeded host is unreachable, so its advice carries the ssh error naming the long,
+    unbreakable address; frappe-ui's tooltip bubble has no width cap of its own, so that
+    advice used to run as one line past the window's right edge and lose its end. Desktop
+    only: a phone has no hover, and its emulated touch never opens a tooltip."""
+    width, height = 1280, 800
+    open_signed_in(chrome, ui, PASSWORD)
+    chrome.viewport(width, height)
+    page(chrome, ui, "/instances", "New instance")
+    heading = "nav [role=group] > div:first-child"
+    chrome.wait(
+        f"document.querySelector({json.dumps(heading)})?.closest('[role=group]')"
+        "?.textContent.includes('build box') && !!document.querySelector('nav [role=group]')"
+        f".querySelector('.text-ink-amber-6, .text-ink-red-6')",
+        timeout=90,
+        desc="the seeded machine's heading with a settled, failed link state",
+    )
+    chrome.stable_point(heading)
+    # A phone-sized run earlier in the module leaves touch input on, and a pointer that
+    # is already there never enters: hover with a mouse, coming in from outside.
+    chrome.send("Emulation.setTouchEmulationEnabled", {"enabled": False}, page=True)
+    hovered: list = []
+
+    def tooltip_open() -> bool:
+        if chrome.eval(
+            "!!document.querySelector('[data-slot=bubble]')?.textContent.includes('build box')"
+        ):
+            return True
+        # Rows above the heading (the local instances, the app sources) can arrive after
+        # it settled and push it down, leaving the pointer on another row: hover it again
+        # wherever it is now.
+        point = chrome.eval(
+            f"(() => {{ const r = document.querySelector({json.dumps(heading)})"
+            ".getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] })()"
+        )
+        if not hovered or point != hovered[-1]:
+            hovered.append(point)
+            for x, y in ((width - 1, height - 1), point):
+                chrome.send(
+                    "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, page=True
+                )
+        return False
+
+    harness.wait_until(tooltip_open, timeout=30, interval=0.2, desc="the machine's tooltip")
+    box = chrome.eval(
+        "(() => { const r = document.querySelector('[data-slot=bubble]').getBoundingClientRect();"
+        " return { left: r.left, right: r.right, width: innerWidth,"
+        " text: document.querySelector('[data-slot=bubble]').textContent } })()"
+    )
+    assert LONG_ADDRESS in box["text"], box
+    assert 0 <= box["left"] and box["right"] <= box["width"], box
