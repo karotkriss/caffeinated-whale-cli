@@ -473,6 +473,7 @@ def _maintenance_run(
     clear_ok=True,
     report=None,
     unanswered=False,
+    read_only=False,
     site=None,
 ):
     if report is None:
@@ -501,9 +502,12 @@ def _maintenance_run(
             project=project,
             bench_path="/w/b0",
             sites=["site.example.com"],
-            answering=["site.example.com"] if clear_ok and not unanswered else [],
+            answering=(
+                ["site.example.com"] if clear_ok and not unanswered and not read_only else []
+            ),
             still_down=[] if clear_ok else ["site.example.com"],
-            verified=not unanswered,
+            read_only=["site.example.com"] if read_only else [],
+            verified=not unanswered and not read_only,
         )
         return Result(status=Status.OK, data=outcome)
 
@@ -579,6 +583,22 @@ class TestMaintenanceQuestion:
         assert code == 0
         assert "Out of maintenance mode" not in out.err
         assert "Flags cleared, not checked: site.example.com" in out.err
+
+    def test_a_read_only_site_is_cleared_but_not_claimed_out_of_maintenance(
+        self, monkeypatch, capsys
+    ):
+        code, out, _, _ = _maintenance_run(
+            monkeypatch, capsys, _stuck(), tty=False, flag=True, read_only=True
+        )
+
+        assert code == 0
+        err = harness_collapse(out.err)
+        assert "Out of maintenance mode" not in err
+        assert "Flags cleared, not checked" not in err
+        assert (
+            "Maintenance mode cleared: site.example.com. Writes can take up to a minute to resume."
+            in err
+        )
 
     def test_the_flag_exits_1_when_a_site_still_does_not_answer(self, monkeypatch, capsys):
         code, out, _, _ = _maintenance_run(

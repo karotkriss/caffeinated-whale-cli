@@ -131,12 +131,16 @@ jobs:
     # Host runner (NO `container:`) so `docker` / `docker compose` and the
     # preinstalled daemon are reachable - the uv container image has no daemon.
     runs-on: ubuntu-latest
-    # Provisional ceiling: a full `cwcli init` (image pull + bench init build +
-    # new-site) is the dominant cost. Generous, but well under GitHub's 6h cap so
-    # a hung `bench init` fails fast. Tune once real runtimes exist.
+    # A full `cwcli init` (image pull + bench init build + new-site) is the
+    # dominant cost. The slowest leg, v16 standalone, took 51-52 minutes in
+    # mid-November 2026; by late November each fresh v16 init cost about 2.5
+    # minutes more and the leg's tests took about 2.2x as long (40.6 -> 88.9
+    # minutes for the same 70 tests), so the full leg now needs about 110
+    # minutes. 150 minutes leaves margin and is still far under GitHub's 6h
+    # cap, so a hung `bench init` still fails.
     # A run that opts into the latency measurement adds a bench build per data
-    # point on top of the ordinary leg, which does not fit 60 minutes.
-    timeout-minutes: ${{ inputs.latency_benches != '' && 90 || 60 }}
+    # point on top of the ordinary leg, so it keeps 30 more minutes.
+    timeout-minutes: ${{ inputs.latency_benches != '' && 180 || 150 }}
     strategy:
       # One leg per Frappe version, each on its own runner (isolation +
       # parallelism + per-version resource headroom). A leaky instance on one

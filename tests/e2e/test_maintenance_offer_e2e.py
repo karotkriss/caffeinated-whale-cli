@@ -6,7 +6,7 @@ its whole run and clears only on success), so every site answered HTTP 503
 ``SessionStopped`` and nothing in cwcli said so or offered the fix.
 
 On the shared session instance this sets exactly those bench-wide flags, waits until
-the site really answers 503 (Frappe v16 answers from a 60-second config cache, so
+the site really is in maintenance (Frappe v16 answers from a 60-second config cache, so
 the files and the answer disagree for up to a minute), then proves, in both modes:
 
 - **refusal while a migrate runs**: a real ``bench migrate`` on a throwaway site is
@@ -17,7 +17,17 @@ the files and the answer disagree for up to a minute), then proves, in both mode
 - **non-TTY**: ``cwcli status`` never asks, names ``--clear-maintenance``, exits 0
   and keeps stdout to its one token;
 - **TTY**: on a real pty ``cwcli status`` asks; answering yes clears both flags
-  (the scheduler resumes with them) and the site answers Frappe's ping with 200.
+  (the scheduler resumes with them), and the site answers Frappe's ping with 200 and
+  accepts a write again. A site that answered SessionStopped is reported "Out of
+  maintenance mode"; a read-only one, whose ping cannot tell, "Maintenance mode
+  cleared ... Writes can take up to a minute to resume".
+
+Frappe v16.61.0 and later serve reads in maintenance mode by default
+(``allow_reads_during_maintenance``, frappe/frappe#46303) and refuse only writes, so
+there the ping answers 200 throughout and the wait instead watches a write - an
+Administrator login, which writes a session row - be refused with 503
+``InReadOnlyMode``. v14/v15 (and v16 before that release) answer the ping itself with
+503 ``SessionStopped``.
 
 A ``finally`` always puts the flags back to 0 and removes the throwaway site, so
 sibling tests on the shared instance are undisturbed.
@@ -95,6 +105,30 @@ def _ping(inst, port: int) -> tuple[str, bool]:
     return out.rsplit(" ", 1)[-1].strip(), "SessionStopped" in out
 
 
+def _in_maintenance(inst, port: int) -> bool:
+    """The site refuses its users: the ping answers 503 SessionStopped (v14/v15, or
+    reads turned off), or, when Frappe v16 serves reads in maintenance, a write - an
+    Administrator login - answers 503 InReadOnlyMode."""
+    code, stopped = _ping(inst, port)
+    if stopped:
+        return True
+    if code != "200":
+        return False
+    code, out = _login(inst, port)
+    return code == "503" and "InReadOnlyMode" in out
+
+
+def _login(inst, port: int) -> tuple[str, str]:
+    """An Administrator login, a write (it stores a session): (http_code, body)."""
+    _code, out = harness.exec_in_frappe(
+        inst.name,
+        f"curl -s --max-time 10 -H 'Host: {inst.site}' -w ' %{{http_code}}' "
+        f"--data-urlencode usr=Administrator --data-urlencode pwd={shlex.quote(SESSION_ADMIN_PW)} "
+        f"http://localhost:{port}/api/method/login",
+    )
+    return out.rsplit(" ", 1)[-1].strip(), out
+
+
 def _marked_pids(inst) -> list[str]:
     script = (
         "for d in /proc/[0-9]*; do "
@@ -147,14 +181,16 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
     try:
         _create_site(inst, MIGRATE_SITE)
         _set_bench_flags(inst, 1)
-        # Frappe v16 answers from its config cache for up to a minute: wait for the
-        # real 503 so the rest of the test sees what a user sees.
+        # Frappe v16 answers from its config cache for up to a minute: wait until
+        # the site really refuses its users so the rest of the test sees what a user sees.
         harness.wait_until(
-            lambda: _ping(inst, port) == ("503", True),
+            lambda: _in_maintenance(inst, port),
             timeout=150,
-            interval=3,
-            desc="the site answers 503 SessionStopped",
+            interval=5,
+            desc="the site answers 503 SessionStopped, or refuses a write with InReadOnlyMode",
         )
+        read_only = _ping(inst, port) == ("200", False)
+        cleared = "Maintenance mode cleared:" if read_only else "Out of maintenance mode:"
 
         # --- refusal while a real migrate runs on the bench -----------------------
         subprocess.Popen(
@@ -208,7 +244,7 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
             harness.expect_prompt_ready(child)
             child.send("y")
             child.sendline("")
-            child.expect("Out of maintenance mode:", timeout=240)
+            child.expect(cleared, timeout=240)
             child.expect(pexpect.EOF, timeout=120)
         finally:
             child.close()
@@ -217,7 +253,12 @@ def test_a_bench_left_in_maintenance_is_found_offered_and_taken_out(running_inst
         common = _common(inst)
         assert common.get("maintenance_mode") == 0
         assert common.get("pause_scheduler") == 0  # the scheduler resumed with it
-        assert _ping(inst, port) == ("200", False)
+        harness.wait_until(
+            lambda: _login(inst, port)[0] == "200",
+            timeout=150,
+            interval=5,
+            desc="the site accepts a write again: an Administrator login answers 200",
+        )
     finally:
         _signal_marked(inst, "KILL")
         try:

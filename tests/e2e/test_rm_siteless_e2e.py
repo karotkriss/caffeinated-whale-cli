@@ -66,7 +66,7 @@ def _project_dir(project: str) -> Path:
 def test_rm_siteless_instance_proceeds_without_no_backup(port_allocator):
     """A running instance with no sites is removed in ONE run, no --no-backup.
 
-    1. Real instance, then make it site-less by deleting the bench's sites/ dir -
+    1. Real instance, then make it site-less by stopping the bench and deleting its sites/ dir -
        the exact state (`ls sites` fails -> list_sites None) that used to refuse.
     2. `cwcli rm <project> --yes` succeeds: the live census proves zero sites and
        relaxes the gate, so removal proceeds instead of refusing.
@@ -82,7 +82,12 @@ def test_rm_siteless_instance_proceeds_without_no_backup(port_allocator):
         harness.wait_for_site_ready(project, site)
 
         # --- 1. reproduce the half-provisioned state: no sites/ directory. This
-        #        is what makes list_sites return None and the OLD gate refuse. ---
+        #        is what makes list_sites return None and the OLD gate refuse.
+        #        A half-provisioned bench runs no dev processes, and a running
+        #        one recreates sites/ right after it is deleted (seen on v16), so
+        #        stop the bench's stack first; the container stays running. ---
+        stop = harness.run_cwcli("stop", project, "--bench", "0")
+        assert stop.returncode == 0, stop.stdout + stop.stderr
         code, out = harness.exec_in_frappe(project, f"rm -rf {shlex.quote(bench)}/sites")
         assert code == 0, f"could not remove the sites directory: {out}"
         code, out = harness.exec_in_frappe(project, f"ls -d {shlex.quote(bench)}/sites")
