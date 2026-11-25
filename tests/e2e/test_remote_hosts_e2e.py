@@ -835,7 +835,7 @@ class TestTheSidebar:
         """The sidebar heading of a connected machine shows the green dot alone: the word
         "connected" took up to 45% of a 15rem row and cut an ordinary machine name short, so
         the word now stays only for screen readers (and the tooltip). Every other state keeps
-        its word visible; the unreachable case is covered by the link tests above."""
+        its word visible."""
         assert lab.ensure_connected()["state"] == "connected"
         # The browser signs in to the HUB, whose admin account lives in the hub's own home.
         monkeypatch.setenv("CWCLI_HOME", str(lab.hub_home))
