@@ -1122,7 +1122,7 @@ def _safety_backups(project: str, bench: str | None, emit: _Recorder) -> None:
 def _backup_first(
     project: str, bench: str | None, sites: list[str], reason: str, emit: _Recorder
 ) -> None:
-    """The optional 'Back up first' of migrate / app install (captain decision 5)."""
+    """The optional 'Back up first' of migrate / app install / app removal (captain decision 5)."""
     if not sites:
         emit.lifecycle("backup_first", "Back up first: no site named; nothing to back up.")
         return
