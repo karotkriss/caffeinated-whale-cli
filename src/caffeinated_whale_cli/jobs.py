@@ -1686,9 +1686,15 @@ def _dispatch(
                 "app.frappe_protected",
                 "frappe cannot be removed from a site; drop the site instead.",
             )
-        # The backup rides only on a consented run: without consent the core answers
-        # NEEDS_CHOICE and nothing (not even a backup) has happened yet.
+        # The backup rides only on a consented run the core would carry out: the core is
+        # asked without consent first, so its refusals and non-consent answers arrive
+        # before minutes of backup work.
         if consent and args.get("backup_first", True):
+            gate = core_apps.uninstall_apps(
+                project, [app], bench=bench, sites=[site], consent=False, on_event=emit
+            )
+            if gate.choice is None or gate.choice.param != "consent":
+                return gate
             _backup_first(project, bench, [site], "before-app-remove", emit)
         uninstall_result = core_apps.uninstall_apps(
             project, [app], bench=bench, sites=[site], consent=consent, on_event=emit

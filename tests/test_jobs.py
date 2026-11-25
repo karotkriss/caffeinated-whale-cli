@@ -12,7 +12,7 @@ import pytest
 
 from caffeinated_whale_cli import jobs
 from caffeinated_whale_cli.core import accounts, schedules, supervision
-from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.envelope import Choice, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.core.update import UpdatePreflight
 from caffeinated_whale_cli.core.update_preflight import DATA_LOSS, PreflightFinding
@@ -954,7 +954,14 @@ def test_apps_uninstall_runs_one_app_off_one_site_on_the_core_consent_gate(monke
         jobs.core_apps,
         "uninstall_apps",
         lambda project, apps, **kwargs: calls.append((project, apps, kwargs))
-        or Result(status=Status.OK if kwargs["consent"] else Status.NEEDS_CHOICE),
+        or (
+            Result(status=Status.OK)
+            if kwargs["consent"]
+            else Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_uninstall", param="consent", prompt="?"),
+            )
+        ),
     )
     monkeypatch.setattr(
         jobs,
@@ -979,6 +986,25 @@ def test_apps_uninstall_runs_one_app_off_one_site_on_the_core_consent_gate(monke
     # Unticked: no backup, the uninstall still consented.
     jobs._dispatch("apps-uninstall", target, {"backup_first": False}, True, {}, lambda e: None)
     assert len(backups) == 1 and calls[-1][2]["consent"] is True
+
+
+def test_apps_uninstall_takes_no_backup_when_the_core_refuses_the_removal(monkeypatch):
+    """A removal Frappe would refuse (another installed app requires this one) fails
+    before the site's backup, not after minutes of it."""
+    calls = []
+
+    def refuse(project, apps, **kwargs):
+        calls.append(kwargs["consent"])
+        raise CwcliError(jobs.ErrorKind.CONFLICT, "app.required_by", "hrms requires erpnext")
+
+    monkeypatch.setattr(jobs.core_apps, "uninstall_apps", refuse)
+    monkeypatch.setattr(jobs, "_backup_first", lambda *a, **k: pytest.fail("a backup ran"))
+    target = {"project": "p", "site": "s.localhost", "app": "erpnext"}
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("apps-uninstall", target, {}, True, {}, lambda e: None)
+    assert error.value.code == "app.required_by"
+    assert calls == [False]
 
 
 def test_apps_uninstall_refuses_frappe_and_a_half_named_target_before_any_work(monkeypatch):

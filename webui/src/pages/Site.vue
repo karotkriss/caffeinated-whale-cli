@@ -209,7 +209,7 @@ const heroFacts = computed(() => [
             <ListCell class="max-md:hidden"><span class="truncate font-mono text-sm text-ink-gray-6">{{ item.branch || 'unknown' }}</span></ListCell>
                       <!-- Captain note 53: where the app comes from, with the source's icon. The catalog is this machine's, so a remote site's source is the plain name. -->
             <ListCell class="gap-1.5 overflow-hidden max-md:hidden"><template v-if="!host"><img v-if="hostIcon(catalogAppFor(item.name, project, index).source?.host)" :src="hostIcon(catalogAppFor(item.name, project, index).source?.host)" class="size-3.5 rounded-sm" alt="" /><span v-else :class="sourceIcon(catalogAppFor(item.name, project, index))" class="size-3.5 text-ink-gray-5" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ sourceLabel(catalogAppFor(item.name, project, index)) }}</span></template><span v-else class="truncate text-sm text-ink-gray-5">on {{ hostName(host) }}</span></ListCell>
-            <ListCell class="justify-end">
+            <ListCell class="justify-end" @click.stop.prevent>
               <Dropdown :options="appMenu(item.name)" align="end">
                 <Button size="xs" variant="ghost" icon="lucide-ellipsis" :aria-label="`Actions for ${item.name}`" />
               </Dropdown>
