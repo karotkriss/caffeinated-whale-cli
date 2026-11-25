@@ -530,10 +530,12 @@ def _unreadable_with_app(
     """The unreadable sites that are KNOWN to have an app this run updates.
 
     Only those fail the run: the code moved under a site that was not migrated. A
-    site nobody knows to have the app is unrelated to this update, and failing the
-    job for it blames the update for a problem it did not cause. Known means the
-    cache records one of the apps for the site, or an app is ``frappe`` (every site
-    has it). Anything the cache cannot say is treated as not known.
+    site named with ``--site`` always fails it, so the caller does not consult this
+    then. Otherwise a site nobody knows to have the app is unrelated to this update,
+    and failing the job for it blames the update for a problem it did not cause.
+    Known means the cache records one of the apps for the site, or an app is
+    ``frappe`` (every site has it). Anything the cache cannot say is treated as not
+    known.
     """
     if "frappe" in apps:
         return list(unreadable)
@@ -2236,8 +2238,10 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
             unreadable_sites=unreadable_sites,
-            unreadable_with_app=_unreadable_with_app(
-                project_name, bench_path, unreadable_sites, apps
+            unreadable_with_app=(
+                list(unreadable_sites)
+                if sites_filter
+                else _unreadable_with_app(project_name, bench_path, unreadable_sites, apps)
             ),
             requirements=requirements,
             requirements_cause=requirements_cause,

@@ -735,6 +735,19 @@ class TestFrappeFork:
         assert report.unreadable_with_app == ["b.localhost"]
         assert report.ok is False and report.warned is False
 
+    @pytest.mark.parametrize("cached_apps", [["frappe 16.1.0 version-16"], None])
+    def test_an_unreadable_site_named_with_site_fails_the_run(
+        self, monkeypatch, wired, cached_apps
+    ):
+        # A site the caller asked to migrate is part of the job, not unrelated to it.
+        self._one_unreadable_sibling(monkeypatch, cached_apps)
+
+        report = _update(sites=["b.localhost"]).data
+
+        assert report.migrated_sites == []
+        assert report.unreadable_with_app == ["b.localhost"]
+        assert report.ok is False and report.warned is False
+
     def test_a_real_failure_on_the_apps_site_still_fails_beside_an_unrelated_warning(
         self, monkeypatch, wired
     ):
