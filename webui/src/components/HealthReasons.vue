@@ -35,14 +35,14 @@ const fix = (r) =>
 </script>
 
 <template>
-  <Alert v-if="reasons.length" theme="amber" :title="title">
+  <Alert v-if="reasons.length" class="cw-reasons" theme="amber" :title="title">
     <template #description>
       <component :is="reasons.length > 1 ? 'details' : 'div'" open>
         <summary v-if="reasons.length > 1" class="cursor-pointer text-sm text-ink-gray-7">{{ reasons.map(reasonShort).join(', ') }}</summary>
         <ul class="mt-1 space-y-1.5">
-          <li v-for="r in reasons" :key="r.check + r.subject" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-            <span class="min-w-0 flex-1 text-ink-gray-7">{{ r.text }} <span v-if="seen" class="text-ink-gray-5">{{ seen }}</span></span>
-            <span class="flex shrink-0 gap-1">
+          <li v-for="r in reasons" :key="r.check + r.subject" class="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:gap-x-3">
+            <span class="min-w-0 text-ink-gray-7 sm:flex-1">{{ r.text }} <span v-if="seen" class="text-ink-gray-5">{{ seen }}</span></span>
+            <span class="flex shrink-0 gap-1 sm:ml-auto">
               <Button v-if="logs && r.check !== 'supervisor'" size="sm" variant="ghost" label="Open its log" @click="logs(r.subject)" />
               <Button v-if="can('operator')" size="sm" variant="subtle" :label="fix(r).label" @click="openAction(fix(r).id, fix(r).ctx)" />
             </span>
@@ -52,3 +52,11 @@ const fix = (r) =>
     </template>
   </Alert>
 </template>
+
+<style scoped>
+/* The Alert lays its description out with items-start, which shrinks the list to its
+   widest row and lets each row's buttons drift; the rows need the full width. */
+.cw-reasons :deep([data-slot='description']) {
+  width: 100%;
+}
+</style>

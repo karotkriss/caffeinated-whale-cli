@@ -123,8 +123,8 @@ watch(() => [...new Set(instances.value.map((i) => i.host).filter(Boolean))].sor
 const publishing = computed(() => canPublish() || rows.value.some((r) => r.pub || canPublish(r.host)))
 const columns = computed(() =>
   publishing.value
-    ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', '8.5rem', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
-    : { base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', '9rem', 'minmax(10rem,1.4fr)', '7rem', '2.5rem'] },
+    ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', 'minmax(8.5rem,1fr)', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
+    : { base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', 'minmax(9rem,1.2fr)', 'minmax(10rem,1.2fr)', '7rem', '2.5rem'] },
 )
 // One word for a publication: live, part-way, or failed.
 function pubWord(p) {

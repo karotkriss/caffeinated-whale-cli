@@ -334,8 +334,10 @@ export function duration(seconds) {
 
 export const reasonsOf = (inst) => (inst?.benches || []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))
 export const reasonShort = (r) => `${r.subject} ${r.state}`
-// The card and row word: `degraded · worker:default FATAL`, then `+1` per further reason.
-export const degradedWord = (reasons) => (reasons?.length ? `degraded · ${reasonShort(reasons[0])}${reasons.length > 1 ? ` +${reasons.length - 1}` : ''}` : 'degraded')
+// The short form: the first reason, then `+1` per further reason (`worker:default FATAL +1`),
+// and the row word that carries it (`degraded · worker:default FATAL +1`).
+export const reasonsWord = (reasons) => (reasons?.length ? `${reasonShort(reasons[0])}${reasons.length > 1 ? ` +${reasons.length - 1}` : ''}` : '')
+export const degradedWord = (reasons) => (reasons?.length ? `degraded · ${reasonsWord(reasons)}` : 'degraded')
 // A tooltip or title: every reason's sentence, then when the probe saw them.
 export function reasonsTitle(inst) {
   const rs = reasonsOf(inst)
