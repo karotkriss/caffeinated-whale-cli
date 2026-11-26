@@ -6,7 +6,7 @@ The authoritative team norms for validating a change - gate scope, both-modes te
 
 ## Two-tier model: fast `unit` vs real-Docker `e2e`
 
-The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`/`e2e_pkg`/`packaging`).
+The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` marks every unmarked test; see [tests/README.md](../../tests/README.md#two-tiers-fast-unit-vs-real-docker-e2e) for the rule).
 
 - **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
   It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`).
