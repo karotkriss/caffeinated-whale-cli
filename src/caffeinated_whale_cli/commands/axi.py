@@ -956,7 +956,7 @@ def axi_new_site(
 
     _cache.recache_project(project, bench_path=result.data.bench_path, warnings=[])
     emit_result(result.data, warnings=result.warnings)
-    raise typer.Exit(0)
+    raise typer.Exit(0 if result.data.ok else 1)
 
 
 # ----------------------------------------------------------------------------- new-bench
@@ -3221,7 +3221,9 @@ def axi_init(
 
     # Never exit 0 for a failed explicit request: --complete-setup was asked for,
     # so its own failure must be visible in the exit code, not just the payload.
-    overall_ok = bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) and setup_wizard_ok
+    overall_ok = (
+        bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) and report.ok and setup_wizard_ok
+    )
     raise typer.Exit(0 if overall_ok else 1)
 
 

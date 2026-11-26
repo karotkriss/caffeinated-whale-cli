@@ -59,9 +59,11 @@ _SPINNER_GROUP = {
     "bench_init": "bench_init",
     "configure_bench": "configure_bench",
     "new_site": "new_site",
+    "db_access": "new_site",
     "finalize": "finalize",
     "erpnext_get": "erpnext",
     "erpnext_install": "erpnext",
+    "restart_processes": "restart_processes",
 }
 
 
@@ -98,6 +100,7 @@ class _InitRenderer:
             "new_site": f"Creating site '{self.site_name}'",
             "finalize": f"Finalizing setup for '{self.site_name}'",
             "erpnext": "Installing ERPNext",
+            "restart_processes": f"Reloading bench '{self.bench_name}' processes",
         }[group]
 
     def close(self) -> None:
@@ -175,6 +178,7 @@ class _InitRenderer:
             "init.uid_align_failed",
             "init.uid_align_root_host",
             "init.db_password_not_applied",
+            "site.reload_failed",
         ):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
         elif code in ("instance.already_running", "instance.existing") and self.verbose:
@@ -824,6 +828,11 @@ def init(
             f"in {time_str}"
         )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
+    if report.processes_restarted:
+        console.print(
+            f"[dim]Restarted {', '.join(report.processes_restarted)} so the running bench "
+            "loads the new apps.[/dim]"
+        )
 
     _refresh_cache(project, verbose, report.bench_path)
 
@@ -885,3 +894,8 @@ def init(
             f"`cwcli run {project} --site {report.site_name} set-admin-password "
             "<new-password>`.[/dim]"
         )
+
+    # The site exists either way; a reload cwcli could not complete or verify is
+    # a failed step, so automation must not read it as success.
+    if not report.ok:
+        raise typer.Exit(code=1)

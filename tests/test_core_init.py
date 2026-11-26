@@ -1590,6 +1590,8 @@ class TestCorePurity:
             "bench_created": True,
             "site_created": True,
             "erpnext_installed": False,
+            "processes_restarted": [],
+            "ok": True,
         }
         up = dataclasses.asdict(core_init.InstanceUp(project=PROJECT, conf_dir="/x"))
         assert up == {"project": PROJECT, "conf_dir": "/x"}

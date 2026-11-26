@@ -29,6 +29,7 @@ from .init import (
     _directory_exists,
     _run_exec,
     _select_mariadb_flag,
+    reload_for_installed_apps,
 )
 
 OnEvent = Callable[[Any], None]
@@ -46,6 +47,11 @@ class NewSiteReport:
     apps_installed: list[str] = field(default_factory=list)
     default_set: bool = False
     developer_mode: bool = False
+    # The bench processes cwcli restarted so they could import the installed apps
+    # (see core.supervision.resync_if_code_landed); False ``ok`` = the site was
+    # created but cwcli could not reload or verify it, named in a warning.
+    processes_restarted: list[str] = field(default_factory=list)
+    ok: bool = True
 
 
 def check_site_name(site: str) -> None:
@@ -310,6 +316,10 @@ def new_site(
         emit(InitStepEnd(phase="developer_mode"))
         dev_set = True
 
+    restarted, reloaded = reload_for_installed_apps(
+        container, bench_path, site=site, apps=installed, warnings=warnings, emit=emit
+    )
+
     return Result(
         status=Status.WARNING if warnings else Status.OK,
         data=NewSiteReport(
@@ -319,6 +329,8 @@ def new_site(
             apps_installed=installed,
             default_set=default_set,
             developer_mode=dev_set,
+            processes_restarted=restarted,
+            ok=reloaded,
         ),
         warnings=warnings,
     )

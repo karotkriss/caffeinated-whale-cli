@@ -40,12 +40,12 @@ import subprocess
 import time
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..utils import config_utils, shared_home
 from ..utils.port_utils import check_ports_in_use, format_port_list
-from . import credbridge, db_password, failure_causes, resolvers
+from . import credbridge, db_password, failure_causes, resolvers, supervision
 from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -97,6 +97,10 @@ class InitReport:
     bench_created: bool  # False when an existing bench was reused
     site_created: bool  # False on an idempotent re-run (site already existed)
     erpnext_installed: bool
+    # The bench processes restarted so they could import ERPNext (a reused, serving
+    # bench); False ``ok`` = cwcli could not reload or verify the site, in a warning.
+    processes_restarted: list[str] = field(default_factory=list)
+    ok: bool = True
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1162,6 +1166,45 @@ def _install_nvm_node(container, major: str, emit: OnEvent, warnings: list[Messa
 # ------------------------------------------------------------------ stage 2: the bench
 
 
+def reload_for_installed_apps(
+    container,
+    bench_path: str,
+    *,
+    site: str,
+    apps: list[str],
+    warnings: list[Message],
+    emit: OnEvent,
+) -> tuple[list[str], bool]:
+    """After ``apps`` were installed on ``site``, reload the bench processes that
+    booted before those apps reached the bench; return (restarted programs, ok).
+
+    Shared by ``new_site`` and ``init``: both install apps on a fresh site of a bench
+    that may already be serving, where the web and worker processes cannot import an
+    app that arrived after they started. A failed reload is a warning and ``ok`` False,
+    never a raise: the site and its apps already exist.
+    """
+    if not apps:
+        return [], True
+    outcome = supervision.resync_if_code_landed(
+        container,
+        bench_path,
+        sites=[site],
+        landed_paths=[f"{bench_path}/sites/apps.txt", *(f"{bench_path}/apps/{a}" for a in apps)],
+        on_restart=lambda program: emit(
+            InitStepStart(
+                phase="restart_processes",
+                item=program,
+                message=f"Restarting {program} so it loads the newly installed apps",
+            )
+        ),
+    )
+    if outcome.error:
+        text = f"The site and its apps were installed, but {outcome.error}"
+        warnings.append(Message("site.reload_failed", text))
+        emit(InitNotice(code="site.reload_failed", text=text))
+    return outcome.restarted, outcome.error is None
+
+
 def init_bench(
     project_name: str,
     *,
@@ -1625,6 +1668,16 @@ def init_bench(
         )
         emit(InitStepEnd(phase="erpnext_install"))
         erpnext_installed = True
+    # A reused bench may already be serving, and its processes cannot import an app
+    # that reached the bench after they booted; a bench this run created is not.
+    restarted, reloaded = reload_for_installed_apps(
+        frappe_container,
+        bench_full_path,
+        site=site_name,
+        apps=["erpnext"] if erpnext_installed and not bench_created else [],
+        warnings=warnings,
+        emit=emit,
+    )
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -1636,6 +1689,8 @@ def init_bench(
             bench_created=bench_created,
             site_created=site_created,
             erpnext_installed=erpnext_installed,
+            processes_restarted=restarted,
+            ok=reloaded,
         ),
         warnings=warnings,
     )

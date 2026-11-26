@@ -71,7 +71,7 @@ def _code_bearing(pids: dict[str, int]) -> dict[str, int]:
     }
 
 
-def _site_ping_code(inst) -> str:
+def _site_ping_code(inst, site: str | None = None) -> str:
     """The HTTP result a real site-routed request gets from this bench's web process."""
     code, config = harness.exec_in_frappe(
         inst.name, f"cat {inst.bench}/sites/common_site_config.json"
@@ -81,7 +81,7 @@ def _site_ping_code(inst) -> str:
     code, out = harness.exec_in_frappe(
         inst.name,
         f'curl -sS --max-time 10 -o /dev/null -w "%{{http_code}}" '
-        f'-H "Host: {inst.site}" http://localhost:{port}/api/method/ping',
+        f'-H "Host: {site or inst.site}" http://localhost:{port}/api/method/ping',
     )
     assert code == 0, out
     return out.strip().splitlines()[-1]
@@ -361,3 +361,99 @@ def test_apps_checkout_confirms_serving_when_webserver_port_is_absent(running_in
     assert "restart-processes" in checkout.stdout
     assert "assigned port could not be read" not in checkout.stdout
     assert _site_ping_code(inst) == "200"
+
+
+_NEW_SITES = ("cwe2e-reload-a.localhost", "cwe2e-reload-b.localhost")
+
+
+def _drop_site(inst, site: str) -> None:
+    """Best-effort: a throwaway site this module created, never ``inst.site``."""
+    harness.exec_in_frappe(
+        inst.name,
+        f"cd {inst.bench} && bench drop-site --force --no-backup "
+        f"--db-root-password 123 {shlex.quote(site)}",
+    )
+
+
+def _axi_new_site_with_app(inst, site: str):
+    return harness.run_cwcli(
+        "axi",
+        "new-site",
+        inst.name,
+        site,
+        "--app",
+        _APP,
+        "--admin-password",
+        "cwe2e-admin",
+        "--db-root-password",
+        "123",
+        timeout=900,
+    )
+
+
+def test_a_new_site_with_a_newly_fetched_app_serves_without_a_manual_restart(running_instance):
+    """The reported defect: an app reached a RUNNING bench (``bench get-app``), a new
+    site was created with it, and that site answered HTTP 500 until ``cwcli restart``,
+    because the web and worker processes booted before the app existed and could not
+    import it. ``new-site`` must reload them, and only them, before it reports success.
+
+    The second leg is the other half of the contract: once the processes have booted
+    with the app present, another site with the same app (what a restore drill or a
+    transfer creates) must NOT cycle the live bench.
+    """
+    inst = running_instance
+    _ensure_serving(inst.name)
+    _wait_supervised_stack(inst.name)
+    assert _APP not in _installed_apps(inst), "fixture already has payments installed"
+    for site in _NEW_SITES:
+        _drop_site(inst, site)
+
+    restored = False
+    try:
+        with harness.quiesce_v14_asset_watcher(inst.name, inst.bench) as watcher_quiesced:
+            # The app lands on the bench the way an operator's own `bench get-app`
+            # (or a fetch-only install) puts it there: no cwcli restart follows.
+            code, out = harness.exec_in_frappe(
+                inst.name,
+                f"cd {inst.bench} && bench get-app --branch "
+                f"{shlex.quote(harness.FRAPPE_BRANCH)} {_APP}",
+            )
+            assert code == 0, out
+            _wait_supervised_stack(inst.name)
+            before = _program_pids(inst)
+            assert "web" in before, f"no supervised web program to cycle: {before}"
+
+            created = _axi_new_site_with_app(inst, _NEW_SITES[0])
+        assert created.returncode == 0, created.stdout + created.stderr
+        assert "ok: true" in created.stdout, created.stdout
+        restarted_line = re.search(r"^processes_restarted\[\d+\]: (.*)$", created.stdout, re.M)
+        assert restarted_line and "web" in restarted_line.group(1).split(","), created.stdout
+        # POSITIVE FIRST: the new site serves with its new app, with no manual restart.
+        assert _site_ping_code(inst, _NEW_SITES[0]) == "200"
+        after = _assert_resynchronised(
+            inst, before, verb="new-site", watcher_quiesced=watcher_quiesced
+        )
+
+        # Every code-bearing process now booted with payments on the bench, so a
+        # further site with it must leave them running.
+        second = _axi_new_site_with_app(inst, _NEW_SITES[1])
+        assert second.returncode == 0, second.stdout + second.stderr
+        assert "processes_restarted[0]:" in second.stdout, second.stdout
+        assert _site_ping_code(inst, _NEW_SITES[1]) == "200"
+        _wait_supervised_stack(inst.name)
+        untouched = _program_pids(inst)
+        for name, pid in _code_bearing(after).items():
+            assert (
+                untouched.get(name) == pid
+            ), f"new-site cycled {name!r} although it already had {_APP} importable"
+
+        for site in _NEW_SITES:
+            _drop_site(inst, site)
+        _remove_app_source(inst)
+        restored = True
+    finally:
+        if not restored:
+            for site in _NEW_SITES:
+                _drop_site(inst, site)
+            _remove_app_source(inst, required=False)
+        _ensure_serving(inst.name)

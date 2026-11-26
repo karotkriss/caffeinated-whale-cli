@@ -474,6 +474,10 @@ The Administrator password is resolved the same way as for `new-bench`: the flag
 A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
 cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
 Every picked app's Frappe range and required apps are checked before the site is created, exactly as for `apps install`, and the apps are installed in dependency order, so a refusal leaves no site behind.
+When the bench is already serving and an installed app reached the bench after its processes started (for example an app fetched with `--fetch-only`), those processes cannot import it, so new-site restarts the cwcli-supervised programs that run the bench's Python (`web`, `schedule`, and every worker) and requires the new site to answer Frappe before it reports success.
+It names each restarted program (`processes_restarted` on the agent surface) and exits non-zero if the site does not answer.
+When every installed app was already on the bench when those processes started, nothing is restarted.
+`cwcli init --reuse-bench` with `--install-erpnext` on a running bench does the same for ERPNext.
 
 ```bash
 CWCLI_ADMIN_PASSWORD=... cwcli new-site my-project shop.localhost --app erpnext --default
