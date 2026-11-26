@@ -19,7 +19,7 @@ import SiteIcon from '../components/SiteIcon.vue'
 import StatusDot from '../components/StatusDot.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import MaintenanceAlert from '../components/MaintenanceAlert.vue'
-import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath, degradedWord, reasonsTitle } from '../data/fleet'
+import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath, degradedWord, reasonsOf, reasonsTitle } from '../data/fleet'
 import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import { openAction } from '../data/dialog'
@@ -50,6 +50,7 @@ const rows = computed(() => {
     for (const b of detailOf(i.project, i.host)?.data?.benches || []) {
       for (const s of b.sites || []) {
         const health = i.container_running ? i.benches?.find((h) => String(h.index) === String(b.index)) : null
+        const one = health && { ...i, benches: [health] }
         const token = stale ? 'unknown' : !i.container_running ? 'offline' : health ? health.overall : 'unknown'
         out.push({
           key: `${i.key}/${b.index}/${s.name}`,
@@ -62,8 +63,8 @@ const rows = computed(() => {
           running: !!i.container_running,
           serving: token === 'running' || token === 'degraded',
           token,
-          word: stale ? 'unknown' : token === 'degraded' ? degradedWord(health?.reasons) : QUIET[token] || token,
-          why: !stale && health ? reasonsTitle({ benches: [health], probed_at: i.probed_at }) : undefined,
+          word: stale ? 'unknown' : token === 'degraded' ? degradedWord(reasonsOf(one)) : QUIET[token] || token,
+          why: one ? reasonsTitle(one) : undefined,
           isDefault: s.name === b.default_site,
           maintenance: maintenanceSites(health?.maintenance).includes(s.name),
           devMode: detailOf(i.project, i.host)?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,

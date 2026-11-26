@@ -183,7 +183,7 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
               <ListCell>
                 <StatusBadge v-if="running && inst?.probe_error" token="unknown" />
                 <span v-else-if="!running || health[item.index]?.overall === 'running'" class="flex items-center gap-1.5 text-sm text-ink-gray-6"><StatusDot :token="running ? 'running' : 'offline'" />{{ running ? 'running' : 'stopped' }}</span>
-                <Tooltip v-else :text="reasonsTitle({ benches: [health[item.index]].filter(Boolean), probed_at: inst?.probed_at, host: inst?.host })"><StatusBadge :token="health[item.index]?.overall" /></Tooltip>
+                <Tooltip v-else :text="reasonsTitle({ ...inst, benches: [health[item.index]].filter(Boolean) })"><StatusBadge :token="health[item.index]?.overall" /></Tooltip>
               </ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.sites.length }}</span></ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.available_apps.length }}</span></ListCell>
