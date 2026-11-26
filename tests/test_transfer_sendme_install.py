@@ -9,6 +9,9 @@ test_sendme_autoinstall_e2e.py`` installs the real binary through a real job.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,7 +94,7 @@ def test_receive_installs_sendme_before_it_downloads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
     monkeypatch.setattr(
-        transfer.subprocess, "run", lambda *a, **k: pytest.fail("downloaded without sendme")
+        transfer, "_spawn_on_pty", lambda *a, **k: pytest.fail("downloaded without sendme")
     )
     events: list = []
     with pytest.raises(CwcliError) as e:
@@ -113,11 +116,10 @@ def test_send_installs_sendme_before_it_serves(monkeypatch):
     assert e.value.code == "transfer.sendme_missing"
 
 
-def test_a_quiet_install_prints_nothing(monkeypatch, tmp_path, capsys):
+def _serve_release(monkeypatch, install_dir: Path) -> None:
     import io
     import tarfile
 
-    install_dir = tmp_path / "bin"
     url = "https://example.invalid/sendme-v1-linux-x86_64.tar.gz"
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w:gz") as tar:
@@ -143,10 +145,34 @@ def test_a_quiet_install_prints_nothing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: install_dir)
     monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sendme_utils.requests, "get", lambda u, **k: Response(u))
+
+
+def test_a_quiet_install_prints_nothing(monkeypatch, tmp_path, capsys):
+    install_dir = tmp_path / "bin"
+    _serve_release(monkeypatch, install_dir)
     path = sendme_utils.fetch_sendme(progress=False, verbose=True)
     assert path == install_dir / "sendme" and os.access(path, os.X_OK)
     out = capsys.readouterr()
     assert out.out == "" and out.err == ""
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="ETXTBSY is Linux behavior")
+def test_an_install_replaces_a_sendme_another_job_is_running(monkeypatch, tmp_path):
+    """Two web UI jobs installing on first use: writing over a running binary fails
+    with ETXTBSY on Linux, so the install must swap a new file into place."""
+    install_dir = tmp_path / "bin"
+    install_dir.mkdir()
+    running = install_dir / "sendme"
+    shutil.copy2(shutil.which("sleep") or "/bin/sleep", running)
+    proc = subprocess.Popen([str(running), "30"])
+    try:
+        _serve_release(monkeypatch, install_dir)
+        path = sendme_utils.fetch_sendme(progress=False)
+        assert path.read_bytes() == b"#!/bin/sh\n"
+        assert sorted(p.name for p in install_dir.iterdir()) == ["sendme"]
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 # --------------------------------------------------------------- shared install

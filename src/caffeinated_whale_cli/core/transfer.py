@@ -431,8 +431,8 @@ def _site_exists(project: str, bench: str | None, site: str) -> bool:
 
 def _sendme(emit: OnEvent) -> str:
     """The sendme binary to run, installed on first use the way `cwcli restore
-    --send/--receive` installs it (into the home of the user cwcli runs as: the
-    service account under a shared install). The install prints nothing, so a web UI
+    --send/--receive` installs it (into ``bin/`` in the shared cwcli home under a
+    shared install, else the user's ``~/.local/bin``). The install prints nothing, so a web UI
     job or ``--json`` output stays clean; a failed install names the manual command."""
     from ..utils import sendme_utils  # lazy: sendme_utils pulls rich at load time
 

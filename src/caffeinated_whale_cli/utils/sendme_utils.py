@@ -285,12 +285,17 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
 
             # Copy to install directory
             dest_path = install_dir / binary_name
-            shutil.copy2(sendme_binary, dest_path)
-
-            # Make executable on Unix systems
-            if platform.system() != "Windows":
-                os.chmod(dest_path, 0o755)
-            shared_home.apply_group(dest_path)
+            fd, staged = tempfile.mkstemp(prefix=f".{binary_name}.", dir=install_dir)
+            os.close(fd)
+            try:
+                shutil.copy2(sendme_binary, staged)
+                if platform.system() != "Windows":
+                    os.chmod(staged, 0o755)
+                shared_home.apply_group(Path(staged))
+                os.replace(staged, dest_path)
+            except BaseException:
+                Path(staged).unlink(missing_ok=True)
+                raise
 
             return dest_path
 
