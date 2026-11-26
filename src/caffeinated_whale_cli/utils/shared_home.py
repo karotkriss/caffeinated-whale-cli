@@ -39,6 +39,7 @@ import contextlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import toml
 
@@ -122,6 +123,18 @@ def service_uid() -> int | None:
     None when the account is absent/unreadable; callers fall back to their
     per-user behavior (``os.getuid``) so a half-provisioned box never crashes.
     """
+    account = _service_account()
+    return account.pw_uid if account is not None else None
+
+
+def service_home() -> Path | None:
+    """The ``cwcli`` service account's home (from its passwd entry), or None when the
+    account is absent/unreadable."""
+    account = _service_account()
+    return Path(account.pw_dir) if account is not None else None
+
+
+def _service_account() -> Any:
     cfg = marker_config() or {}
     if not is_posix():
         return None
@@ -129,7 +142,7 @@ def service_uid() -> int | None:
 
     name = str(cfg.get("service_user") or SERVICE_USER)
     try:
-        return pwd.getpwnam(name).pw_uid
+        return pwd.getpwnam(name)
     except (KeyError, OSError):
         return None
 

@@ -535,17 +535,39 @@ def _check_temp_free_space() -> tuple:
 # --------------------------------------------------------------------------- transfer
 
 
+def _service_sendme(install_dir: Callable[[Path], Path]) -> tuple[Path, bool | None] | None:
+    """The sendme the web UI of a shared install runs: the service account's own
+    ``~/.local/bin/sendme`` (its home from the passwd entry), and whether it is there
+    (None when that home cannot be read). A ``stat`` only, never a write. None outside
+    shared mode, or when this user is the service account."""
+    if not shared_home.shared_mode():
+        return None
+    home = shared_home.service_home()
+    if home is None or home.resolve() == Path.home().resolve():
+        return None
+    path = install_dir(home) / "sendme"
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return path, False
+    except OSError:
+        return path, None
+    return path, stat.S_ISREG(mode) and bool(mode & 0o111)
+
+
 def _check_sendme() -> tuple:
     """C8 - sendme installed + resolved path (+ best-effort version).
 
     Lazy-imported: ``utils/sendme_utils.py`` pulls ``rich`` at load time, and the
     core must never do that transitively (``test_core_envelope.py`` walks the
     whole load-time import graph). WARN, never FAIL, when absent - it is optional
-    and installs itself on the first send or receive (CLI or web UI).
+    and installs itself on the first send or receive (CLI or web UI). Under a shared
+    install the web UI runs as the service account, so this also says when its copy
+    differs from this user's.
     """
     from ..utils.sendme_utils import (
         get_sendme_command,
-        get_sendme_path,
+        get_sendme_install_dir,
         is_sendme_installed,
         manual_install_command,
     )
@@ -554,27 +576,25 @@ def _check_sendme() -> tuple:
         "installs itself on the first send or receive; to install it now: "
         + manual_install_command()
     )
+    web_ui = _service_sendme(get_sendme_install_dir)
     if not is_sendme_installed():
-        return _outcome(
-            CheckStatus.WARN,
-            "not installed (optional; needed only to send or receive backups between machines)",
-            install_now,
-        )
+        detail = "not installed (optional; needed only to send or receive backups between machines)"
+        if web_ui is not None and web_ui[1]:
+            detail += f"; the web UI (the shared install's service account) has {web_ui[0]}"
+        return _outcome(CheckStatus.WARN, detail, install_now)
     resolved = get_sendme_command()
-    if shared_home.shared_mode():
-        # The web UI runs as the service account, whose home is not this user's: it
-        # finds the shared install dir or a system path, never a copy in this home.
-        shared_bin = get_sendme_path()
-        in_shared = shared_bin.exists() and os.access(shared_bin, os.X_OK)
-        if not in_shared and Path(resolved).resolve().is_relative_to(Path.home().resolve()):
-            return _outcome(
-                CheckStatus.WARN,
-                f"{resolved} is yours only; the web UI (the shared install's service account) "
-                f"looks in {shared_bin.parent}",
-                install_now,
-            )
     version = _probe_version([resolved, "--version"])
     detail = f"{resolved} ({version})" if version else resolved
+    if (
+        web_ui is not None
+        and web_ui[1] is False
+        and Path(resolved).resolve().is_relative_to(Path.home().resolve())
+    ):
+        return _outcome(
+            CheckStatus.WARN,
+            f"{detail} is yours only; the web UI (the shared install's service account) has no "
+            f"{web_ui[0]}, so it installs its own on the first send or receive",
+        )
     return _outcome(CheckStatus.PASS, detail)
 
 

@@ -611,6 +611,25 @@ def test_a_normal_install_spawns_the_jobs_module(fake_spawn, monkeypatch):
     ]
 
 
+def test_sendme_progress_and_ticket_live_on_the_job_record(fake_spawn):
+    """A long send writes a byte reading every second: it must replace one field on
+    the record, not grow the log, so the ticket never falls out of the page's tail."""
+    from caffeinated_whale_cli.core.transfer import Ticket, TransferBytes
+
+    record = jobs.create_job("send-backup", {"project": "p"}, {"set_keys": ["p/s/1"]})
+    recorder = jobs._Recorder(record["id"], [])
+    recorder(Ticket("Ticket ready", "blobabc", ["p/s/1"]))
+    for done in range(1, 451):
+        recorder(TransferBytes(f"Sent {done}", "send", done, 450, 1.0, float(450 - done)))
+    recorder.flush()
+
+    got = jobs.read_job(record["id"], include_events=True, limit=400)
+    assert got["ticket"] == "blobabc"
+    assert got["transfer_bytes"]["done"] == got["transfer_bytes"]["total"] == 450
+    assert [e["type"] for e in got["events"]] == ["ticket"] and got["events_skipped"] == 0
+    assert got["event_count"] == 1
+
+
 def test_output_storms_do_not_rewrite_state_per_event(fake_spawn, monkeypatch):
     """A migrate repaints its progress bar hundreds of times; only the event log grows."""
     record = jobs.create_job("backup", {"project": "p"}, {})

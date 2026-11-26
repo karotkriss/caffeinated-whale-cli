@@ -15,7 +15,8 @@ interrupted; ``receive_sets`` downloads a ticket and adopts every ``set.json`` i
 finds into this machine's store, where the restore wizard takes over. sendme is
 installed on first use and driven under a pty, because ``sendme send`` refuses to run
 without a terminal and both directions draw their progress bar only on one; that bar
-becomes throttled ``TransferBytes`` events for the web UI's job page.
+becomes throttled ``TransferBytes`` events for the web UI's job page. Where the OS has
+no pty (Windows), ``sendme receive`` runs piped and the job shows its steps only.
 """
 
 from __future__ import annotations
@@ -88,6 +89,8 @@ _UNIT = r"([KMGTPE]i?B|kB|B)"
 _PAIR = re.compile(rf"(\d+(?:\.\d+)?)\s*{_UNIT}\s*/\s*(\d+(?:\.\d+)?)\s*{_UNIT}(?![/\w])")
 # sendme send names each request "n <endpoint> r <connection>/<request> i <child>"
 _REQUEST = re.compile(r"\br (\d+)/(\d+) i (\d+)\b")
+# sendme receive labels its steps "[3/4] Downloading ...", "[4/4] Exporting ..."
+_STAGE = re.compile(r"\[\d+/\d+\]\W*(\w+)")
 _IMPORTED = re.compile(r"imported (?:file|directory) .*, (\d+(?:\.\d+)?)\s*" + _UNIT + r", hash")
 _SCALE = {"B": 1, "kB": 1000}
 for _i, _p in enumerate("KMGTPE", start=1):
@@ -111,7 +114,9 @@ class SendmeProgress:
     """Reads sendme's terminal output (indicatif bars redrawn with carriage returns
     and cursor moves) and turns it into throttled ``TransferBytes``.
 
-    ``receive`` reads the one download bar. ``send`` sums the requests of the latest
+    ``receive`` reads only the download bar: the per-file export bars that follow it
+    are ignored, and leaving the download step completes the reading at the whole
+    download's size. ``send`` sums the requests of the latest
     connection (one bar per blob, each "done/size") against the size sendme printed
     when it imported the outbox. ``feed`` returns an event at most once per
     ``interval`` seconds, and only when the whole percent moved or ``refresh``
@@ -135,6 +140,7 @@ class SendmeProgress:
         self._imported: int | None = None
         self._requests: dict[tuple[int, int, int], tuple[int, int]] = {}
         self._reading: tuple[int, int] | None = None
+        self._downloading: bool | None = None  # None before the download step, False after
         self._sent: tuple[float, int, int] | None = None  # time, done, percent
         self._rate: float | None = None
 
@@ -155,6 +161,18 @@ class SendmeProgress:
         imported = _IMPORTED.search(line)
         if imported:
             self._imported = _bytes(imported.group(1), imported.group(2))
+        if self.phase != "send":
+            stage = _STAGE.search(line)
+            if stage is not None:
+                downloading = stage.group(1).lower().startswith("download")
+                if downloading and self._downloading is None:
+                    self._downloading = True
+                elif not downloading and self._downloading:
+                    self._downloading = False
+                    if self._reading is not None:
+                        self._reading = (self._reading[1], self._reading[1])
+            if not self._downloading:
+                return
         pairs = list(_PAIR.finditer(line))
         if not pairs:
             return
@@ -431,9 +449,10 @@ def _site_exists(project: str, bench: str | None, site: str) -> bool:
 
 def _sendme(emit: OnEvent) -> str:
     """The sendme binary to run, installed on first use the way `cwcli restore
-    --send/--receive` installs it (into ``bin/`` in the shared cwcli home under a
-    shared install, else the user's ``~/.local/bin``). The install prints nothing, so a web UI
-    job or ``--json`` output stays clean; a failed install names the manual command."""
+    --send/--receive` installs it: into ``~/.local/bin`` of the account cwcli runs as,
+    which for the web UI of a shared install is the service account. The install prints
+    nothing, so a web UI job or ``--json`` output stays clean; a failed install names the
+    manual command."""
     from ..utils import sendme_utils  # lazy: sendme_utils pulls rich at load time
 
     if not sendme_utils.is_sendme_installed():
@@ -579,9 +598,13 @@ def send_sets(
     return Result(status=Status.OK, data={"ticket": ticket, "sets": list(keys), "served": True})
 
 
-def _receive_on_pty(argv: list[str], cwd: Path, emit: OnEvent) -> tuple[int, str]:
-    """Run ``sendme receive`` to the end, reporting its download bar as progress;
-    returns its exit code and its output with the bar redraws stripped."""
+def _run_receive(argv: list[str], cwd: Path, emit: OnEvent) -> tuple[int, str]:
+    """Run ``sendme receive`` to the end and return its exit code and output. On a pty
+    its download bar becomes progress (the redraws stripped from the output); where
+    the OS has no pty it runs piped, with no bar to read."""
+    if not hasattr(os, "openpty"):
+        piped = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+        return piped.returncode, piped.stderr or piped.stdout or ""
     proc, master = _spawn_on_pty(argv, cwd)
     meter = SendmeProgress("receive")
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -630,7 +653,7 @@ def receive_sets(
     tmp = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d_%H%M%S-"), dir=inbox))
     emit(StoreStep("receive", "Downloading over sendme"))
     try:
-        returncode, output = _receive_on_pty([cmd, "receive", ticket], tmp, emit)
+        returncode, output = _run_receive([cmd, "receive", ticket], tmp, emit)
         if returncode != 0:
             raise CwcliError(
                 ErrorKind.PRECONDITION,

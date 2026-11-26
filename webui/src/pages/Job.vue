@@ -40,7 +40,7 @@ const safetySets = computed(() => safetyKeys.value.map((k) => (backups.data?.set
 // Phase 2: x of N for a batch clone/move, the sendme ticket, and the sets a receive filed.
 const progress = computed(() => (record.value?.events || []).filter((e) => e.type === 'transfer_progress').at(-1)?.data || null)
 // sendme's own bar, read by the job runner: bytes done of total, speed, time left.
-const bytes = computed(() => (record.value?.events || []).filter((e) => e.type === 'transfer_bytes').at(-1)?.data || null)
+const bytes = computed(() => record.value?.transfer_bytes || null)
 const bytesPct = computed(() => (bytes.value ? Math.floor((bytes.value.done / Math.max(bytes.value.total, 1)) * 100) : 0))
 const etaText = (s) => (s == null ? '' : s < 60 ? 'under a minute left' : s < 3600 ? `about ${Math.round(s / 60)} min left` : `about ${(s / 3600).toFixed(1)} h left`)
 const bytesDetail = computed(() => {
@@ -48,9 +48,7 @@ const bytesDetail = computed(() => {
   if (!b || b.done >= b.total || !active.value) return ''
   return [b.rate ? `${sizeText(Math.round(b.rate))}/s` : '', etaText(b.eta)].filter(Boolean).join(' · ')
 })
-// The bar shows the transfer; its readings stay out of the step list.
-const stepEvents = computed(() => (record.value?.events || []).filter((e) => e.type !== 'transfer_bytes'))
-const ticket = computed(() => (record.value?.events || []).find((e) => e.type === 'ticket')?.data?.ticket || null)
+const ticket = computed(() => record.value?.ticket || null)
 const receivedKeys = computed(() => (record.value?.events || []).find((e) => e.type === 'received')?.data?.sets || [])
 const receivedSets = computed(() => receivedKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
 watch(receivedKeys, (keys) => { if (keys.length) loadBackups() }, { immediate: true })
@@ -453,7 +451,7 @@ async function continueChoice(value) {
           </div>
         </div>
         <Alert v-if="record.events_skipped" class="mt-3" theme="gray" :title="`${record.events_skipped} earlier ${record.events_skipped === 1 ? 'event is' : 'events are'} not shown`" description="This job wrote more than the page loads at first; the steps below are its last 400 events." :primary-action="{ label: 'Load all events', onClick: loadAll }" />
-        <JobSteps v-if="view === 'steps'" class="mt-3" :events="stepEvents" :state="record.state" />
+        <JobSteps v-if="view === 'steps'" class="mt-3" :events="record.events || []" :state="record.state" />
         <div v-else-if="!items.length" class="mt-3 rounded-6 border border-outline-gray-1 bg-surface-gray-1 px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
         <FollowPane v-else :items="items" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
           <template #default="{ item, index }">

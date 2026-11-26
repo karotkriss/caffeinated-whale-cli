@@ -18,7 +18,6 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
-from . import shared_home
 from .console import console, stderr_console
 
 
@@ -64,19 +63,10 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def _user_install_dir() -> Path:
-    return Path.home() / ".local" / "bin"
-
-
-def get_sendme_install_dir() -> Path:
-    """Where cwcli installs sendme and looks for it first.
-
-    Under a shared install it is ``bin/`` in the shared cwcli home, so every member
-    and the web UI's service account (a different user, with a different home) find
-    the same binary; otherwise it is the user's ``~/.local/bin``.
-    """
-    shared = shared_home.state_dir()
-    return shared / "bin" if shared is not None else _user_install_dir()
+def get_sendme_install_dir(home: Path | None = None) -> Path:
+    """Where cwcli installs sendme and looks for it first: ``~/.local/bin`` of the
+    account cwcli runs as (``home`` names another account's home, read-only use)."""
+    return (home or Path.home()) / ".local" / "bin"
 
 
 def get_sendme_path() -> Path:
@@ -88,14 +78,10 @@ def get_sendme_path() -> Path:
 
 
 def _find_sendme() -> str | None:
-    """The sendme cwcli runs: the install dir first, then (shared install only) the
-    user's own ``~/.local/bin``, then PATH."""
-    candidates = [get_sendme_path()]
-    if shared_home.state_dir() is not None:
-        candidates.append(_user_install_dir() / candidates[0].name)
-    for path in candidates:
-        if path.exists() and os.access(path, os.X_OK):
-            return str(path)
+    """The sendme cwcli runs: the install dir first, then PATH."""
+    path = get_sendme_path()
+    if path.exists() and os.access(path, os.X_OK):
+        return str(path)
     return shutil.which("sendme")
 
 
@@ -213,7 +199,6 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
 
     try:
         install_dir.mkdir(parents=True, exist_ok=True)
-        shared_home.secure_dir_shared_only(install_dir)
         if verbose and progress:
             stderr_console.print(f"[dim]Fetching release info from {release_url}[/dim]")
 
@@ -291,7 +276,6 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
                 shutil.copy2(sendme_binary, staged)
                 if platform.system() != "Windows":
                     os.chmod(staged, 0o755)
-                shared_home.apply_group(Path(staged))
                 os.replace(staged, dest_path)
             except BaseException:
                 Path(staged).unlink(missing_ok=True)
@@ -309,7 +293,7 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
 
 def install_sendme(verbose: bool = False) -> bool:
     """
-    Install the sendme binary into ``get_sendme_install_dir()``.
+    Install the sendme binary into ``~/.local/bin`` of the account cwcli runs as.
 
     Args:
         verbose: Enable verbose output

@@ -186,17 +186,18 @@ def test_an_install_replaces_a_sendme_another_job_is_running(monkeypatch, tmp_pa
 
 @pytest.fixture
 def shared(monkeypatch, tmp_path):
-    """A shared install whose state dir is ``tmp_path/state`` and a member whose home
-    is ``tmp_path/member``; nothing on PATH."""
-    state = tmp_path / "state"
+    """A shared install whose service account (the web UI's) has its home at
+    ``tmp_path/service``, and a member whose home is ``tmp_path/member``; nothing on PATH."""
+    service = tmp_path / "service"
     member = tmp_path / "member"
-    monkeypatch.setattr(sendme_utils.shared_home, "state_dir", lambda: state)
     monkeypatch.setattr(core_doctor.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_doctor.shared_home, "state_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(core_doctor.shared_home, "service_home", lambda: service)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: member))
     monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
     monkeypatch.setattr(core_doctor, "_probe_version", lambda _c: None)
-    return state, member
+    return service, member
 
 
 def _binary(path: Path) -> Path:
@@ -206,30 +207,48 @@ def _binary(path: Path) -> Path:
     return path
 
 
-def test_a_shared_install_installs_and_looks_in_the_shared_home(shared):
-    state, member = shared
-    assert sendme_utils.get_sendme_install_dir() == state / "bin"
-    assert str(state / "bin") in sendme_utils.manual_install_command()
+def test_a_shared_install_still_installs_into_the_running_accounts_own_home(shared):
+    """No shared executable directory: every account, the web UI's service account
+    included, installs and runs its own copy, which only that account can replace."""
+    _service, member = shared
+    assert sendme_utils.get_sendme_install_dir() == member / ".local" / "bin"
+    assert str(member / ".local" / "bin") in sendme_utils.manual_install_command()
     mine = _binary(member / ".local" / "bin" / "sendme")
-    assert sendme_utils.get_sendme_command() == str(mine)  # a member's own copy still works
-    common = _binary(state / "bin" / "sendme")
-    assert sendme_utils.get_sendme_command() == str(common)  # but the shared one wins
+    assert sendme_utils.get_sendme_command() == str(mine)
 
 
-def test_doctor_warns_when_only_this_users_copy_exists_in_shared_mode(shared):
-    state, member = shared
+def test_doctor_warns_when_the_web_ui_account_lacks_the_copy_this_user_has(shared):
+    service, member = shared
     mine = _binary(member / ".local" / "bin" / "sendme")
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN
+    assert str(mine) in detail and "web UI" in detail
+    assert str(service / ".local" / "bin" / "sendme") in detail
+    assert "installs its own on the first send or receive" in detail
+
+
+def test_doctor_passes_when_the_web_ui_account_has_its_own_copy(shared):
+    service, member = shared
+    mine = _binary(member / ".local" / "bin" / "sendme")
+    _binary(service / ".local" / "bin" / "sendme")
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.PASS and str(mine) in detail
+
+
+def test_doctor_passes_on_a_system_sendme_both_accounts_find(shared, monkeypatch, tmp_path):
+    system = _binary(tmp_path / "usr" / "bin" / "sendme")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: str(system))
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.PASS and str(system) in detail
+
+
+def test_doctor_names_the_web_ui_copy_when_this_user_has_none(shared):
+    service, _member = shared
+    theirs = _binary(service / ".local" / "bin" / "sendme")
     status, detail, fix = core_doctor._check_sendme()
     assert status is CheckStatus.WARN
-    assert str(mine) in detail and str(state / "bin") in detail and "web UI" in detail
-    assert str(state / "bin") in fix
-
-
-def test_doctor_passes_on_the_shared_copy_the_web_ui_uses(shared):
-    state, _member = shared
-    common = _binary(state / "bin" / "sendme")
-    status, detail, _fix = core_doctor._check_sendme()
-    assert status is CheckStatus.PASS and str(common) in detail
+    assert detail.startswith("not installed") and str(theirs) in detail
+    assert "mkdir -p" in fix
 
 
 def test_doctor_names_the_install_command_when_sendme_is_missing(monkeypatch, tmp_path):
@@ -320,6 +339,29 @@ def test_finish_reports_the_last_reading_it_held_back():
     clock.now = 0.2
     assert meter.feed(_bar("3.00 MiB", "10.00 MiB") + "\r") is None
     assert meter.finish().done == 3 * MIB
+
+
+def test_receive_reads_the_download_bar_and_ignores_the_export_bars_after_it():
+    """sendme receive draws "[3/4] Downloading" for the whole set, then one export bar
+    per file under "[4/4] Exporting"; the reading must end at the set's size, never
+    jump back to a file's."""
+    clock = Clock()
+    meter = transfer.SendmeProgress("receive", clock=clock)
+    meter.feed(_bar("0 B", "3.00 MiB", "[2/4] Getting sizes ...") + "\r")
+    assert meter.finish() is None  # nothing is downloading yet
+    clock.now = 1
+    meter.feed(_bar("1.00 MiB", "3.00 MiB") + "\r")
+    clock.now = 1.2  # held back by the throttle, so only leaving the step completes it
+    assert meter.feed(_bar("2.00 MiB", "3.00 MiB") + "\r") is None
+    clock.now = 1.3
+    ended = meter.feed("\n[4/4] Exporting ...\n")
+    assert (ended.done, ended.total) == (3 * MIB, 3 * MIB)
+    for name, size in (("a.sql.gz", "2.50 MiB"), ("b.tar", "512.00 KiB")):
+        clock.now += 2
+        for done in ("0 B", size):
+            assert meter.feed(_bar(done, size, f"[4/4] Exporting {name}") + "\r") is None
+    assert meter.finish() is None  # the export bars changed nothing
+    assert ended.message == "Received 3.0 MiB of 3.0 MiB (100%)"
 
 
 def test_send_sums_the_latest_connections_blobs_against_the_imported_size():
