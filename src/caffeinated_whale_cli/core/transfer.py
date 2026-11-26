@@ -448,29 +448,36 @@ def _site_exists(project: str, bench: str | None, site: str) -> bool:
 
 
 def _sendme(emit: OnEvent) -> str:
-    """The sendme binary to run, installed on first use the way `cwcli restore
-    --send/--receive` installs it: into ``~/.local/bin`` of the account cwcli runs as,
-    which for the web UI of a shared install is the service account. The install prints
-    nothing, so a web UI job or ``--json`` output stays clean; a failed install names the
-    manual command."""
+    """The sendme binary to run, checked against the pinned release's sha256 right
+    before every run; a missing or mismatched one is replaced by the pinned release
+    first, the way `cwcli restore --send/--receive` does, into ``~/.local/bin`` of the
+    account cwcli runs as (for the web UI of a shared install, the service account).
+    The install prints nothing, so a web UI job or ``--json`` output stays clean; a
+    sendme that still does not match is never run, and the error names the manual
+    command."""
     from ..utils import sendme_utils  # lazy: sendme_utils pulls rich at load time
 
-    if not sendme_utils.is_sendme_installed():
-        emit(StoreStep("install", "Installing sendme"))
-        try:
-            path = sendme_utils.fetch_sendme(progress=False)
-        except sendme_utils.SendmeInstallError as e:
-            emit(StoreStep("install", "Installing sendme", "failed"))
-            command = sendme_utils.manual_install_command()
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "transfer.sendme_missing",
-                f"sendme is not installed and installing it failed ({e}). "
-                f"Install it by hand: {command}",
-                detail={"install_command": command, "reason": str(e)},
-            ) from e
+    installing: list[str] = []
+
+    def announce(problem: str) -> None:
+        installing.append(f"Installing sendme {sendme_utils.PINNED_VERSION} ({problem})")
+        emit(StoreStep("install", installing[-1]))
+
+    try:
+        path = sendme_utils.get_sendme_command(progress=False, on_install=announce)
+    except sendme_utils.SendmeInstallError as e:
+        if installing:
+            emit(StoreStep("install", installing[-1], "failed"))
+        command = sendme_utils.manual_install_command()
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "transfer.sendme_missing",
+            f"{e}. Install it by hand: {command}",
+            detail={"install_command": command, "reason": str(e)},
+        ) from e
+    if installing:
         emit(StoreStep("install", f"Installed sendme to {path}", "ok"))
-    return sendme_utils.get_sendme_command()
+    return path
 
 
 def _outbox(keys: list[str]) -> Path:

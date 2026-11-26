@@ -20,6 +20,8 @@ import sys
 
 import pytest
 
+from caffeinated_whale_cli.utils import sendme_utils
+
 pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 _DRIVER = r"""
@@ -84,9 +86,12 @@ def test_the_receive_job_installs_sendme_where_none_exists(tmp_path):
         (e.get("status"), e.get("message")) for e in record["events"] if e.get("phase") == "install"
     ]
 
-    assert ("start", "Installing sendme") in steps, record
+    assert any(
+        status == "start" and message.startswith("Installing sendme") for status, message in steps
+    ), record
     assert ("ok", f"Installed sendme to {binary}") in steps, record
     assert binary.exists() and os.access(binary, os.X_OK)
+    assert sendme_utils.is_pinned_sendme(binary), "the installed sendme is not the pinned release"
     assert (record.get("error") or {}).get("code") != "transfer.sendme_missing", record
     version = subprocess.run([str(binary), "--version"], capture_output=True, text=True, env=env)
     assert version.returncode == 0 and "sendme" in version.stdout.lower(), version

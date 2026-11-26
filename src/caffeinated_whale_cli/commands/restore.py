@@ -30,6 +30,7 @@ from typing import NoReturn
 import questionary
 import typer
 from questionary import Style
+from rich.markup import escape
 
 from ..core import db_password
 from ..core import restore as core_restore
@@ -53,9 +54,11 @@ from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.sendme_utils import (
+    SendmeInstallError,
     copy_to_clipboard,
     ensure_sendme_installed,
     get_sendme_command,
+    manual_install_command,
 )
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running, resolve_bench_path_with_fallback
@@ -117,6 +120,18 @@ class _SendmeReceiveResult:
 
 def _format_bytes(n: int) -> str:
     return f"{n / (1024**3):.2f} GiB"
+
+
+def _trusted_sendme() -> str:
+    """The pinned sendme, its sha256 checked right before it runs; exits 1 naming the
+    problem and the manual install command when no matching copy can be had."""
+    try:
+        return get_sendme_command()
+    except SendmeInstallError as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
+        stderr_console.print("[bold]Install it by hand:[/bold]")
+        stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
+        raise typer.Exit(code=1) from e
 
 
 def _sendme_download_root() -> Path:
@@ -859,7 +874,7 @@ def _run_receive(
         temp_path = Path(temp_dir).resolve()
         console.print()
         console.print("[bold cyan]Downloading backup files...[/bold cyan]")
-        sendme_cmd = get_sendme_command()
+        sendme_cmd = _trusted_sendme()
         try:
             receive_cmd = [sendme_cmd, "receive", ticket]
             if verbose:
@@ -989,7 +1004,7 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         console.print("[bold green]✓[/bold green] Files prepared for transfer")
         console.print()
 
-        sendme_cmd = get_sendme_command()
+        sendme_cmd = _trusted_sendme()
         console.print("[bold cyan]Creating sendme ticket...[/bold cyan]")
         console.print()
         try:

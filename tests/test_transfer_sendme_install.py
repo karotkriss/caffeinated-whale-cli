@@ -1,20 +1,27 @@
-"""sendme is installed on first use by every send/receive, not only `cwcli restore`.
+"""sendme is installed on first use by every send/receive, not only `cwcli restore`,
+and only the pinned release is ever run.
 
 The web UI's Backups > Receive and a set's Send to another machine run as jobs over
 ``core.transfer``; they used to refuse with "sendme is not installed" where the
-command line installed it. The installer is mocked here; ``tests/e2e/
-test_sendme_autoinstall_e2e.py`` installs the real binary through a real job.
+command line installed it. Here the network is faked with a real archive whose
+SHA-256 values (computed with ``hashlib``) stand in for the pinned ones;
+``tests/e2e/test_sendme_autoinstall_e2e.py`` installs the real release through a
+real job.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
+import requests
 
 from caffeinated_whale_cli.core import doctor as core_doctor
 from caffeinated_whale_cli.core import transfer
@@ -24,140 +31,232 @@ from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.utils import sendme_utils
 
 TICKET = "blob" + "a" * 60
+ASSET = "sendme-v0.37.1-linux-x86_64.tar.gz"
+# The operator-specified source: the exact v0.37.1 release asset, never "latest".
+ASSET_URL = f"https://github.com/n0-computer/sendme/releases/download/v0.37.1/{ASSET}"
+GOOD = b"#!/bin/sh\necho pinned sendme\n"
+EVIL = b"#!/bin/sh\necho swapped in by someone else\n"
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _archive(binary: bytes) -> bytes:
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as tar:
+        info = tarfile.TarInfo("sendme")
+        info.size, info.mode = len(binary), 0o755
+        tar.addfile(info, io.BytesIO(binary))
+    return payload.getvalue()
+
+
+class Release:
+    """The network: serves ``archive`` for any URL and records what was asked for."""
+
+    def __init__(self, archive: bytes) -> None:
+        self.archive = archive
+        self.urls: list[str] = []
+        self.offline = False
+
+    def get(self, url, **_k):
+        self.urls.append(url)
+        if self.offline:
+            raise requests.ConnectionError("no route to host")
+        release = self
+
+        class Response:
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield release.archive
+
+        return Response()
+
+
+@pytest.fixture
+def pinned(monkeypatch, tmp_path):
+    """A Linux x86_64 box whose pinned release is ``_archive(GOOD)``; sendme installs
+    into ``tmp_path/bin`` and nothing is on PATH."""
+    archive = _archive(GOOD)
+    monkeypatch.setitem(sendme_utils._PINNED, "linux-x86_64", (ASSET, _sha(archive), _sha(GOOD)))
+    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda *_a: tmp_path / "bin")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(core_doctor.shared_home, "shared_mode", lambda: False)
+    release = Release(archive)
+    monkeypatch.setattr(sendme_utils.requests, "get", release.get)
+    return release
+
+
+def _binary(path: Path, data: bytes = GOOD) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o755)
+    return path
 
 
 def _steps(events):
     return [(e.phase, e.message, e.status) for e in events if isinstance(e, StoreStep)]
 
 
-def _no_install(*_a, **_k):
-    pytest.fail("sendme was installed though it was already present")
+def _never_run(*_a, **_k):
+    pytest.fail("sendme was run though it is not the pinned release")
 
 
-def test_an_installed_sendme_is_used_without_installing(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: True)
-    monkeypatch.setattr(sendme_utils, "get_sendme_command", lambda: "/opt/sendme")
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", _no_install)
+# ------------------------------------------------------------------ the pin
+
+
+def test_the_pinned_hashes_are_the_published_v0_37_1_values():
+    """Spot-check against the release's published digests (the operator's table)."""
+    assert sendme_utils.PINNED_VERSION == "v0.37.1"
+    assert sendme_utils._PINNED["linux-x86_64"] == (
+        "sendme-v0.37.1-linux-x86_64.tar.gz",
+        "6250f28ccf082a2f77a5bb2244c821783c8746b6cff4539be32cbcc03ef7d0a0",
+        "5203634d8688495e972c7f8a988ff5a371619ace78d93d7eb9dcb062f269be71",
+    )
+    assert set(sendme_utils._PINNED) == {
+        "linux-x86_64",
+        "linux-aarch64",
+        "darwin-x86_64",
+        "darwin-aarch64",
+        "windows-x86_64",
+    }
+
+
+def test_the_binary_check_matches_only_the_pinned_bytes(pinned, tmp_path):
+    assert sendme_utils.is_pinned_sendme(_binary(tmp_path / "good", GOOD)) is True
+    assert sendme_utils.is_pinned_sendme(_binary(tmp_path / "evil", EVIL)) is False
+    assert sendme_utils.is_pinned_sendme(tmp_path / "missing") is False
+
+
+# ------------------------------------------------------------- install and run
+
+
+def test_an_installed_pinned_sendme_is_used_without_installing(pinned, tmp_path):
+    mine = _binary(tmp_path / "bin" / "sendme")
     events: list = []
-    assert transfer._sendme(events.append) == "/opt/sendme"
-    assert events == []
+    assert transfer._sendme(events.append) == str(mine)
+    assert events == [] and pinned.urls == []
 
 
-def test_a_missing_sendme_is_installed_quietly_with_a_visible_step(monkeypatch, tmp_path):
-    installed = tmp_path / "sendme"
-    state = {"present": False}
-
-    def fetch(*, progress=True, verbose=False):
-        assert progress is False  # nothing may reach a job's or --json's stdout
-        state["present"] = True
-        return installed
-
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: state["present"])
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
-    monkeypatch.setattr(sendme_utils, "get_sendme_command", lambda: str(installed))
+def test_a_missing_sendme_is_installed_quietly_with_a_visible_step(pinned, tmp_path, capsys):
     events: list = []
-    assert transfer._sendme(events.append) == str(installed)
+    path = transfer._sendme(events.append)
+    installed = tmp_path / "bin" / "sendme"
+    assert path == str(installed) and installed.read_bytes() == GOOD
+    assert os.access(installed, os.X_OK)
+    assert pinned.urls == [ASSET_URL]
     assert _steps(events) == [
-        ("install", "Installing sendme", "start"),
+        ("install", "Installing sendme v0.37.1 (sendme is not installed)", "start"),
         ("install", f"Installed sendme to {installed}", "ok"),
     ]
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""  # nothing may reach a job's or --json's stdout
 
 
-def test_a_failed_install_names_the_reason_and_the_manual_command(monkeypatch, tmp_path):
-    def fetch(**_k):
-        raise sendme_utils.SendmeInstallError("Network error: no route")
+def test_a_mismatched_sendme_is_replaced_by_the_pinned_release_before_it_runs(pinned, tmp_path):
+    swapped = _binary(tmp_path / "bin" / "sendme", EVIL)
+    events: list = []
+    assert transfer._sendme(events.append) == str(swapped)
+    assert swapped.read_bytes() == GOOD
+    start = _steps(events)[0]
+    assert start[2] == "start" and "is not the pinned sendme v0.37.1" in start[1]
 
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
-    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
-    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
+
+def test_a_mismatch_the_reinstall_does_not_fix_is_refused_and_never_run(
+    pinned, tmp_path, monkeypatch
+):
+    swapped = _binary(tmp_path / "bin" / "sendme", EVIL)
+
+    def reswapped(**_k):  # someone swaps it back as soon as it is installed
+        return _binary(swapped, EVIL)
+
+    monkeypatch.setattr(sendme_utils, "fetch_sendme", reswapped)
+    monkeypatch.setattr(transfer, "_spawn_on_pty", _never_run)
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+    with pytest.raises(CwcliError) as e:
+        transfer.receive_sets(TICKET)
+    assert e.value.code == "transfer.sendme_missing"
+    assert "still does not match its sha256" in e.value.message
+    assert e.value.detail["install_command"] in e.value.message
+
+
+def test_a_mismatch_with_no_network_is_refused_and_never_run(pinned, tmp_path, monkeypatch):
+    _binary(tmp_path / "bin" / "sendme", EVIL)
+    pinned.offline = True
+    monkeypatch.setattr(transfer, "_outbox", _never_run)
+    events: list = []
+    with pytest.raises(CwcliError) as e:
+        transfer.send_sets(["p/s/id"], on_event=events.append)
+    assert "is not the pinned sendme v0.37.1" in e.value.message
+    assert "no route to host" in e.value.message
+    assert _steps(events)[-1][2] == "failed"
+
+
+def test_a_failed_install_names_the_reason_and_the_manual_command(pinned, tmp_path):
+    pinned.offline = True
     events: list = []
     with pytest.raises(CwcliError) as e:
         transfer._sendme(events.append)
     command = f"mkdir -p {tmp_path / 'bin'} && cd {tmp_path / 'bin'} && "
     assert e.value.code == "transfer.sendme_missing"
-    assert "Network error: no route" in e.value.message
+    assert "Network error" in e.value.message and "no route to host" in e.value.message
     assert command in e.value.message
     assert "\n" not in e.value.message
     assert e.value.detail["install_command"].startswith(command)
-    assert _steps(events)[-1] == ("install", "Installing sendme", "failed")
+    assert _steps(events)[-1] == (
+        "install",
+        "Installing sendme v0.37.1 (sendme is not installed)",
+        "failed",
+    )
 
 
-def test_receive_installs_sendme_before_it_downloads(monkeypatch, tmp_path):
+def test_the_manual_command_downloads_the_pinned_asset_and_checks_its_sha256(pinned):
+    command = sendme_utils.manual_install_command()
+    assert f"curl -fsSLO {ASSET_URL}" in command
+    assert f"echo '{_sha(pinned.archive)}  {ASSET}' | sha256sum -c -" in command
+    assert "sendme.sh" not in command and "latest" not in command
+
+
+def test_receive_installs_sendme_before_it_downloads(pinned, monkeypatch, tmp_path):
     """The web UI's receive job path: the install step comes first, and a failed
     install stops the receive before anything is downloaded."""
     monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-
-    def fetch(**_k):
-        raise sendme_utils.SendmeInstallError("offline")
-
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
-    monkeypatch.setattr(
-        transfer, "_spawn_on_pty", lambda *a, **k: pytest.fail("downloaded without sendme")
-    )
+    pinned.offline = True
+    monkeypatch.setattr(transfer, "_spawn_on_pty", _never_run)
     events: list = []
     with pytest.raises(CwcliError) as e:
         transfer.receive_sets(TICKET, on_event=events.append)
     assert e.value.code == "transfer.sendme_missing"
-    assert _steps(events)[0] == ("install", "Installing sendme", "start")
+    assert _steps(events)[0][2] == "start"
 
 
-def test_send_installs_sendme_before_it_serves(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-
-    def fetch(**_k):
-        raise sendme_utils.SendmeInstallError("offline")
-
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
-    monkeypatch.setattr(transfer, "_outbox", lambda _k: pytest.fail("served without sendme"))
-    with pytest.raises(CwcliError) as e:
-        transfer.send_sets(["p/s/id"])
-    assert e.value.code == "transfer.sendme_missing"
+def test_an_archive_that_does_not_match_is_rejected_before_it_is_extracted(
+    pinned, tmp_path, monkeypatch
+):
+    pinned.archive = _archive(EVIL)
+    monkeypatch.setattr(tarfile, "open", lambda *a, **k: pytest.fail("extracted"))
+    with pytest.raises(sendme_utils.SendmeInstallError) as e:
+        sendme_utils.fetch_sendme(progress=False)
+    assert f"the downloaded {ASSET} does not match its pinned sha256" in str(e.value)
+    assert not (tmp_path / "bin" / "sendme").exists()
 
 
-def _serve_release(monkeypatch, install_dir: Path) -> None:
-    import io
-    import tarfile
-
-    url = "https://example.invalid/sendme-v1-linux-x86_64.tar.gz"
-    payload = io.BytesIO()
-    with tarfile.open(fileobj=payload, mode="w:gz") as tar:
-        data = b"#!/bin/sh\n"
-        info = tarfile.TarInfo("sendme")
-        info.size, info.mode = len(data), 0o755
-        tar.addfile(info, io.BytesIO(data))
-
-    class Response:
-        def __init__(self, url):
-            self.url = url
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"assets": [{"browser_download_url": url}]}
-
-        def iter_content(self, chunk_size):
-            yield payload.getvalue()
-
-    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
-    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: install_dir)
-    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(sendme_utils.requests, "get", lambda u, **k: Response(u))
-
-
-def test_a_quiet_install_prints_nothing(monkeypatch, tmp_path, capsys):
-    install_dir = tmp_path / "bin"
-    _serve_release(monkeypatch, install_dir)
-    path = sendme_utils.fetch_sendme(progress=False, verbose=True)
-    assert path == install_dir / "sendme" and os.access(path, os.X_OK)
-    out = capsys.readouterr()
-    assert out.out == "" and out.err == ""
+def test_a_binary_that_does_not_match_is_not_installed(pinned, tmp_path, monkeypatch):
+    archive = _archive(EVIL)
+    pinned.archive = archive
+    monkeypatch.setitem(sendme_utils._PINNED, "linux-x86_64", (ASSET, _sha(archive), _sha(GOOD)))
+    with pytest.raises(sendme_utils.SendmeInstallError) as e:
+        sendme_utils.fetch_sendme(progress=False)
+    assert "does not match its pinned sha256" in str(e.value)
+    assert list((tmp_path / "bin").iterdir()) == []
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="ETXTBSY is Linux behavior")
-def test_an_install_replaces_a_sendme_another_job_is_running(monkeypatch, tmp_path):
+def test_an_install_replaces_a_sendme_another_job_is_running(pinned, tmp_path):
     """Two web UI jobs installing on first use: writing over a running binary fails
     with ETXTBSY on Linux, so the install must swap a new file into place."""
     install_dir = tmp_path / "bin"
@@ -172,92 +271,89 @@ def test_an_install_replaces_a_sendme_another_job_is_running(monkeypatch, tmp_pa
     try:
         with pytest.raises(subprocess.TimeoutExpired):
             proc.wait(timeout=0.2)
-        _serve_release(monkeypatch, install_dir)
         path = sendme_utils.fetch_sendme(progress=False)
-        assert path.read_bytes() == b"#!/bin/sh\n"
+        assert path.read_bytes() == GOOD
         assert sorted(p.name for p in install_dir.iterdir()) == ["sendme"]
     finally:
         proc.kill()
         proc.wait()
 
 
-# --------------------------------------------------------------- shared install
+# --------------------------------------------------------------- cwcli doctor
 
 
 @pytest.fixture
-def shared(monkeypatch, tmp_path):
+def shared(pinned, monkeypatch, tmp_path):
     """A shared install whose service account (the web UI's) has its home at
-    ``tmp_path/service``, and a member whose home is ``tmp_path/member``; nothing on PATH."""
+    ``tmp_path/service``, and a member whose home is ``tmp_path/member``."""
     service = tmp_path / "service"
     member = tmp_path / "member"
     monkeypatch.setattr(core_doctor.shared_home, "shared_mode", lambda: True)
-    monkeypatch.setattr(core_doctor.shared_home, "state_dir", lambda: tmp_path / "state")
     monkeypatch.setattr(core_doctor.shared_home, "service_home", lambda: service)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: member))
-    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
-    monkeypatch.setattr(core_doctor, "_probe_version", lambda _c: None)
+    monkeypatch.setattr(
+        sendme_utils, "get_sendme_install_dir", lambda home=None: (home or member) / ".local/bin"
+    )
     return service, member
 
 
-def _binary(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n")
-    path.chmod(0o755)
-    return path
+def test_doctor_verifies_the_sendme_it_would_run(pinned, tmp_path):
+    mine = _binary(tmp_path / "bin" / "sendme")
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.PASS
+    assert str(mine) in detail and "sha256 verified" in detail
+
+
+def test_doctor_warns_on_a_sendme_that_is_not_the_pinned_release(pinned, tmp_path):
+    _binary(tmp_path / "bin" / "sendme", EVIL)
+    status, detail, fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN and "is not the pinned sendme v0.37.1" in detail
+    assert ASSET_URL in fix
+
+
+def test_doctor_names_the_install_command_when_sendme_is_missing(pinned, tmp_path):
+    status, detail, fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN and detail.startswith("not installed")
+    assert f"mkdir -p {tmp_path / 'bin'}" in fix and "sha256sum -c -" in fix
 
 
 def test_a_shared_install_still_installs_into_the_running_accounts_own_home(shared):
-    """No shared executable directory: every account, the web UI's service account
-    included, installs and runs its own copy, which only that account can replace."""
     _service, member = shared
     assert sendme_utils.get_sendme_install_dir() == member / ".local" / "bin"
-    assert str(member / ".local" / "bin") in sendme_utils.manual_install_command()
-    mine = _binary(member / ".local" / "bin" / "sendme")
-    assert sendme_utils.get_sendme_command() == str(mine)
+    path = sendme_utils.fetch_sendme(progress=False)
+    assert path == member / ".local" / "bin" / "sendme"
 
 
-def test_doctor_warns_when_the_web_ui_account_lacks_the_copy_this_user_has(shared):
+def test_doctor_warns_when_the_web_ui_account_has_no_sendme(shared):
     service, member = shared
-    mine = _binary(member / ".local" / "bin" / "sendme")
+    _binary(member / ".local" / "bin" / "sendme")
     status, detail, _fix = core_doctor._check_sendme()
     assert status is CheckStatus.WARN
-    assert str(mine) in detail and "web UI" in detail
-    assert str(service / ".local" / "bin" / "sendme") in detail
-    assert "installs its own on the first send or receive" in detail
+    assert "web UI" in detail and "has no sendme" in detail
 
 
-def test_doctor_passes_when_the_web_ui_account_has_its_own_copy(shared):
+def test_doctor_reports_the_web_ui_accounts_copy_and_whether_it_matches(shared):
     service, member = shared
-    mine = _binary(member / ".local" / "bin" / "sendme")
-    _binary(service / ".local" / "bin" / "sendme")
+    _binary(member / ".local" / "bin" / "sendme")
+    theirs = _binary(service / ".local" / "bin" / "sendme")
     status, detail, _fix = core_doctor._check_sendme()
-    assert status is CheckStatus.PASS and str(mine) in detail
+    assert status is CheckStatus.PASS and f"runs {theirs} (sha256 verified)" in detail
+    _binary(theirs, EVIL)
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN
+    assert f"would run {theirs}, which is not the pinned release" in detail
 
 
-def test_doctor_passes_on_a_system_sendme_both_accounts_find(shared, monkeypatch, tmp_path):
+def test_doctor_reports_the_system_sendme_the_web_ui_falls_back_to(shared, monkeypatch, tmp_path):
+    """This user's own copy shadows a system sendme; the service account, with no copy
+    of its own, runs the system one, so nothing needs installing for it."""
+    _service, member = shared
+    _binary(member / ".local" / "bin" / "sendme")
     system = _binary(tmp_path / "usr" / "bin" / "sendme")
     monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: str(system))
     status, detail, _fix = core_doctor._check_sendme()
-    assert status is CheckStatus.PASS and str(system) in detail
-
-
-def test_doctor_names_the_web_ui_copy_when_this_user_has_none(shared):
-    service, _member = shared
-    theirs = _binary(service / ".local" / "bin" / "sendme")
-    status, detail, fix = core_doctor._check_sendme()
-    assert status is CheckStatus.WARN
-    assert detail.startswith("not installed") and str(theirs) in detail
-    assert "mkdir -p" in fix
-
-
-def test_doctor_names_the_install_command_when_sendme_is_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
-    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
-    status, _detail, fix = core_doctor._check_sendme()
-    assert status is CheckStatus.WARN
-    assert f"mkdir -p {tmp_path / 'bin'}" in fix and "sendme.sh | sh" in fix
+    assert status is CheckStatus.PASS
+    assert f"runs {system} (sha256 verified)" in detail and "has no sendme" not in detail
 
 
 # ------------------------------------------------------- progress from sendme's bar
