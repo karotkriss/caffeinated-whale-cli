@@ -163,9 +163,15 @@ def test_an_install_replaces_a_sendme_another_job_is_running(monkeypatch, tmp_pa
     install_dir = tmp_path / "bin"
     install_dir.mkdir()
     running = install_dir / "sendme"
-    shutil.copy2(shutil.which("sleep") or "/bin/sleep", running)
-    proc = subprocess.Popen([str(running), "30"])
+    shutil.copy2(os.path.realpath(sys.executable), running)
+    proc = subprocess.Popen(
+        ["python", "-c", "import time; time.sleep(30)"],
+        executable=str(running),
+        env={**os.environ, "PYTHONHOME": sys.base_prefix},
+    )
     try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.wait(timeout=0.2)
         _serve_release(monkeypatch, install_dir)
         path = sendme_utils.fetch_sendme(progress=False)
         assert path.read_bytes() == b"#!/bin/sh\n"
