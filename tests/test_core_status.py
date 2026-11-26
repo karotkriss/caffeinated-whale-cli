@@ -1328,6 +1328,7 @@ class TestReasons:
         wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
         bench = _bench(core_status.status("proj", fused=True).data)
         assert [(r.check, r.state) for r in bench.reasons] == [("web", "not listening")]
+        assert "is not listening on port 8000" in bench.reasons[0].text
 
     def test_under_honcho_a_missing_process_points_at_cwcli_start(self, wire):
         # There is no supervisord to restart one program; bringing the bench under
@@ -1360,4 +1361,10 @@ class TestReasons:
         )
         assert core_status._overall(started=True, reasons=[reason]) == "degraded"
         assert core_status._overall(started=True, reasons=[]) == "running"
-        assert core_status._overall(started=False, reasons=[reason]) == "online"
+
+    def test_a_supervised_bench_without_a_marker_is_online_with_no_reason(self, wire):
+        # supervisord is up but the marker is not written yet (start's launch then
+        # write_marker): the bench reads online, so it must not carry a fault list.
+        wire(FakeContainer(marker=None, web_ok=False), benches=[{"path": BENCH}])
+        bench = _bench(core_status.status("proj").data)
+        assert bench.overall == "online" and bench.reasons == []

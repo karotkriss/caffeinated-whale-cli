@@ -24,7 +24,7 @@ reported bench 0's live HTTP code. Each bench's port now comes from
 it on purpose) and is passed explicitly to :func:`supervision.web_http_code`; a bench
 whose port cannot be resolved reports ``web_port=None``/``web_port_verified=False``,
 is NOT probed, and
-does NOT degrade on that account (see ``_overall``'s ``web_probed``) - a gap in
+does NOT degrade on that account (see ``_reasons``'s ``web_probed``) - a gap in
 cwcli's knowledge is not a fault in the bench, and falling back to 8000 IS the bug.
 
 **The probe also names the bench's site**, as the ``Host`` header. Frappe routes by
@@ -566,7 +566,7 @@ def _bench_status(
     fill the bench's web access log.
 
     The probe is skipped both when the caller suppressed it (``--watch``) and when
-    the port could not be resolved, and ``_overall``'s ``web_probed`` covers both:
+    the port could not be resolved, and ``_reasons``'s ``web_probed`` covers both:
     with no web signal the aggregate is driven by supervisor-up + every program
     healthy. Degrading on an unreadable config would manufacture a fresh instance of
     the very defect being fixed - a bench with every program RUNNING reported broken
@@ -612,6 +612,7 @@ def _bench_status(
             supervision.supervisorctl_states(frappe_container, bench_path)
         )
         processes = _merge_health(expected, snapshot.processes, states)
+        started = marker is not None
         reasons = _reasons(
             supervisor_up=True,
             processes=processes,
@@ -623,7 +624,6 @@ def _bench_status(
             project_name=project_name,
             bench_flag=bench_flag,
         )
-        overall = _overall(started=marker is not None, reasons=reasons)
     else:
         # No cwcli supervisord for this bench. Before reporting all-down, fall back
         # to detecting whatever DOES run the Procfile (honcho / ``bench start`` - how
@@ -633,6 +633,7 @@ def _bench_status(
         if fallback.manager_up:
             not_cwcli_supervised = True
             processes = _merge_health(expected, fallback.processes, {})
+            started = True
             # A manager is alive, so drive ``overall`` off the real process state
             # (there is no supervisord ``state``; ``up`` comes from ``ps``).
             reasons = _reasons(
@@ -647,7 +648,6 @@ def _bench_status(
                 project_name=project_name,
                 bench_flag=bench_flag,
             )
-            overall = _overall(started=True, reasons=reasons)
             # One hint per report, not per bench: the text is generic, so N benches
             # under honcho would otherwise repeat it verbatim N times.
             if not any(w.code == "supervisor.not_cwcli" for w in warnings):
@@ -656,21 +656,20 @@ def _bench_status(
             # Genuinely not running under any manager: keep the marker-based
             # never-started (online) vs supervisor-died (degraded) distinction.
             processes = _merge_health(expected, [], {})
-            # A bench never started has nothing wrong with it, so no reason either.
-            reasons = (
-                []
-                if marker is None
-                else _reasons(
-                    supervisor_up=False,
-                    processes=processes,
-                    web_code=web_code,
-                    web_port=web_port,
-                    web_site=web_site,
-                    project_name=project_name,
-                    bench_flag=bench_flag,
-                )
+            started = marker is not None
+            reasons = _reasons(
+                supervisor_up=False,
+                processes=processes,
+                web_code=web_code,
+                web_port=web_port,
+                web_site=web_site,
+                project_name=project_name,
+                bench_flag=bench_flag,
             )
-            overall = _overall(started=marker is not None, reasons=reasons)
+    # A bench never started has nothing wrong with it, so no reason either.
+    if not started:
+        reasons = []
+    overall = _overall(started=started, reasons=reasons)
 
     return BenchStatus(
         index=index,
@@ -855,17 +854,6 @@ def _merge_health(
     return out
 
 
-def _all_healthy(processes: list[ProcessHealth]) -> bool:
-    """True iff every process is healthy (RUNNING/STARTING by state, else ``up``)."""
-    for p in processes:
-        if p.state is not None:
-            if p.state not in _HEALTHY_STATES:
-                return False
-        elif not p.up:
-            return False
-    return True
-
-
 def _overall(*, started: bool, reasons: list[HealthReason]) -> str:
     """The pre-computed lifecycle aggregate (see module docstring's table).
 
@@ -954,16 +942,19 @@ def _reasons(
     if web_probed:
         web_ok = web_listening if web_listening is not None else web_code not in (None, "000")
         if not web_ok:
-            state = "not listening" if web_listening is False else "no response"
-            where = f"port {web_port}" if web_port is not None else "its port"
-            if web_site:
-                where += f" for {web_site}"
+            where = f"port {web_port}" + (f" for {web_site}" if web_site else "")
+            if web_listening is False:
+                state = "not listening"
+                text = f"The web server is not listening on {where}."
+            else:
+                state = "no response"
+                text = f"The web server gave no response on {where}."
             out.append(
                 HealthReason(
                     check="web",
                     subject="web",
                     state=state,
-                    text=f"The web server on {where} gave {state}.",
+                    text=text,
                     fix=(
                         start
                         if not_cwcli_supervised
