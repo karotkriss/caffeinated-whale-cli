@@ -175,7 +175,7 @@ class TestAppsInstall:
     def test_an_app_already_on_the_bench_installed_on_a_site_reloads(
         self, monkeypatch, container  # noqa: F811
     ):
-        """The staging16 sequence: the app reached apps/ outside this call."""
+        """The reported sequence: the app reached apps/ outside this call."""
         container.available = ["frappe", "payments"]
         log = _bench(monkeypatch)
         _cached(monkeypatch)
