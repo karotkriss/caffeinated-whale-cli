@@ -2190,12 +2190,11 @@ not degraded). Each names the check (`supervisor`, `process` or `web`), its subj
 response` or `not listening` for the web probe), one plain sentence, and the cwcli
 command that addresses it (`cwcli restart <project> --process <label>`, or `cwcli
 start <project>` when the supervisor itself is gone or the bench runs outside cwcli's
-supervisor). A dead supervisor is one reason, not one per program. The human `status`
-prints each as a `✗` fault under the bench heading with its `Fix:` line, `cwcli axi
+supervisor). A dead supervisor is one reason, not one per program. `cwcli axi
 status` carries them as `benches[i].reasons`, and the web UI shows the same list on
-the instance, bench and site pages (with the fix as a button), names the first reason
-beside `degraded` on the Instances cards and Sites rows and in the sidebar's tooltip,
-and raises one notification per degraded instance.
+the instance, bench and site pages (with the fix as a button) and names the first
+reason beside `degraded` on the Instances cards and Sites rows and in the sidebar's
+tooltip.
 
 **Maintenance mode is called out plainly, and `status` offers to take sites out of it.**
 A site stuck in maintenance mode answers HTTP 503 (`SessionStopped`) to every user with no other signal - the state a `migrate` / `apps update` killed mid-run (a closed terminal, a `kill`, an OOM kill, a reboot) or a failed `bench update` leaves behind.

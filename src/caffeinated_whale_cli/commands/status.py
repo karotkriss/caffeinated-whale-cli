@@ -499,24 +499,20 @@ def _render_detail(report: StatusReport, verbose: bool, warnings: Sequence[Messa
         line = _web_line(bench, verbose, _host_web_target(container, bench))
         if line is not None:
             stderr_console.print(f"  {line}")
-        # Why the bench is degraded (the core's own reasons, so the web UI and
-        # `axi status` name the same faults), then maintenance mode and a paused
-        # scheduler, which answer 503 / run nothing with no other signal. Each names
-        # the way out. Rendered even without --verbose - they are faults, not detail.
-        faults: list[tuple[str, str | None]] = [(r.text, r.fix) for r in bench.reasons] + [
-            (w.text, None)
+        # Maintenance mode and a paused scheduler answer 503 / run nothing with no
+        # other signal; say so plainly and name the way out. Rendered even without
+        # --verbose - they are faults, not detail.
+        faults = [
+            w
             for w in warnings
             if w.code in _BENCH_FAULT_CODES
             and (w.detail or {}).get("bench_path") == bench.bench_path
         ]
         if faults:
-            # A grid, so a fault that wraps keeps a hanging indent under its mark; the
-            # fix command sits on its own row so it is never broken across lines.
+            # A grid, so a fault that wraps keeps a hanging indent under its mark.
             grid = Table.grid(padding=(0, 1))
-            for text, fix in faults:
-                grid.add_row("  [bold red]✗[/bold red]", text)
-                if fix:
-                    grid.add_row("", f"[dim]Fix:[/dim] {fix}")
+            for fault in faults:
+                grid.add_row("  [bold red]✗[/bold red]", fault.text)
             stderr_console.print(grid)
 
         for p in bench.processes:

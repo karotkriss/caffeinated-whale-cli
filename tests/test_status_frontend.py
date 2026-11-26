@@ -710,33 +710,3 @@ class TestMaintenanceQuestion:
         assert "Not cleared: an in-container 'bench migrate' is still running" in harness_collapse(
             out.err
         )
-
-
-def test_a_degraded_bench_names_each_reason_and_its_fix(monkeypatch, capsys):
-    import dataclasses
-
-    from caffeinated_whale_cli.core.status import HealthReason
-
-    procs = [
-        ProcessHealth(label="web", up=True, pid=101, state="RUNNING"),
-        ProcessHealth(label="worker:default", up=False, state="FATAL"),
-    ]
-    bench = dataclasses.replace(
-        _bench("degraded", procs),
-        reasons=[
-            HealthReason(
-                check="process",
-                subject="worker:default",
-                state="FATAL",
-                text="worker:default is FATAL: supervisord gave up restarting it.",
-                fix="cwcli restart proj --process worker:default",
-            )
-        ],
-    )
-    captured = _run(monkeypatch, capsys, _report("degraded", benches=[bench]))
-    assert captured.out.strip() == "degraded"
-    # The reason reads as a fault under the bench heading, with the way out, so a
-    # person never has to work out which program the token was about.
-    assert "✗" in captured.err
-    assert "worker:default is FATAL: supervisord gave up restarting it." in captured.err
-    assert "Fix: cwcli restart proj --process worker:default" in captured.err
