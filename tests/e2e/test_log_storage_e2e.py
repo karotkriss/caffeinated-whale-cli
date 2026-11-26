@@ -66,7 +66,16 @@ def test_truncate_empties_the_docker_logs_of_a_running_instance(running_instance
     assert refused.returncode == 2 and "--yes" in refused.stdout, refused.stdout + refused.stderr
     r = harness.run_cwcli("axi", "storage", "truncate-docker-logs", name, "--yes", timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert f"{name}-frappe-1" in r.stdout or "frappe" in r.stdout
+    cid = harness.frappe_container_id(name)
+    assert cid is not None
+    frappe_name = (
+        harness._docker("inspect", "--format", "{{.Name}}", cid).stdout.strip().lstrip("/")
+    )
+    truncated_line = next(
+        (line for line in r.stdout.splitlines() if line.startswith("truncated[")), ""
+    )
+    truncated = truncated_line.partition(":")[2].strip().split(",")
+    assert frappe_name and frappe_name in truncated, r.stdout
     after = _docker_total(_storage_logs(name))
     assert after is not None and after <= before, (before, after)
     if before > 0:
