@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-11-26
+
+### Added
+
+- **Remove an app from a site in the web UI** - the site page's installed-apps list gains a per-app Remove app action, run as a job behind a typed confirmation and a verified backup of the site first.
+- **The web UI shows why a bench is degraded** - a degraded bench now names the reasons instead of only the state.
+- **A Storage page in the web UI manages logs** - container, bench and journal logs are listed and managed from one page.
+- **The web UI installs a pinned, verified sendme on first send or receive** - Backups > Receive no longer fails with "sendme is not installed", and shows a progress bar during the install.
+
+### Changed
+
+- **Remote machine groups are set apart from projects in the web UI sidebar.**
+
+### Fixed
+
+- **An app update no longer fails because of an unreadable site unrelated to it** - a second site on the bench that cannot be opened is reported as a warning and the update of the sites that hold the app finishes normally.
+- **Read-only maintenance mode is detected on Frappe v16.61 and later** - a bench left in maintenance is found and offered for clearing again.
+- **A serving bench reloads after new-site or init installs apps** - the running web workers no longer keep serving the old app set, which returned HTTP 500 for a site until the instance was restarted.
+
 ## [3.8.0] - 2026-11-12
 
 ### Added
