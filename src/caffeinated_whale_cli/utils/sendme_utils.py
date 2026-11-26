@@ -4,15 +4,22 @@ On a platform cwcli pins a sendme release for, it installs only that exact relea
 asset, checking the archive and the extracted binary against the SHA-256 it ships.
 Every run copies the installed binary into a fresh private directory, hashing the
 bytes as it copies them, and executes that copy only when its hash matches, so the
-bytes that run are the bytes that were checked. On a platform with no pinned build,
-cwcli uses the sendme on PATH as it is, unchecked, and never installs one.
+bytes that run are the bytes that were checked. The directory sits under the first of
+``$XDG_RUNTIME_DIR``, the system temp dir, or ``~/.cache/cwcli/sendme`` (only when the
+home is not group- or world-writable) that is private to the running account and lets
+it execute a file. Known limit: where none of them does (for example every one mounted
+``noexec``), cwcli runs the installed binary after hashing it and warns that it could
+be swapped between that check and the run. On a platform with no pinned build, cwcli
+uses the sendme on PATH as it is, unchecked, and never installs one.
 """
 
+import functools
 import hashlib
 import os
 import platform
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
@@ -354,22 +361,93 @@ def _copy_if_pinned(source: str, dest: Path, pinned_sha256: str) -> bool:
     return True
 
 
+WEAK_CHECK_WARNING = (
+    "no private directory on this host lets cwcli execute a file, so it runs the installed "
+    "sendme after checking its sha256; the binary could be swapped between that check and "
+    "the run (set TMPDIR to a private directory that allows execution to close that gap)"
+)
+
+
+def _is_mine(path: Path) -> bool:
+    getuid = getattr(os, "getuid", None)
+    try:
+        return getuid is not None and path.stat().st_uid == getuid()
+    except OSError:
+        return False
+
+
+def _home_cache_dir() -> Path | None:
+    """``~/.cache/cwcli/sendme`` (each level created 0700), only when the home is not
+    group- or world-writable; else None."""
+    home = Path.home()
+    try:
+        if stat.S_IMODE(home.stat().st_mode) & 0o022:
+            return None
+        path = home
+        for part in (".cache", "cwcli", "sendme"):
+            path = path / part
+            path.mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        return None
+    return path
+
+
+def _exec_candidates() -> Iterator[Path]:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and _is_mine(Path(runtime)):
+        yield Path(runtime)
+    yield Path(tempfile.gettempdir())
+    cache = _home_cache_dir()
+    if cache is not None:
+        yield cache
+
+
+def _can_exec_in(root: Path) -> bool:
+    """Whether a file written into a fresh 0700 directory under ``root`` can be run."""
+    try:
+        probe_dir = Path(tempfile.mkdtemp(prefix="cwcli-exec-probe-", dir=root))
+    except OSError:
+        return False
+    try:
+        if os.name == "nt":
+            return True
+        probe = probe_dir / "probe"
+        probe.write_text("#!/bin/sh\nexit 0\n")
+        probe.chmod(0o700)
+        return subprocess.run([str(probe)], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+@functools.cache
+def private_exec_root() -> Path | None:
+    """Where each run's private sendme copy goes, chosen once per process: the first
+    candidate that is private to the running account and lets it execute a file, or
+    None when none does."""
+    return next((root for root in _exec_candidates() if _can_exec_in(root)), None)
+
+
 @contextmanager
 def sendme_command(
     *,
     progress: bool = True,
     verbose: bool = False,
     on_install: Callable[[str], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> Iterator[str]:
     """The sendme to run, for the length of the ``with`` block.
 
     With a pinned build for this platform it is a private copy of the installed
-    binary, in a fresh 0700 directory removed when the block ends (on error and on
-    interrupt too), whose bytes were hashed as they were copied and match the pin. A
-    missing or mismatched install is replaced by the pinned release once (``on_install``
-    hears why first) and copied again. Without a pinned build it is the sendme found on
-    PATH, unchecked. Raises ``SendmeInstallError`` naming the problem when there is no
-    sendme it may run."""
+    binary, in a fresh 0700 directory under ``private_exec_root()`` removed when the
+    block ends (on error and on interrupt too), whose bytes were hashed as they were
+    copied and match the pin. When no private directory allows execution it is the
+    installed binary itself, hashed just before, and ``on_warning`` hears
+    ``WEAK_CHECK_WARNING``. A missing or mismatched install is replaced by the pinned
+    release once (``on_install`` hears why first) and checked again. Without a pinned
+    build it is the sendme found on PATH, unchecked. Raises ``SendmeInstallError``
+    naming the problem when there is no sendme it may run."""
     release = pinned_release()
     if release is None:
         found = find_sendme()
@@ -377,11 +455,21 @@ def sendme_command(
             raise SendmeInstallError(_no_pinned_build())
         yield found
         return
-    private = Path(tempfile.mkdtemp(prefix="cwcli-sendme-"))
+    root = private_exec_root()
+    private = Path(tempfile.mkdtemp(prefix="cwcli-sendme-", dir=root)) if root is not None else None
     try:
-        copy = private / get_sendme_path().name
+        copy = private / get_sendme_path().name if private else None
+
+        def runnable(path: str | None) -> str | None:
+            if path is None:
+                return None
+            if copy is None:
+                return path if is_pinned_sendme(path) else None
+            return str(copy) if _copy_if_pinned(path, copy, release[2]) else None
+
         found = find_sendme()
-        if found is None or not _copy_if_pinned(found, copy, release[2]):
+        run = runnable(found)
+        if run is None:
             problem = (
                 "sendme is not installed"
                 if found is None
@@ -394,14 +482,18 @@ def sendme_command(
             except SendmeInstallError as e:
                 raise SendmeInstallError(f"{problem}, and installing it failed: {e}") from e
             found = find_sendme()
-            if found is None or not _copy_if_pinned(found, copy, release[2]):
+            run = runnable(found)
+            if run is None:
                 raise SendmeInstallError(
                     f"{problem}, and after installing the pinned release "
                     f"{found or get_sendme_path()} still does not match its sha256"
                 )
-        yield str(copy)
+        if copy is None and on_warning is not None:
+            on_warning(WEAK_CHECK_WARNING)
+        yield run
     finally:
-        shutil.rmtree(private, ignore_errors=True)
+        if private is not None:
+            shutil.rmtree(private, ignore_errors=True)
 
 
 def setup_path(install_dir: Path, verbose: bool = False):

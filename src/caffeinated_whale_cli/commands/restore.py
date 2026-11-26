@@ -130,7 +130,9 @@ def _trusted_sendme() -> Iterator[str]:
     against the pinned sha256, see ``sendme_command``); exits 1 naming the problem and
     the manual install command when there is no sendme it may run."""
     try:
-        with sendme_command() as path:
+        with sendme_command(
+            on_warning=lambda text: stderr_console.print(f"[yellow]Warning:[/yellow] {text}")
+        ) as path:
             yield path
     except SendmeInstallError as e:
         stderr_console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
@@ -901,10 +903,10 @@ def _run_receive(
                     if stderr_text and not verbose:
                         stderr_console.print(stderr_text)
                     raise typer.Exit(code=1)
-            except FileNotFoundError as e:
+            except OSError as e:
                 stderr_console.print(
-                    "[bold red]Error:[/bold red] sendme command not found. "
-                    "Try restarting your terminal or running: source ~/.bashrc"
+                    f"[bold red]Error:[/bold red] Could not run sendme ({escape(sendme_cmd)}): "
+                    f"{escape(e.strerror or str(e))}."
                 )
                 raise typer.Exit(code=1) from e
 
@@ -1068,10 +1070,10 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
                 except subprocess.TimeoutExpired:
                     process.kill()
                 raise typer.Exit(code=0) from None
-            except FileNotFoundError as e:
+            except OSError as e:
                 stderr_console.print(
-                    "[bold red]Error:[/bold red] sendme command not found. "
-                    "Try restarting your terminal or running: source ~/.bashrc"
+                    f"[bold red]Error:[/bold red] Could not run sendme ({escape(sendme_cmd)}): "
+                    f"{escape(e.strerror or str(e))}."
                 )
                 raise typer.Exit(code=1) from e
 

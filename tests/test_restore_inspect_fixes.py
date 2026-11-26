@@ -164,7 +164,7 @@ class TestReceiveUsesFullDbPath:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_sendme_run)
-        monkeypatch.setattr(restore_mod, "sendme_command", lambda: contextlib.nullcontext("sendme"))
+        monkeypatch.setattr(restore_mod, "sendme_command", lambda **_k: contextlib.nullcontext("sendme"))
         monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
         monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
         monkeypatch.setattr(

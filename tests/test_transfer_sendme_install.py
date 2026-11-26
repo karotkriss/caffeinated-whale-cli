@@ -320,6 +320,123 @@ def test_an_install_replaces_a_sendme_another_job_is_running(pinned, tmp_path):
         proc.wait()
 
 
+# ------------------------------------------ where the private copy is allowed to run
+
+
+@pytest.fixture(autouse=True)
+def _fresh_exec_root():
+    chooser = sendme_utils.private_exec_root
+    chooser.cache_clear()
+    yield
+    chooser.cache_clear()
+
+
+@pytest.fixture
+def candidates(monkeypatch, tmp_path):
+    """$XDG_RUNTIME_DIR, the temp dir and a 0700 home, with the exec probe faked: only
+    the roots in the returned set let a file run (a noexec mount needs no real mount)."""
+    runtime, temp, home = tmp_path / "run", tmp_path / "tmp", tmp_path / "home"
+    for path in (runtime, temp, home):
+        path.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(sendme_utils.tempfile, "gettempdir", lambda: str(temp))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    executable: set[Path] = set()
+    monkeypatch.setattr(sendme_utils, "_can_exec_in", lambda root: root in executable)
+    return runtime, temp, home, executable
+
+
+def test_the_runtime_dir_is_preferred_when_it_executes(candidates):
+    runtime, temp, _home, executable = candidates
+    executable.update({runtime, temp})
+    assert sendme_utils.private_exec_root() == runtime
+
+
+def test_a_noexec_runtime_dir_falls_back_to_the_temp_dir(candidates):
+    _runtime, temp, _home, executable = candidates
+    executable.add(temp)
+    assert sendme_utils.private_exec_root() == temp
+
+
+def test_a_noexec_temp_dir_falls_back_to_a_private_cache_in_the_home(candidates):
+    _runtime, _temp, home, executable = candidates
+    cache = home / ".cache" / "cwcli" / "sendme"
+    executable.add(cache)
+    assert sendme_utils.private_exec_root() == cache
+    for level in (home / ".cache", home / ".cache" / "cwcli", cache):
+        assert stat.S_IMODE(level.stat().st_mode) == 0o700
+
+
+def test_a_group_writable_home_is_never_a_candidate(candidates):
+    _runtime, _temp, home, executable = candidates
+    home.chmod(0o770)
+    executable.add(home / ".cache" / "cwcli" / "sendme")
+    assert sendme_utils.private_exec_root() is None
+    assert not (home / ".cache").exists()
+
+
+def test_the_exec_probe_runs_a_file_in_a_private_directory(tmp_path):
+    assert sendme_utils._can_exec_in(tmp_path) is True
+    assert list(tmp_path.iterdir()) == []  # the probe cleans up after itself
+    assert sendme_utils._can_exec_in(tmp_path / "missing") is False
+
+
+def test_with_nowhere_to_execute_the_installed_binary_runs_after_one_warning(
+    pinned, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sendme_utils, "private_exec_root", lambda: None)
+    installed = _binary(tmp_path / "bin" / "sendme")
+    events: list = []
+    with transfer._sendme(events.append) as path:
+        assert path == str(installed)
+    notices = [e for e in events if type(e).__name__ == "StoreNotice"]
+    assert [(n.text, n.level) for n in notices] == [(sendme_utils.WEAK_CHECK_WARNING, "warning")]
+
+
+def test_with_nowhere_to_execute_a_mismatched_binary_is_still_never_run(
+    pinned, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sendme_utils, "private_exec_root", lambda: None)
+    _binary(tmp_path / "bin" / "sendme", EVIL)
+    pinned.offline = True
+    with pytest.raises(CwcliError) as e:
+        with transfer._sendme(lambda _e: None):
+            pytest.fail("ran a sendme that is not the pinned release")
+    assert e.value.code == "transfer.sendme_missing"
+
+
+@pytest.mark.parametrize("pty", [True, False])
+def test_a_sendme_that_cannot_be_executed_is_a_clear_error(pty, monkeypatch, tmp_path):
+    """A noexec mount or a wrong-architecture binary refuses at exec: the job gets a
+    cwcli error naming the cause, never a raw PermissionError."""
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+    blocked = tmp_path / "sendme"
+    blocked.write_bytes(GOOD)
+    blocked.chmod(0o600)  # exec refused with EACCES, as on a noexec mount
+    monkeypatch.setattr(transfer, "_sendme", lambda _e: contextlib.nullcontext(str(blocked)))
+    if not pty:
+        monkeypatch.delattr(transfer.os, "openpty")
+    with pytest.raises(CwcliError) as e:
+        transfer.receive_sets(TICKET)
+    assert e.value.code == "transfer.sendme_exec"
+    assert f"Could not run sendme ({blocked})" in e.value.message
+    assert "Permission denied" in e.value.message
+
+
+def test_a_send_whose_sendme_cannot_be_executed_is_a_clear_error(monkeypatch, tmp_path):
+    blocked = tmp_path / "sendme"
+    blocked.write_bytes(GOOD)
+    blocked.chmod(0o600)
+    box = tmp_path / "outbox" / "set"
+    box.mkdir(parents=True)
+    monkeypatch.setattr(transfer, "_sendme", lambda _e: contextlib.nullcontext(str(blocked)))
+    monkeypatch.setattr(transfer, "_outbox", lambda _k: box)
+    with pytest.raises(CwcliError) as e:
+        transfer.send_sets(["p/s/id"])
+    assert e.value.code == "transfer.sendme_exec"
+    assert not box.exists()
+
+
 # --------------------------------------------------- a platform with no pinned build
 
 

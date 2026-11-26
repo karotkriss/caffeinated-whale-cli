@@ -467,7 +467,11 @@ def _sendme(emit: OnEvent) -> Iterator[str]:
         emit(StoreStep("install", installing[-1]))
 
     try:
-        with sendme_utils.sendme_command(progress=False, on_install=announce) as path:
+        with sendme_utils.sendme_command(
+            progress=False,
+            on_install=announce,
+            on_warning=lambda text: emit(StoreNotice(text, "warning")),
+        ) as path:
             if installing:
                 emit(
                     StoreStep(
@@ -529,9 +533,21 @@ def _spawn_on_pty(argv: list[str], cwd: Path) -> tuple[subprocess.Popen, int]:
         proc = subprocess.Popen(
             argv, cwd=str(cwd), stdin=slave, stdout=slave, stderr=slave, close_fds=True
         )
+    except OSError as e:
+        os.close(master)
+        raise _exec_failed(argv[0], e) from e
     finally:
         os.close(slave)
     return proc, master
+
+
+def _exec_failed(path: str, error: OSError) -> CwcliError:
+    return CwcliError(
+        ErrorKind.PRECONDITION,
+        "transfer.sendme_exec",
+        f"Could not run sendme ({path}): {error.strerror or error}.",
+        detail={"path": path, "errno": error.errno},
+    )
 
 
 def _read_pty(master: int) -> bytes:
@@ -562,7 +578,11 @@ def _serve(
 ) -> Result[dict[str, Any]]:
     box = _outbox(keys)
     emit(StoreStep("send", f"Serving {len(keys)} set{'s' if len(keys) != 1 else ''} over sendme"))
-    proc, master = _spawn_on_pty([cmd, "send", str(box)], box.parent)
+    try:
+        proc, master = _spawn_on_pty([cmd, "send", str(box)], box.parent)
+    except CwcliError:
+        shutil.rmtree(box, ignore_errors=True)
+        raise
     meter = SendmeProgress("send")
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     ticket = None
@@ -623,7 +643,10 @@ def _run_receive(argv: list[str], cwd: Path, emit: OnEvent) -> tuple[int, str]:
     its download bar becomes progress (the redraws stripped from the output); where
     the OS has no pty it runs piped, with no bar to read."""
     if not hasattr(os, "openpty"):
-        piped = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+        try:
+            piped = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+        except OSError as e:
+            raise _exec_failed(argv[0], e) from e
         return piped.returncode, piped.stderr or piped.stdout or ""
     proc, master = _spawn_on_pty(argv, cwd)
     meter = SendmeProgress("receive")

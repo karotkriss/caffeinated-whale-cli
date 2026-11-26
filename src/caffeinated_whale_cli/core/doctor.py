@@ -622,7 +622,8 @@ def _check_sendme() -> tuple:
     elif _pin_matches(resolved, pinned):
         parts = [
             f"{resolved} (sendme {PINNED_VERSION}, sha256 verified; each send or receive "
-            "runs a private copy whose bytes are checked against the same sha256)"
+            "runs a private copy whose bytes are checked against the same sha256, where a "
+            "private directory lets it execute one)"
         ]
     else:
         status = CheckStatus.WARN
