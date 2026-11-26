@@ -3824,7 +3824,7 @@ def axi_storage_prune_bench_logs(
     yes: bool = typer.Option(False, "--yes", help="REQUIRED consent to remove the rotated files."),
 ) -> None:
     """Remove the rotated log files (``*.log.1``, ``*.log.2.gz``, ...) under a bench's
-    ``logs/``; every current log file is kept, so a running bench loses nothing it holds
+    ``logs/`` and each of its ``sites/<site>/logs/``; every current log file is kept, so a running bench loses nothing it holds
     open. A stopped instance is refused (exit 1) naming ``cwcli start``, never started.
     Without ``--yes`` this is a usage error naming the flag (exit 2).
     """

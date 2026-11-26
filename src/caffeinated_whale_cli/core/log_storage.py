@@ -38,6 +38,8 @@ import posixpath
 import re
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -150,10 +152,26 @@ def _log_path(container) -> str | None:
     return str(path) if path else None
 
 
+@contextmanager
+def _docker_errors(what: str) -> Iterator[None]:
+    """A docker-py failure (a container that stopped or vanished mid-read, a daemon
+    that went away) as a typed ``DOCKER`` error, so a caller degrades instead of crashing."""
+    try:
+        yield
+    except docker.errors.DockerException as e:
+        raise CwcliError(ErrorKind.DOCKER, "logs.docker_failed", f"{what} failed: {e}") from None
+
+
+def _docker_client():
+    with _docker_errors("Connecting to Docker"):
+        return docker.from_env()
+
+
 def _helper_image(client, containers) -> list[str]:
     """Images a root helper may run: a local ``frappe/bench`` first (the ``core.rm``
     choice), else the instance's own images - every one is already present."""
-    images = [i.id for i in client.images.list(name=_HELPER_IMAGE_PREFIX)]
+    with _docker_errors("Listing the helper images"):
+        images = [i.id for i in client.images.list(name=_HELPER_IMAGE_PREFIX)]
     for c in containers:
         image_id = (c.attrs.get("Image") or "").strip()
         if image_id and image_id not in images:
@@ -239,9 +257,7 @@ def compose_rotation(project: str) -> dict[str, str] | None:
     return {"max_size": size.group(1), "max_file": count.group(1) if count else "1"}
 
 
-def docker_logs(project: str) -> DockerLogs:
-    """Every container's log driver, rotation and size; measured from the host when the
-    data root is readable, else through one read-only root helper per instance."""
+def _project_containers(project: str) -> list:
     containers = core_docker.get_project_containers(project)
     if containers is None:
         raise CwcliError(
@@ -254,22 +270,46 @@ def docker_logs(project: str) -> DockerLogs:
         raise CwcliError(
             ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project}' not found."
         )
-    json_paths = [
-        _log_path(c) for c in containers if _log_config(c)[0] == "json-file" and _log_path(c)
-    ]
-    paths = [p for p in json_paths if p is not None]
-    method: str | None = None
-    note: str | None = None
-    sizes: dict[str, tuple[int, int]] = {}
-    if paths:
-        host = _host_sizes(paths)
-        if host is not None:
-            sizes, method = host, "host"
-        else:
-            try:
-                sizes, method = _helper_sizes(docker.from_env(), containers, paths), "helper"
-            except CwcliError as e:
-                note = f"Sizes could not be measured: {e.message}"
+    return containers
+
+
+def _json_paths(containers) -> list[str]:
+    paths = [_log_path(c) for c in containers if _log_config(c)[0] == "json-file"]
+    return [p for p in paths if p is not None]
+
+
+def _measure(
+    containers, paths: list[str]
+) -> tuple[dict[str, tuple[int, int]], str | None, str | None]:
+    """``(sizes, method, note)`` for ``paths``: from the host when the data root is
+    readable, else through ONE read-only root helper mounting every log directory."""
+    if not paths:
+        return {}, None, None
+    host = _host_sizes(paths)
+    if host is not None:
+        return host, "host", None
+    try:
+        return _helper_sizes(_docker_client(), containers, paths), "helper", None
+    except CwcliError as e:
+        return {}, None, f"Sizes could not be measured: {e.message}"
+
+
+def docker_logs(project: str) -> DockerLogs:
+    """Every container's log driver, rotation and size; measured from the host when the
+    data root is readable, else through one read-only root helper."""
+    containers = _project_containers(project)
+    return _docker_logs_of(project, containers, *_measure(containers, _json_paths(containers)))
+
+
+def _docker_logs_of(
+    project: str,
+    containers,
+    sizes: dict[str, tuple[int, int]],
+    method: str | None,
+    note: str | None,
+) -> DockerLogs:
+    if not _json_paths(containers):
+        method = note = None
     rows: list[DockerLog] = []
     for c in containers:
         driver, cfg = _log_config(c)
@@ -330,7 +370,7 @@ def truncate_docker_logs(project: str, *, consent: bool = False) -> Result[dict[
                 ),
             ),
         )
-    client = docker.from_env()
+    client = _docker_client()
     containers = core_docker.get_project_containers(project) or []
     volumes = {
         posixpath.dirname(r.log_path): {"bind": f"/logs/{i}", "mode": "rw"}
@@ -452,18 +492,19 @@ def _bench_log_listing(container, bench_path: str) -> list[tuple[str, int]]:
     ``<bench>/sites/<site>/logs`` (one exec; the bench path rides as an argv positional,
     never inside the script text). A bench logs dir that is missing or unreadable
     raises rather than reading as an empty one."""
-    code, output = container.exec_run(
-        [
-            "sh",
-            "-c",
-            '[ -d "$1/logs" ] || exit 3; '
-            'for d in "$1/logs" "$1"/sites/*/logs; do [ -d "$d" ] || continue; '
-            'find "$d" -maxdepth 1 -type f -exec stat -c "%s %n" {} + 2>/dev/null '
-            "|| exit 4; done",
-            "sh",
-            bench_path,
-        ]
-    )
+    with _docker_errors(f"Reading the bench logs at {bench_path}"):
+        code, output = container.exec_run(
+            [
+                "sh",
+                "-c",
+                '[ -d "$1/logs" ] || exit 3; '
+                'for d in "$1/logs" "$1"/sites/*/logs; do [ -d "$d" ] || continue; '
+                'find "$d" -maxdepth 1 -type f -exec stat -c "%s %n" {} + 2>/dev/null '
+                "|| exit 4; done",
+                "sh",
+                bench_path,
+            ]
+        )
     if code not in (0, None):
         raise CwcliError(
             ErrorKind.NOT_FOUND,
@@ -578,7 +619,8 @@ def prune_bench_logs(
                 ),
             ),
         )
-    code, output = frappe.exec_run(["rm", "-f", "--", *doomed])
+    with _docker_errors("Removing the rotated log files"):
+        code, output = frappe.exec_run(["rm", "-f", "--", *doomed])
     if code not in (0, None):
         raise CwcliError(
             ErrorKind.DOCKER,
@@ -753,16 +795,25 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
             raise CwcliError(
                 ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project}' not found."
             )
+    found: dict[str, list | str] = {}
+    for inst in instances:
+        try:
+            found[inst.project_name] = _project_containers(inst.project_name)
+        except CwcliError as e:
+            found[inst.project_name] = e.message
+    every = [c for v in found.values() if isinstance(v, list) for c in v]
+    measured = _measure(every, _json_paths(every))
     rows: list[InstanceLogStorage] = []
     benches_measured = True
     for inst in instances:
         running = inst.status == "running"
         notes: list[str] = []
-        try:
-            dl: DockerLogs | None = docker_logs(inst.project_name)
-        except CwcliError as e:
-            dl = None
-            notes.append(e.message)
+        containers = found[inst.project_name]
+        dl: DockerLogs | None = None
+        if isinstance(containers, list):
+            dl = _docker_logs_of(inst.project_name, containers, *measured)
+        else:
+            notes.append(containers)
         benches: list[BenchLogs] = []
         if running:
             try:

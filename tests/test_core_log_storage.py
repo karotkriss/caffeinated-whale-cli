@@ -65,6 +65,7 @@ class FakeContainer:
         }
         self.listing = list(listing)  # [(path, size)] under <bench>/logs
         self.missing_logs: set[str] = set()  # benches whose logs dir does not exist
+        self.gone = False  # the container stopped or vanished: docker-py raises
         self.calls: list = []
 
     def reload(self):
@@ -72,6 +73,8 @@ class FakeContainer:
 
     def exec_run(self, cmd, workdir=None, environment=None):
         self.calls.append(list(cmd))
+        if self.gone:
+            raise ls.docker.errors.NotFound("No such container")
         if cmd[0] == "sh" and "find" in cmd[2]:
             bench = cmd[-1]
             if bench in self.missing_logs:
@@ -493,6 +496,19 @@ class TestPruneBenchLogs:
         assert result.data["freed_bytes"] == 770
         assert not any(p.endswith("web.log") for p in rm)  # the current file is kept
 
+    def test_a_container_gone_before_the_rm_is_a_typed_docker_error(self, running_frappe):
+        real = running_frappe.exec_run
+
+        def exec_run(cmd, **kw):
+            if cmd[0] == "rm":
+                raise ls.docker.errors.APIError("container is not running")
+            return real(cmd, **kw)
+
+        running_frappe.exec_run = exec_run
+        with pytest.raises(CwcliError) as e:
+            ls.prune_bench_logs("p", consent=True)
+        assert e.value.kind is ErrorKind.DOCKER and "not running" in e.value.message
+
     def test_nothing_rotated_is_an_ok_no_op(self, running_frappe):
         running_frappe.listing = [("web.log", 10)]
         result = ls.prune_bench_logs("p", consent=True)
@@ -683,6 +699,48 @@ class TestReport:
         monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
         rep = ls.report().data
         assert rep.instances == [] and rep.docker_total == 0 and rep.bench_total == 0
+
+    def test_a_container_that_vanishes_mid_read_is_a_note_not_a_crash(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        rows = [InstanceDTO(project_name="p", status="running", ports=[])]
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": rows})())
+        conts = _containers(tmp_path)
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: conts)
+        frappe = FakeContainer("p-frappe-1", "frappe", listing=LISTING)
+        frappe.gone = True
+        monkeypatch.setattr(ls.core_docker, "get_frappe_container", lambda p: frappe)
+        monkeypatch.setattr(
+            ls.resolvers, "cached_benches", lambda p: [{"path": "/workspace/frappe-bench"}]
+        )
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        (p,) = rep.instances
+        assert p.benches == [] and "No such container" in (p.note or "")
+        assert rep.bench_total is None and rep.docker_total == 160
+
+    def test_an_unreadable_data_root_is_measured_by_one_helper_for_every_instance(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        rows = [
+            InstanceDTO(project_name="p", status="exited", ports=[]),
+            InstanceDTO(project_name="q", status="exited", ports=[]),
+        ]
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": rows})())
+        per_project = {"p": _containers(tmp_path / "p"), "q": _containers(tmp_path / "q")}
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: per_project[p])
+        monkeypatch.setattr(ls, "_host_sizes", lambda paths: None)
+        client = FakeClient(
+            stat_lines="7 /logs/0/aaa-json.log\n5 /logs/3/bbb-json.log\n2 /logs/3/bbb-json.log.1\n"
+        )
+        monkeypatch.setattr(ls.docker, "from_env", lambda: client)
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        assert len(client.runs) == 1 and len(client.runs[0]["volumes"]) == 4
+        p, q = rep.instances
+        assert [c.size for c in p.docker.containers] == [7, 0]
+        assert [c.size for c in q.docker.containers] == [0, 7]
+        assert p.docker.method == q.docker.method == "helper" and rep.docker_total == 14
 
     def test_an_unknown_project_filter_is_not_found(self, monkeypatch):
         monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": []})())
