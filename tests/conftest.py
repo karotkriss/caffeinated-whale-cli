@@ -187,6 +187,9 @@ def pytest_configure(config):
     _reporter = config.pluginmanager.get_plugin("terminalreporter")
 
 
+_E2E_DIR = Path(__file__).resolve().parent / "e2e"
+
+
 def pytest_collection_modifyitems(config, items):
     for item in items:
         if not (
@@ -195,7 +198,13 @@ def pytest_collection_modifyitems(config, items):
             or item.get_closest_marker("e2e_pkg")
             or item.get_closest_marker("packaging")
         ):
-            item.add_marker(pytest.mark.unit)
+            # A file under tests/e2e/ that forgot its explicit `pytestmark` must never
+            # fall into the unit tier: its session fixtures build a REAL instance, and
+            # a bare `pytest` / `-m unit` would run that init on the developer's box.
+            if _E2E_DIR in Path(str(item.fspath)).resolve().parents:
+                item.add_marker(pytest.mark.e2e)
+            else:
+                item.add_marker(pytest.mark.unit)
 
 
 @pytest.fixture(autouse=True)
