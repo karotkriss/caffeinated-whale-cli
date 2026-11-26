@@ -44,7 +44,7 @@ def test_a_drill_restores_into_a_throwaway_site_drops_it_and_records_ok(home, mo
         drill.core_new_site,
         "new_site",
         lambda project, **kw: (
-            calls.append(("new", kw["site"], tuple(kw["apps"]))),
+            calls.append(("new", kw["site"], tuple(kw["apps"]), kw["reload"])),
             Result(status=Status.OK, data=object()),
         )[1],
     )
@@ -70,7 +70,7 @@ def test_a_drill_restores_into_a_throwaway_site_drops_it_and_records_ok(home, mo
     rep = r.data
     assert rep.ok and rep.dropped and rep.drill_site == "shop-drill.localhost"
     assert calls == [
-        ("new", "shop-drill.localhost", ("erpnext",)),
+        ("new", "shop-drill.localhost", ("erpnext",), False),
         ("restore", bset.key, "shop-drill.localhost"),
         ("drop", "shop-drill.localhost"),
     ]

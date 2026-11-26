@@ -478,7 +478,8 @@ When new-site installs at least one app on the new site of a running bench, it r
 This is the same resynchronise step `apps install` uses: the reload succeeds when the new site answers Frappe, together with every existing site that has an app new-site checked out at another ref, because that checkout moved their code too.
 A failure on one of those existing sites is reported as the checkout breaking that site; any other site is never probed, so an unrelated site in maintenance cannot fail new-site.
 new-site names each restarted program (`processes_restarted` on the agent surface) and exits non-zero if the reload fails; a bench run by a manager cwcli does not supervise is not restarted, and new-site exits non-zero with a manual-restart remedy when a site does not answer.
-A site created with no app restarts nothing, and a stopped bench stays stopped; the same holds for the web UI's New site, restore drills, and transfers, which create sites through new-site.
+A site created with no app restarts nothing, and a stopped bench stays stopped; the same holds for the web UI's New site.
+Restore drills and transfers also create their site through new-site, but they skip this reload and rely on the restart their restore runs straight after.
 `cwcli init --reuse-bench` with `--install-erpnext` on a running bench does the same for ERPNext.
 
 ```bash

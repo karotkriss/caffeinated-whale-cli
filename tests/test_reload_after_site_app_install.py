@@ -280,6 +280,23 @@ class TestNewSite:
 
         assert _restarts(log) == [] and result.data.processes_restarted == []
 
+    def test_reload_false_leaves_a_serving_bench_alone(
+        self, world, container, monkeypatch  # noqa: F811
+    ):
+        """What a restore drill and a transfer ask for: their restore restarts the bench."""
+        new_site = _wire_new_site(monkeypatch, container)
+        container.available.extend(["toolkit", "booking"])
+        monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+        log = _bench(monkeypatch, serving={"shop.localhost": "500"})
+
+        result = _run_new_site(
+            monkeypatch, container, new_site, log, apps=["toolkit"], reload=False
+        )
+
+        assert any(e.startswith("install_app ") for e in log)
+        assert _restarts(log) == [] and _probes(log) == []
+        assert result.data.ok and result.data.processes_restarted == []
+
     def test_a_fetch_alone_reloads_nothing_when_creating_the_site_fails(
         self, world, container, monkeypatch  # noqa: F811
     ):

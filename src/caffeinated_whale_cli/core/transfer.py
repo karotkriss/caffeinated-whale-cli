@@ -206,6 +206,7 @@ def transfer_sites(
                     bench=tbench,
                     apps=[a for a in bset.apps if a != "frappe"],
                     db_root_password=target_mariadb_root_password,
+                    reload=False,
                     on_event=emit,
                 )
                 if made.data is None:

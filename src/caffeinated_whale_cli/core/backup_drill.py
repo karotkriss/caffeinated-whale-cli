@@ -77,6 +77,7 @@ def run_drill(
             bench=bench,
             apps=[a for a in bset.apps if a != "frappe"],
             db_root_password=mariadb_root_password,
+            reload=False,
             on_event=emit,
         )
         report.created = made.data is not None

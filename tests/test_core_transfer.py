@@ -84,8 +84,8 @@ def composed(monkeypatch, home):
             data=_set(home, project, site, sid=f"20260101_0000{len(calls.log):02d}-b0"),
         )
 
-    def new_site(project, *, site, admin_password, bench, apps, db_root_password, on_event):
-        calls.log.append(("new_site", project, site, tuple(apps)))
+    def new_site(project, *, site, admin_password, bench, apps, db_root_password, reload, on_event):
+        calls.log.append(("new_site", project, site, tuple(apps), reload))
         return Result(status=Status.OK, data=object())
 
     def restore_set(
@@ -120,6 +120,8 @@ def test_a_clone_captures_creates_and_restores_and_keeps_the_source(composed):
     assert r.data.ok and r.data.items[0].created and r.data.items[0].restored
     assert [c[0] for c in composed.log] == ["capture", "new_site", "restore"]
     assert composed.log[1][3] == ("erpnext",)  # the set's apps minus frappe
+    # The restore that follows restarts the bench, so the site creation does not too.
+    assert composed.log[1][4] is False
     assert not any(c[0] == "drop" for c in composed.log)
     progress = [e for e in events if isinstance(e, transfer.TransferProgress)]
     assert (progress[0].done, progress[0].total, progress[-1].done) == (0, 1, 1)
@@ -350,7 +352,9 @@ def test_receive_files_every_set_in_the_download_into_the_store(home, monkeypatc
     assert len(r.data["sets"]) == 1 and r.data["sets"][0].startswith("my-instance/shop.localhost/")
     got = store.find_set(r.data["sets"][0])
     assert (
-        got is not None and got.reason == "received" and got.note == "from my-instance:shop.localhost"
+        got is not None
+        and got.reason == "received"
+        and got.note == "from my-instance:shop.localhost"
     )
     assert (
         not (home / "backups" / ".inbox" / os.listdir(home / "backups" / ".inbox")[0]).exists()

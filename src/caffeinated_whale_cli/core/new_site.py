@@ -98,9 +98,13 @@ def new_site(
     with_deps: bool = False,
     dep_sources: dict[str, str] | None = None,
     ignore_frappe_range: bool = False,
+    reload: bool = True,
     on_event: OnEvent | None = None,
 ) -> Result[NewSiteReport]:
     """Create ``site`` and install ``apps`` on it (each a bench app name).
+
+    ``reload=False`` skips the end-of-operation reload of a serving bench, for a
+    caller (a restore drill, a transfer) whose own next step restarts the bench.
 
     ``fetch`` names repositories to fetch onto the bench first. ``refs`` maps a
     repository in ``fetch`` or an app in ``apps`` to the branch, tag or commit wanted:
@@ -205,6 +209,8 @@ def new_site(
     installed: list[str] = []
 
     def changed_sites() -> list[str]:
+        if not reload:
+            return []
         return ([site] if installed else []) + list(moved_under)
 
     try:
