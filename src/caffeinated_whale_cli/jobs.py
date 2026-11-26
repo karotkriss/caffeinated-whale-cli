@@ -849,7 +849,13 @@ def _event_type(event: Any) -> str:
 
 
 class _Recorder:
-    """The job's ``on_event`` callback: scrubs, numbers, and persists every event."""
+    """The job's ``on_event`` callback: scrubs, numbers, and persists every event.
+
+    A sendme transfer's byte count is not an event: it replaces the job record's
+    ``transfer_bytes`` field, so a long transfer never floods the event log. A send's
+    ticket is kept on the record as ``ticket`` too, so the page shows it however far
+    back in the log its event lies.
+    """
 
     FLUSH_INTERVAL_S = 0.5
 
@@ -881,7 +887,13 @@ class _Recorder:
 
     def __call__(self, event: Any) -> None:
         data = _scrub(_plain(event), self.secret_values)
-        record: dict[str, Any] = {"type": _event_type(event), "data": data}
+        kind = _event_type(event)
+        if kind == "transfer_bytes":
+            _merge_state(self.job_id, transfer_bytes=data)
+            return
+        if kind == "ticket" and isinstance(data, dict):
+            _merge_state(self.job_id, ticket=data.get("ticket"))
+        record: dict[str, Any] = {"type": kind, "data": data}
         if isinstance(data, dict):
             for key in ("phase", "action", "stream", "status", "ok", "item"):
                 if key in data:

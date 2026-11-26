@@ -139,6 +139,25 @@ class TestHomeResolutionPrecedence:
         assert config_utils.cwcli_home() == config_utils.Path.home() / config_utils.APP_NAME
 
 
+class TestServiceAccount:
+    def test_service_home_is_the_accounts_passwd_home(self, marker, tmp_path):
+        import pwd
+
+        me = pwd.getpwuid(os.getuid())
+        marker[1].write_text(
+            f'enabled = true\nstate_dir = "{tmp_path / "state"}"\nservice_user = "{me.pw_name}"\n'
+        )
+        assert shared_home.service_home() == shared_home.Path(me.pw_dir)
+        assert shared_home.service_uid() == me.pw_uid
+
+    def test_service_home_is_none_without_the_account(self, marker, monkeypatch, tmp_path):
+        marker[1].write_text(
+            f'enabled = true\nstate_dir = "{tmp_path / "state"}"\n'
+            'service_user = "cwcli-no-such-account"\n'
+        )
+        assert shared_home.service_home() is None
+
+
 class TestWindowsStaysPerUser:
     def test_non_posix_is_never_shared(self, marker, monkeypatch):
         # Even with a valid marker present, a non-POSIX platform is per-user.

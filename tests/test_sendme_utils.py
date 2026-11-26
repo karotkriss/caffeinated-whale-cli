@@ -15,6 +15,7 @@ stands in for that.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import subprocess
@@ -54,7 +55,10 @@ def test_sendme_path_unix_vs_windows(monkeypatch, tmp_path):
         ("Linux", "aarch64", "linux-aarch64"),
         ("Linux", "arm64", "linux-aarch64"),
         ("Linux", "x86_64", "linux-x86_64"),
-        ("Plan9", "riscv", "linux-x86_64"),  # unknown OS -> linux-x86_64 default
+        ("Windows", "AMD64", "windows-x86_64"),
+        ("Plan9", "riscv", None),  # no pinned build: never another platform's
+        ("Linux", "armv7l", None),
+        ("Windows", "arm64", None),
     ],
 )
 def test_platform_target(monkeypatch, system, machine, expected):
@@ -64,48 +68,30 @@ def test_platform_target(monkeypatch, system, machine, expected):
 
 
 # --------------------------------------------------------------------------- #
-# is_sendme_installed / get_sendme_command (filesystem + PATH boundary)
+# find_sendme (filesystem + PATH boundary)
 # --------------------------------------------------------------------------- #
-def test_is_installed_prefers_local_binary(monkeypatch, tmp_path):
+def test_find_prefers_local_binary(monkeypatch, tmp_path):
     binary = tmp_path / "sendme"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
     monkeypatch.setattr(sendme_utils, "get_sendme_path", lambda: binary)
-    # Even with nothing on PATH, the executable local binary counts as installed.
-    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: None)
-    assert sendme_utils.is_sendme_installed() is True
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: "/usr/local/bin/sendme")
+    assert sendme_utils.find_sendme() == str(binary)
 
 
-def test_is_installed_non_executable_falls_back_to_path(monkeypatch, tmp_path):
+def test_find_non_executable_falls_back_to_path(monkeypatch, tmp_path):
     binary = tmp_path / "sendme"
     binary.write_text("not executable")
     binary.chmod(0o644)  # present but NOT executable
     monkeypatch.setattr(sendme_utils, "get_sendme_path", lambda: binary)
     monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: "/usr/bin/sendme")
-    assert sendme_utils.is_sendme_installed() is True
+    assert sendme_utils.find_sendme() == "/usr/bin/sendme"
 
 
-def test_is_installed_false_when_absent_everywhere(monkeypatch, tmp_path):
+def test_find_none_when_absent_everywhere(monkeypatch, tmp_path):
     monkeypatch.setattr(sendme_utils, "get_sendme_path", lambda: tmp_path / "nope")
     monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: None)
-    assert sendme_utils.is_sendme_installed() is False
-
-
-def test_command_prefers_local_then_path_then_fallback(monkeypatch, tmp_path):
-    binary = tmp_path / "sendme"
-    binary.write_text("#!/bin/sh\n")
-    binary.chmod(0o755)
-    monkeypatch.setattr(sendme_utils, "get_sendme_path", lambda: binary)
-    assert sendme_utils.get_sendme_command() == str(binary)
-
-    # Local absent -> PATH.
-    monkeypatch.setattr(sendme_utils, "get_sendme_path", lambda: tmp_path / "gone")
-    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: "/usr/local/bin/sendme")
-    assert sendme_utils.get_sendme_command() == "/usr/local/bin/sendme"
-
-    # Neither -> bare-name fallback (will likely fail at exec, but never crashes here).
-    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _: None)
-    assert sendme_utils.get_sendme_command() == "sendme"
+    assert sendme_utils.find_sendme() is None
 
 
 # --------------------------------------------------------------------------- #
@@ -189,26 +175,47 @@ def test_download_returns_false_on_error(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# install_sendme - error paths, and a success path over a REAL archive
+# fetch_sendme - error paths, and a success path over a REAL archive
 # --------------------------------------------------------------------------- #
-def _release_json(url: str) -> dict:
-    return {"assets": [{"browser_download_url": url}]}
+_BINARY = b"#!/bin/sh\necho sendme\n"
 
 
-def test_install_no_matching_asset_returns_false(monkeypatch, tmp_path):
-    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
-    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
-    monkeypatch.setattr(
-        sendme_utils.requests,
-        "get",
-        lambda *a, **k: _FakeReleaseResponse(
-            _release_json("https://x/sendme-darwin-aarch64.tar.gz")
-        ),
+def _make_tar_gz(dest: Path, member_name: str = "sendme") -> None:
+    """Write a real .tar.gz holding an executable ``member_name`` script."""
+    with tarfile.open(dest, "w:gz") as tar:
+        info = tarfile.TarInfo(name=member_name)
+        info.size = len(_BINARY)
+        info.mode = 0o755
+        tar.addfile(info, io.BytesIO(_BINARY))
+
+
+def _make_zip(dest: Path, member_name: str = "sendme.exe") -> None:
+    with zipfile.ZipFile(dest, "w") as zf:
+        zf.writestr(member_name, _BINARY)
+
+
+def _pin(monkeypatch, tmp_path, target: str, asset: str, make) -> list[str]:
+    """Pin ``target`` to an archive ``make`` writes (its sha256 from ``hashlib``) and
+    fake the download with it; returns the URLs downloaded."""
+    sample = tmp_path / "sample"
+    make(sample)
+    archive_sha = hashlib.sha256(sample.read_bytes()).hexdigest()
+    monkeypatch.setitem(
+        sendme_utils._PINNED, target, (asset, archive_sha, hashlib.sha256(_BINARY).hexdigest())
     )
-    assert sendme_utils.install_sendme() is False
+    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: target)
+    urls: list[str] = []
+
+    def download(url, dest):
+        urls.append(url)
+        dest.write_bytes(sample.read_bytes())
+        return True
+
+    monkeypatch.setattr(sendme_utils, "download_file_with_progress", download)
+    return urls
 
 
-def test_install_network_error_returns_false(monkeypatch, tmp_path):
+def test_fetch_network_error_names_it(monkeypatch, tmp_path):
     monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
     monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
 
@@ -216,86 +223,40 @@ def test_install_network_error_returns_false(monkeypatch, tmp_path):
         raise requests.RequestException("no route")
 
     monkeypatch.setattr(sendme_utils.requests, "get", boom)
-    assert sendme_utils.install_sendme() is False
+    with pytest.raises(sendme_utils.SendmeInstallError, match="Network error: no route"):
+        sendme_utils.fetch_sendme(progress=False)
 
 
-class _FakeReleaseResponse:
-    def __init__(self, payload: dict):
-        self._payload = payload
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._payload
-
-
-def _make_tar_gz(dest: Path, member_name: str = "sendme") -> None:
-    """Write a real .tar.gz holding an executable ``member_name`` script."""
-    with tarfile.open(dest, "w:gz") as tar:
-        data = b"#!/bin/sh\necho sendme\n"
-        info = tarfile.TarInfo(name=member_name)
-        info.size = len(data)
-        info.mode = 0o755
-        tar.addfile(info, io.BytesIO(data))
-
-
-def _make_zip(dest: Path, member_name: str = "sendme.exe") -> None:
-    with zipfile.ZipFile(dest, "w") as zf:
-        zf.writestr(member_name, b"binary")
-
-
-def test_install_success_extracts_and_installs_tar(monkeypatch, tmp_path):
-    """The tar.gz extract/find/copy/chmod logic runs for real; only the download
-    boundary is faked (it writes a genuine archive instead of hitting the network)."""
+def test_fetch_success_extracts_and_installs_tar(monkeypatch, tmp_path):
+    """The tar.gz download/verify/extract/copy/chmod logic runs for real; only the
+    download boundary is faked (it writes a genuine archive instead of hitting the network)."""
     install_dir = tmp_path / "bin"
-    url = "https://github.com/n0-computer/sendme/releases/download/v1/sendme-linux-x86_64.tar.gz"
-    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    asset = "sendme-v0.37.1-linux-x86_64.tar.gz"
+    urls = _pin(monkeypatch, tmp_path, "linux-x86_64", asset, _make_tar_gz)
     monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: install_dir)
-    monkeypatch.setattr(
-        sendme_utils.requests, "get", lambda *a, **k: _FakeReleaseResponse(_release_json(url))
-    )
-    monkeypatch.setattr(
-        sendme_utils, "download_file_with_progress", lambda u, d: (_make_tar_gz(d) or True)
-    )
-    # Ensure setup_path early-returns without touching real shell RC files.
-    monkeypatch.setenv("PATH", str(install_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
 
-    assert sendme_utils.install_sendme(verbose=True) is True
-    installed = install_dir / "sendme"
-    assert installed.exists()
+    installed = sendme_utils.fetch_sendme(verbose=True)
+    assert installed == install_dir / "sendme" and installed.read_bytes() == _BINARY
     assert os.access(installed, os.X_OK)
+    assert urls == [f"https://github.com/n0-computer/sendme/releases/download/v0.37.1/{asset}"]
 
 
-def test_install_success_extracts_zip(monkeypatch, tmp_path):
+def test_fetch_success_extracts_zip(monkeypatch, tmp_path):
     install_dir = tmp_path / "bin"
-    url = "https://github.com/n0-computer/sendme/releases/download/v1/sendme-windows-x86_64.zip"
-    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "windows-x86_64")
+    _pin(monkeypatch, tmp_path, "windows-x86_64", "sendme-v0.37.1-windows-x86_64.zip", _make_zip)
     monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: install_dir)
     monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        sendme_utils.requests, "get", lambda *a, **k: _FakeReleaseResponse(_release_json(url))
-    )
-    monkeypatch.setattr(
-        sendme_utils, "download_file_with_progress", lambda u, d: (_make_zip(d) or True)
-    )
-    # On Windows the code updates PATH via PowerShell; stub setup_path so the test
-    # stays cross-platform and never shells out.
-    monkeypatch.setattr(sendme_utils, "setup_path", lambda *a, **k: None)
-
-    assert sendme_utils.install_sendme() is True
-    assert (install_dir / "sendme.exe").exists()
+    assert sendme_utils.fetch_sendme() == install_dir / "sendme.exe"
+    assert (install_dir / "sendme.exe").read_bytes() == _BINARY
 
 
-def test_install_download_failure_returns_false(monkeypatch, tmp_path):
-    url = "https://x/sendme-linux-x86_64.tar.gz"
+def test_fetch_download_failure_names_it(monkeypatch, tmp_path):
     monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
     monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
-    monkeypatch.setattr(
-        sendme_utils.requests, "get", lambda *a, **k: _FakeReleaseResponse(_release_json(url))
-    )
     monkeypatch.setattr(sendme_utils, "download_file_with_progress", lambda u, d: False)
-    assert sendme_utils.install_sendme() is False
+    with pytest.raises(sendme_utils.SendmeInstallError, match="Failed to download"):
+        sendme_utils.fetch_sendme()
 
 
 # --------------------------------------------------------------------------- #
@@ -342,26 +303,52 @@ def test_setup_path_creates_bashrc_when_no_config(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# ensure_sendme_installed (composition)
+# ensure_sendme_installed (composition over the pinned check)
 # --------------------------------------------------------------------------- #
-def test_ensure_short_circuits_when_installed(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: True)
-    # install_sendme must NOT be called when already present.
+@pytest.fixture
+def pinned_binary(monkeypatch, tmp_path):
+    """A Linux x86_64 box pinned to ``_BINARY`` (its sha256 from ``hashlib``), whose
+    install dir is ``tmp_path/bin``; nothing on PATH."""
+    monkeypatch.setitem(
+        sendme_utils._PINNED,
+        "linux-x86_64",
+        ("a.tar.gz", "x", hashlib.sha256(_BINARY).hexdigest()),
+    )
+    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
+    return tmp_path / "bin" / "sendme"
+
+
+def _write(path: Path, data: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o755)
+    return path
+
+
+def test_ensure_short_circuits_when_the_pinned_sendme_is_installed(monkeypatch, pinned_binary):
+    _write(pinned_binary, _BINARY)
     monkeypatch.setattr(
         sendme_utils,
-        "install_sendme",
-        lambda *a, **k: pytest.fail("install_sendme called though already installed"),
+        "fetch_sendme",
+        lambda *a, **k: pytest.fail("fetch_sendme called though already installed"),
     )
     assert sendme_utils.ensure_sendme_installed(verbose=True) is True
 
 
-def test_ensure_installs_when_absent(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-    monkeypatch.setattr(sendme_utils, "install_sendme", lambda *a, **k: True)
+def test_ensure_installs_when_absent(monkeypatch, pinned_binary):
+    monkeypatch.setattr(sendme_utils, "fetch_sendme", lambda **_k: _write(pinned_binary, _BINARY))
+    monkeypatch.setattr(sendme_utils, "setup_path", lambda *a, **k: None)
     assert sendme_utils.ensure_sendme_installed() is True
+    assert pinned_binary.read_bytes() == _BINARY
 
 
-def test_ensure_reports_failure_when_install_fails(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "is_sendme_installed", lambda: False)
-    monkeypatch.setattr(sendme_utils, "install_sendme", lambda *a, **k: False)
+def test_ensure_reports_failure_when_install_fails(monkeypatch, pinned_binary):
+    def fetch(**_k):
+        raise sendme_utils.SendmeInstallError("offline")
+
+    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
+    monkeypatch.setattr(sendme_utils, "manual_install_command", lambda: "install-it")
     assert sendme_utils.ensure_sendme_installed() is False

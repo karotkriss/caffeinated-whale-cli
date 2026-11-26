@@ -1975,7 +1975,7 @@ Copying the downloaded backup into the container streams through a bounded pipe 
 - **NAT traversal** - Works behind firewalls and corporate networks
 - **No cloud intermediary** - Direct peer-to-peer connections
 - **Cross-platform** - Works on macOS, Linux, and Windows
-- **Automatic setup** - sendme binary auto-installed on first use
+- **Automatic setup** - cwcli pins sendme v0.37.1: the first send or receive, from the command line or the web UI, downloads that exact release into `~/.local/bin` of the account that runs it, checking the archive and the binary against the SHA-256 values cwcli ships; every send or receive copies the installed binary into a fresh private directory (under `$XDG_RUNTIME_DIR`, else the system temp dir, else `~/.cache/cwcli/sendme` when your home is not group- or world-writable, whichever first lets you execute a file), hashing the bytes as it copies them, and runs that copy only when they match, so the bytes that run are the bytes that were checked (known limit: where none of those directories allows execution, for example all mounted `noexec`, cwcli runs the installed binary right after hashing it and warns that it could be swapped between that check and the run), and an installed copy that does not match is replaced by the pinned release first (on a platform cwcli pins no build for, it uses the sendme on PATH as it is, unchecked, and never installs one; on a shared install the web UI runs as the service account, so it keeps its own copy in that account's home); `cwcli doctor` reports whether your copy and the web UI's match, and names the manual install command, with its checksum step, if the download fails
 - **Multiple receivers** - Same ticket can be used by multiple machines
 
 **Use Cases:**

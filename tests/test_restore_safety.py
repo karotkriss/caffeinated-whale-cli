@@ -20,6 +20,7 @@ that records every ``exec_run`` (command, workdir, environment) so the tests can
 assert which command ran and how the secret was passed.
 """
 
+import contextlib
 import subprocess
 from datetime import datetime
 from io import BytesIO
@@ -173,7 +174,7 @@ def _run_receive(
 
     monkeypatch.setattr(subprocess, "run", fake_sendme_run)
     monkeypatch.setattr(subprocess, "Popen", FakeSendmeProcess)
-    monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
+    monkeypatch.setattr(restore_mod, "sendme_command", lambda **_k: contextlib.nullcontext("sendme"))
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(

@@ -1,13 +1,33 @@
-"""Utility functions for sendme binary management."""
+"""Utility functions for sendme binary management.
 
+On a platform cwcli pins a sendme release for, it installs only that exact release
+asset, checking the archive and the extracted binary against the SHA-256 it ships.
+Every run copies the installed binary into a fresh private directory, hashing the
+bytes as it copies them, and executes that copy only when its hash matches, so the
+bytes that run are the bytes that were checked. The directory sits under the first of
+``$XDG_RUNTIME_DIR``, the system temp dir, or ``~/.cache/cwcli/sendme`` (only when the
+home is not group- or world-writable) that is private to the running account and lets
+it execute a file. Known limit: where none of them does (for example every one mounted
+``noexec``), cwcli runs the installed binary after hashing it and warns that it could
+be swapped between that check and the run. On a platform with no pinned build, cwcli
+uses the sendme on PATH as it is, unchecked, and never installs one.
+"""
+
+import functools
+import hashlib
 import os
 import platform
+import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import requests
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -62,9 +82,10 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def get_sendme_install_dir() -> Path:
-    """Get the directory where sendme should be installed."""
-    return Path.home() / ".local" / "bin"
+def get_sendme_install_dir(home: Path | None = None) -> Path:
+    """Where cwcli installs sendme and looks for it first: ``~/.local/bin`` of the
+    account cwcli runs as (``home`` names another account's home, read-only use)."""
+    return (home or Path.home()) / ".local" / "bin"
 
 
 def get_sendme_path() -> Path:
@@ -75,35 +96,25 @@ def get_sendme_path() -> Path:
     return install_dir / "sendme"
 
 
-def is_sendme_installed() -> bool:
-    """Check if sendme is installed and accessible."""
-    # Check in our install directory first
-    sendme_path = get_sendme_path()
-    if sendme_path.exists() and os.access(sendme_path, os.X_OK):
-        return True
-
-    # Check if it's in PATH
-    return shutil.which("sendme") is not None
+def find_sendme() -> str | None:
+    """The sendme cwcli would run: the install dir first, then PATH. A lookup only;
+    ``sendme_command`` is what checks it is the pinned release."""
+    path = get_sendme_path()
+    if path.exists() and os.access(path, os.X_OK):
+        return str(path)
+    return shutil.which("sendme")
 
 
-def get_platform_target() -> str:
-    """Determine the platform target for sendme download."""
-    system = platform.system()
+def get_platform_target() -> str | None:
+    """This platform's pinned sendme target, or None when cwcli pins no build for it
+    (never another platform's)."""
+    system = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}.get(platform.system())
     machine = platform.machine().lower()
-
-    if system == "Windows":
-        return "windows-x86_64"
-    elif system == "Darwin":  # macOS
-        if machine in ("arm64", "aarch64"):
-            return "darwin-aarch64"
-        return "darwin-x86_64"
-    elif system == "Linux":
-        if machine in ("arm64", "aarch64"):
-            return "linux-aarch64"
-        return "linux-x86_64"
-    else:
-        # Default to Linux x86_64
-        return "linux-x86_64"
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}
+    if system is None or machine not in arch:
+        return None
+    target = f"{system}-{arch[machine]}"
+    return target if target in _PINNED else None
 
 
 def download_file_with_progress(url: str, destination: Path) -> bool:
@@ -145,130 +156,369 @@ def download_file_with_progress(url: str, destination: Path) -> bool:
         return False
 
 
-def install_sendme(verbose: bool = False) -> bool:
-    """
-    Install sendme binary to ~/.local/bin.
+class SendmeInstallError(Exception):
+    """No sendme matching the pinned release could be installed; ``str(error)`` says why."""
 
-    Args:
-        verbose: Enable verbose output
 
-    Returns:
-        True if installation successful, False otherwise
-    """
-    console.print("[bold cyan]Installing sendme...[/bold cyan]")
+class SendmePrivateCopyError(SendmeInstallError):
+    """The installed sendme is fine, but its private run copy could not be made (no
+    space, no permission); installing sendme again would not help."""
 
-    # Create install directory
-    install_dir = get_sendme_install_dir()
-    install_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get platform target
+PINNED_VERSION = "v0.37.1"
+SENDME_DOWNLOAD_URL = f"https://github.com/n0-computer/sendme/releases/download/{PINNED_VERSION}"
+# target: (release asset, its sha256, the sha256 of the sendme binary inside it)
+_PINNED = {
+    "linux-x86_64": (
+        "sendme-v0.37.1-linux-x86_64.tar.gz",
+        "6250f28ccf082a2f77a5bb2244c821783c8746b6cff4539be32cbcc03ef7d0a0",
+        "5203634d8688495e972c7f8a988ff5a371619ace78d93d7eb9dcb062f269be71",
+    ),
+    "linux-aarch64": (
+        "sendme-v0.37.1-linux-aarch64.tar.gz",
+        "8dcf195435ca1465b801f4f08923faf34a7f98e7700280d870f1a83093173f64",
+        "af1f668857cb37fe35d21dcaeb6a18c3ffe916be4ed124c1dcecabed1f591d3d",
+    ),
+    "darwin-x86_64": (
+        "sendme-v0.37.1-darwin-x86_64.tar.gz",
+        "955c653546cf2b939528fe89ea24c2ea2021777774f58b18f47954a88169e3ee",
+        "66f500ce717a994e5ecda70edc3f9568b3f9afe09a2303ba80a92e012917ad5a",
+    ),
+    "darwin-aarch64": (
+        "sendme-v0.37.1-darwin-aarch64.tar.gz",
+        "3c2502860b87cd2500a3295dbad6fbff3355318122e17f1a1f9638086e4a2bcd",
+        "422eda74d65e70bdf4c772c1a3a2abcfdf19f477a3e88c7ba92d652e745ad2b4",
+    ),
+    "windows-x86_64": (
+        "sendme-v0.37.1-windows-x86_64.zip",
+        "fcf37ac1ebfff164f0a8e0cd0bd592531a028dac364ef6b05bff277b3d11faf5",
+        "f83055bcbc6e6ac35731385e7126cd5653375cc498b571018bfeae38096af50d",
+    ),
+}
+
+
+def pinned_release() -> tuple[str, str, str] | None:
+    """This platform's pinned release: (asset name, archive sha256, binary sha256), or
+    None when cwcli pins no build for this platform."""
     target = get_platform_target()
-    if verbose:
-        stderr_console.print(f"[dim]Platform target: {target}[/dim]")
+    return _PINNED[target] if target is not None else None
 
-    # Fetch latest release info
-    repo = "n0-computer/sendme"
-    release_url = f"https://api.github.com/repos/{repo}/releases/latest"
+
+def _no_pinned_build() -> str:
+    return (
+        f"there is no pinned sendme build for this platform ({platform.system()} "
+        f"{platform.machine()}); install sendme by hand and put it on PATH"
+    )
+
+
+def sha256_file(path: Path | str) -> str:
+    """The file's SHA-256 as lowercase hex; ``OSError`` when it cannot be read."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def is_pinned_sendme(path: Path | str) -> bool:
+    """Whether ``path`` is the pinned sendme binary for this platform."""
+    release = pinned_release()
+    try:
+        return release is not None and sha256_file(path) == release[2]
+    except OSError:
+        return False
+
+
+def manual_install_command() -> str:
+    """The exact command that installs the pinned sendme by hand where cwcli looks for
+    it (``get_sendme_install_dir()`` of the user running cwcli), checking its sha256."""
+    install_dir = get_sendme_install_dir()
+    release = pinned_release()
+    if release is None:
+        return "install sendme from https://github.com/n0-computer/sendme and put it on PATH"
+    asset, archive_sha, _binary_sha = release
+    url = f"{SENDME_DOWNLOAD_URL}/{asset}"
+    if platform.system() == "Windows":
+        return (
+            f"download {url}, check that (Get-FileHash {asset}).Hash is "
+            f"{archive_sha.upper()}, and extract sendme.exe into {install_dir}"
+        )
+    check = "shasum -a 256 -c -" if platform.system() == "Darwin" else "sha256sum -c -"
+    quoted = shlex.quote(str(install_dir))
+    return (
+        f"mkdir -p {quoted} && cd {quoted} && curl -fsSLO {url} && "
+        f"echo '{archive_sha}  {asset}' | {check} && tar -xzf {asset} sendme && rm {asset}"
+    )
+
+
+def _download_quietly(url: str, destination: Path) -> bool:
+    """``download_file_with_progress`` without the progress bar or any output; a
+    failure raises (``requests.RequestException``/``OSError``) so the caller has the reason."""
+    response = requests.get(url, stream=True, timeout=30)
+    response.raise_for_status()
+    with open(destination, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                file.write(chunk)
+    return True
+
+
+def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
+    """Download the pinned sendme release into ``get_sendme_install_dir()`` and return
+    the installed binary's path. The archive's sha256 is checked before it is
+    extracted and the binary's before it is installed. Raises ``SendmeInstallError``
+    naming why it failed.
+
+    ``progress=False`` prints nothing at all, for callers that own stdout (the web UI's
+    jobs, ``--json`` output); it neither shows a progress bar nor edits shell RC files.
+    """
+    install_dir = get_sendme_install_dir()
+    release = pinned_release()
+    if release is None:
+        raise SendmeInstallError(_no_pinned_build())
+    asset, archive_sha, binary_sha = release
+    download_url = f"{SENDME_DOWNLOAD_URL}/{asset}"
+    if verbose and progress:
+        stderr_console.print(f"[dim]Download URL: {download_url}[/dim]")
 
     try:
-        if verbose:
-            stderr_console.print(f"[dim]Fetching release info from {release_url}[/dim]")
-
-        # Authenticate when a token is available (GITHUB_TOKEN in Actions, GH_TOKEN
-        # from the gh CLI convention): unauthenticated api.github.com calls are
-        # capped at 60/hour per source IP, which a shared CI runner pool exhausts
-        # fast (403 rate limit exceeded); an authenticated call gets 5000/hour.
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-
-        response = requests.get(release_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        release_data = response.json()
-
-        # Find the download URL for our platform
-        download_url = None
-        for asset in release_data.get("assets", []):
-            if target in asset.get("browser_download_url", ""):
-                download_url = asset["browser_download_url"]
-                break
-
-        if not download_url:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] No release found for platform: {target}"
-            )
-            return False
-
-        if verbose:
-            stderr_console.print(f"[dim]Download URL: {download_url}[/dim]")
-
-        # Download to temporary directory
+        install_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
+            archive_path = temp_path / asset
 
-            # Determine if it's a zip or tar.gz
-            if download_url.endswith(".zip"):
-                archive_path = temp_path / "sendme.zip"
+            if progress:
+                if not download_file_with_progress(download_url, archive_path):
+                    raise SendmeInstallError(f"Failed to download {download_url}")
+                console.print("[bold green]✓[/bold green] Download complete")
+                console.print("[dim]Extracting...[/dim]")
             else:
-                archive_path = temp_path / "sendme.tar.gz"
+                _download_quietly(download_url, archive_path)
 
-            # Download with progress bar
-            if not download_file_with_progress(download_url, archive_path):
-                return False
+            if sha256_file(archive_path) != archive_sha:
+                raise SendmeInstallError(
+                    f"the downloaded {asset} does not match its pinned sha256; not installing it"
+                )
 
-            console.print("[bold green]✓[/bold green] Download complete")
-
-            # Extract archive
-            console.print("[dim]Extracting...[/dim]")
-            if archive_path.suffix == ".zip":
+            extracted = temp_path / "extracted"
+            if asset.endswith(".zip"):
                 import zipfile
 
                 with zipfile.ZipFile(archive_path, "r") as zip_ref:
-                    zip_ref.extractall(temp_path)
+                    zip_ref.extractall(extracted)
             else:
                 import tarfile
 
                 with tarfile.open(archive_path, "r:gz") as tar_ref:
-                    tar_ref.extractall(temp_path)
+                    tar_ref.extractall(extracted)
 
-            # Find the sendme binary
             binary_name = "sendme.exe" if platform.system() == "Windows" else "sendme"
-            sendme_binary = None
-
-            for file in temp_path.rglob(binary_name):
-                sendme_binary = file
-                break
-
-            if not sendme_binary or not sendme_binary.exists():
-                stderr_console.print(
-                    f"[bold red]Error:[/bold red] Could not find {binary_name} in archive"
+            sendme_binary = next(extracted.rglob(binary_name), None)
+            if sendme_binary is None or not sendme_binary.is_file():
+                raise SendmeInstallError(f"Could not find {binary_name} in {asset}")
+            if sha256_file(sendme_binary) != binary_sha:
+                raise SendmeInstallError(
+                    f"{binary_name} in {asset} does not match its pinned sha256; not installing it"
                 )
-                return False
 
-            # Copy to install directory
             dest_path = install_dir / binary_name
-            shutil.copy2(sendme_binary, dest_path)
+            fd, staged = tempfile.mkstemp(prefix=f".{binary_name}.", dir=install_dir)
+            os.close(fd)
+            try:
+                shutil.copy2(sendme_binary, staged)
+                if platform.system() != "Windows":
+                    os.chmod(staged, 0o755)
+                os.replace(staged, dest_path)
+            except BaseException:
+                Path(staged).unlink(missing_ok=True)
+                raise
 
-            # Make executable on Unix systems
-            if platform.system() != "Windows":
-                os.chmod(dest_path, 0o755)
+            return dest_path
 
-            console.print(f"[bold green]✓[/bold green] Installed to {dest_path}")
-
-            # Setup PATH
-            setup_path(install_dir, verbose)
-
-            return True
-
+    except SendmeInstallError:
+        raise
     except requests.RequestException as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Network error: {e}")
-        return False
+        raise SendmeInstallError(f"Network error: {e}") from e
     except Exception as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Installation failed: {e}")
-        if verbose:
-            import traceback
+        raise SendmeInstallError(f"Installation failed: {e}") from e
 
-            stderr_console.print(traceback.format_exc())
+
+def _copy_if_pinned(source: str, dest: Path, pinned_sha256: str) -> bool:
+    """Copy ``source`` to ``dest`` (0700), hashing the bytes as they are written; keep
+    the copy only when that hash is the pinned one. An unreadable source is a miss; a
+    copy that cannot be written (no space, no permission) raises ``SendmeInstallError``
+    naming the private directory, since the installed binary is not at fault."""
+    digest = hashlib.sha256()
+    reading = True
+    try:
+        with open(source, "rb") as src:
+            reading = False
+            fd = os.open(
+                dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o700
+            )
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    reading = True
+                    block = src.read(1 << 20)
+                    reading = False
+                    if not block:
+                        break
+                    digest.update(block)
+                    out.write(block)
+            os.chmod(dest, 0o700)
+    except OSError as e:
+        dest.unlink(missing_ok=True)
+        if reading:
+            return False
+        raise SendmePrivateCopyError(
+            f"could not write the private sendme copy in {dest.parent}: {e.strerror or e}"
+        ) from e
+    if digest.hexdigest() != pinned_sha256:
+        dest.unlink()
         return False
+    return True
+
+
+WEAK_CHECK_WARNING = (
+    "no private directory on this host lets cwcli execute a file, so it runs the installed "
+    "sendme after checking its sha256; the binary could be swapped between that check and "
+    "the run (set TMPDIR to a private directory that allows execution to close that gap)"
+)
+
+
+def _is_mine(path: Path) -> bool:
+    getuid = getattr(os, "getuid", None)
+    try:
+        return getuid is not None and path.stat().st_uid == getuid()
+    except OSError:
+        return False
+
+
+def _home_cache_dir() -> Path | None:
+    """``~/.cache/cwcli/sendme`` (each level created 0700), only when the home is not
+    group- or world-writable; else None."""
+    home = Path.home()
+    try:
+        if stat.S_IMODE(home.stat().st_mode) & 0o022:
+            return None
+        path = home
+        for part in (".cache", "cwcli", "sendme"):
+            path = path / part
+            path.mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        return None
+    return path
+
+
+def _exec_candidates() -> Iterator[Path]:
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and _is_mine(Path(runtime)):
+        yield Path(runtime)
+    yield Path(tempfile.gettempdir())
+    cache = _home_cache_dir()
+    if cache is not None:
+        yield cache
+
+
+def _can_exec_in(root: Path) -> bool:
+    """Whether a file written into a fresh 0700 directory under ``root`` can be run."""
+    try:
+        probe_dir = Path(tempfile.mkdtemp(prefix="cwcli-exec-probe-", dir=root))
+    except OSError:
+        return False
+    try:
+        if os.name == "nt":
+            return True
+        probe = probe_dir / "probe"
+        probe.write_text("#!/bin/sh\nexit 0\n")
+        probe.chmod(0o700)
+        return subprocess.run([str(probe)], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+@functools.cache
+def private_exec_root() -> Path | None:
+    """Where each run's private sendme copy goes, chosen once per process: the first
+    candidate that is private to the running account and lets it execute a file, or
+    None when none does."""
+    return next((root for root in _exec_candidates() if _can_exec_in(root)), None)
+
+
+@contextmanager
+def sendme_command(
+    *,
+    progress: bool = True,
+    verbose: bool = False,
+    on_install: Callable[[str], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
+) -> Iterator[str]:
+    """The sendme to run, for the length of the ``with`` block.
+
+    With a pinned build for this platform it is a private copy of the installed
+    binary, in a fresh 0700 directory under ``private_exec_root()`` removed when the
+    block ends (on error and on interrupt too), whose bytes were hashed as they were
+    copied and match the pin. When no private directory allows execution it is the
+    installed binary itself, hashed just before, and ``on_warning`` hears
+    ``WEAK_CHECK_WARNING``. A missing or mismatched install is replaced by the pinned
+    release once (``on_install`` hears why first) and checked again. Without a pinned
+    build it is the sendme found on PATH, unchecked. Raises ``SendmeInstallError``
+    naming the problem when there is no sendme it may run."""
+    release = pinned_release()
+    if release is None:
+        found = find_sendme()
+        if found is None:
+            raise SendmeInstallError(_no_pinned_build())
+        yield found
+        return
+    root = private_exec_root()
+    try:
+        private = (
+            Path(tempfile.mkdtemp(prefix="cwcli-sendme-", dir=root)) if root is not None else None
+        )
+    except OSError as e:
+        raise SendmePrivateCopyError(
+            f"could not create a private directory for sendme in {root}: {e.strerror or e}"
+        ) from e
+    try:
+        copy = private / get_sendme_path().name if private else None
+
+        def runnable(path: str | None) -> str | None:
+            if path is None:
+                return None
+            if copy is None:
+                return path if is_pinned_sendme(path) else None
+            return str(copy) if _copy_if_pinned(path, copy, release[2]) else None
+
+        found = find_sendme()
+        run = runnable(found)
+        if run is None:
+            problem = (
+                "sendme is not installed"
+                if found is None
+                else f"{found} is not the pinned sendme {PINNED_VERSION} (its sha256 differs)"
+            )
+            if on_install is not None:
+                on_install(problem)
+            try:
+                fetch_sendme(progress=progress, verbose=verbose)
+            except SendmeInstallError as e:
+                raise SendmeInstallError(f"{problem}, and installing it failed: {e}") from e
+            found = find_sendme()
+            run = runnable(found)
+            if run is None:
+                raise SendmeInstallError(
+                    f"{problem}, and after installing the pinned release "
+                    f"{found or get_sendme_path()} still does not match its sha256"
+                )
+        if copy is None and on_warning is not None:
+            on_warning(WEAK_CHECK_WARNING)
+        yield run
+    finally:
+        if private is not None:
+            shutil.rmtree(private, ignore_errors=True)
 
 
 def setup_path(install_dir: Path, verbose: bool = False):
@@ -374,7 +624,9 @@ if ($path -notlike '*{install_dir_str}*') {{
 
 def ensure_sendme_installed(verbose: bool = False) -> bool:
     """
-    Ensure sendme is installed, installing if necessary.
+    Ensure a sendme cwcli may run is available: the pinned release (installing it, or
+    replacing a copy that does not match its sha256, if necessary), or, on a platform
+    with no pinned build, a sendme on PATH.
 
     Args:
         verbose: Enable verbose output
@@ -382,54 +634,40 @@ def ensure_sendme_installed(verbose: bool = False) -> bool:
     Returns:
         True if sendme is available, False otherwise
     """
-    if is_sendme_installed():
-        if verbose:
-            stderr_console.print("[dim]sendme is already installed[/dim]")
-        return True
+    installing: list[str] = []
 
-    console.print()
-    console.print("[yellow]sendme is not installed.[/yellow]")
-    console.print("[dim]sendme is required for remote backup transfers.[/dim]")
-    console.print()
+    def announce(problem: str) -> None:
+        installing.append(problem)
+        console.print()
+        console.print(f"[yellow]{problem}.[/yellow]")
+        console.print("[dim]sendme is required for remote backup transfers.[/dim]")
+        console.print()
+        console.print(f"[bold cyan]Installing sendme {PINNED_VERSION}...[/bold cyan]")
 
-    # Auto-install
-    console.print("[bold cyan]Installing sendme automatically...[/bold cyan]")
-    success = install_sendme(verbose)
-
-    if success:
+    try:
+        with sendme_command(verbose=verbose, on_install=announce):
+            pass
+    except SendmeInstallError as e:
         console.print()
-        console.print("[bold green]✓[/bold green] sendme installed successfully!")
-        console.print(
-            "[dim]You may need to restart your terminal for PATH changes to take effect.[/dim]"
-        )
-        console.print()
-        return True
-    else:
-        console.print()
-        stderr_console.print("[bold red]✗[/bold red] Failed to install sendme")
-        stderr_console.print()
-        stderr_console.print("[bold]Manual installation:[/bold]")
-        stderr_console.print("  Visit: https://github.com/n0-computer/sendme")
-        stderr_console.print("  Or run: curl -fsSL https://iroh.computer/sendme.sh | sh")
+        stderr_console.print(f"[bold red]✗[/bold red] {escape(str(e))}", highlight=False)
+        if not isinstance(e, SendmePrivateCopyError):
+            stderr_console.print()
+            stderr_console.print("[bold]Install it by hand:[/bold]")
+            stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
         console.print()
         return False
 
-
-def get_sendme_command() -> str:
-    """
-    Get the sendme command to use.
-
-    Returns:
-        Full path to sendme binary or 'sendme' if in PATH
-    """
-    # Check our install directory first
-    sendme_path = get_sendme_path()
-    if sendme_path.exists() and os.access(sendme_path, os.X_OK):
-        return str(sendme_path)
-
-    # Check PATH
-    sendme_in_path = shutil.which("sendme")
-    if sendme_in_path:
-        return sendme_in_path
-
-    return "sendme"  # Fallback, will likely fail
+    if not installing:
+        if verbose:
+            stderr_console.print("[dim]sendme is already installed[/dim]")
+        return True
+    path = get_sendme_path()
+    console.print(f"[bold green]✓[/bold green] Installed to {path}")
+    setup_path(path.parent, verbose)
+    console.print()
+    console.print("[bold green]✓[/bold green] sendme installed successfully!")
+    console.print(
+        "[dim]You may need to restart your terminal for PATH changes to take effect.[/dim]"
+    )
+    console.print()
+    return True

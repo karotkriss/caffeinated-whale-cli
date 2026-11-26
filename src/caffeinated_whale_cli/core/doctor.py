@@ -535,26 +535,120 @@ def _check_temp_free_space() -> tuple:
 # --------------------------------------------------------------------------- transfer
 
 
+def _pin_matches(path: Path | str, pinned_sha256: str) -> bool | None:
+    from ..utils.sendme_utils import sha256_file
+
+    try:
+        return sha256_file(path) == pinned_sha256
+    except OSError:
+        return None
+
+
+def _service_sendme(
+    install_dir: Callable[[Path], Path], pinned_sha256: str
+) -> tuple[Path | None, bool | None] | None:
+    """The sendme the web UI of a shared install would run, as the service account
+    looks for it: its own ``~/.local/bin/sendme`` (its home from the passwd entry),
+    else a ``sendme`` on PATH outside this user's home; with whether it is the pinned
+    release (None when it cannot be read). ``(None, None)`` when it has none. Reads
+    only. None outside shared mode, or when this user is the service account."""
+    if not shared_home.shared_mode():
+        return None
+    home = shared_home.service_home()
+    if home is None or home.resolve() == Path.home().resolve():
+        return None
+    own = install_dir(home) / "sendme"
+    try:
+        mode = own.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        mode = 0
+    except OSError:
+        return own, None
+    if stat.S_ISREG(mode) and mode & 0o111:
+        return own, _pin_matches(own, pinned_sha256)
+    system = shutil.which("sendme")
+    if system and not Path(system).resolve().is_relative_to(Path.home().resolve()):
+        return Path(system), _pin_matches(system, pinned_sha256)
+    return None, None
+
+
 def _check_sendme() -> tuple:
-    """C8 - sendme installed + resolved path (+ best-effort version).
+    """C8 - the sendme cwcli would run, and whether it is the pinned release (its
+    sha256), plus, under a shared install, the one the web UI (the service account)
+    would run.
 
     Lazy-imported: ``utils/sendme_utils.py`` pulls ``rich`` at load time, and the
     core must never do that transitively (``test_core_envelope.py`` walks the
-    whole load-time import graph). WARN, never FAIL, when absent - it is optional
-    and auto-installs on first ``restore --send/--receive``.
+    whole load-time import graph). WARN, never FAIL - sendme is optional, and the
+    pinned release installs itself on the first send or receive (CLI or web UI),
+    replacing a copy that does not match. Never runs the binary: a copy that does
+    not match is exactly the one that must not be executed. On a platform with no
+    pinned build there is nothing to check against, so the sendme on PATH is reported
+    as used unchecked (WARN), never as verified.
     """
-    from ..utils.sendme_utils import get_sendme_command, is_sendme_installed
+    from ..utils.sendme_utils import (
+        PINNED_VERSION,
+        find_sendme,
+        get_sendme_install_dir,
+        manual_install_command,
+        pinned_release,
+    )
 
-    if not is_sendme_installed():
+    release = pinned_release()
+    if release is None:
+        resolved = find_sendme()
+        if resolved is None:
+            return _outcome(
+                CheckStatus.WARN,
+                "not installed, and there is no pinned build for this platform",
+                manual_install_command(),
+            )
         return _outcome(
             CheckStatus.WARN,
-            "not installed (optional; needed only for `restore --send/--receive`)",
-            "auto-installs on first `cwcli restore --send/--receive`",
+            f"no pinned build for this platform; using sendme from PATH ({resolved}) unchecked",
         )
-    resolved = get_sendme_command()
-    version = _probe_version([resolved, "--version"])
-    detail = f"{resolved} ({version})" if version else resolved
-    return _outcome(CheckStatus.PASS, detail)
+    pinned = release[2]
+    install_now = (
+        f"the pinned sendme {PINNED_VERSION} installs itself on the first send or receive; "
+        "to install it now: " + manual_install_command()
+    )
+    status = CheckStatus.PASS
+    resolved = find_sendme()
+    if resolved is None:
+        status = CheckStatus.WARN
+        parts = [
+            "not installed (optional; needed only to send or receive backups between machines)"
+        ]
+    elif _pin_matches(resolved, pinned):
+        parts = [
+            f"{resolved} (sendme {PINNED_VERSION}, sha256 verified; each send or receive "
+            "runs a private copy whose bytes are checked against the same sha256, where a "
+            "private directory lets it execute one)"
+        ]
+    else:
+        status = CheckStatus.WARN
+        parts = [
+            f"{resolved} is not the pinned sendme {PINNED_VERSION} (its sha256 differs or it "
+            "cannot be read); it is replaced before the next send or receive"
+        ]
+    web_ui = _service_sendme(get_sendme_install_dir, pinned)
+    if web_ui is not None:
+        theirs, matches = web_ui
+        who = "the web UI (the shared install's service account)"
+        if theirs is None:
+            status = CheckStatus.WARN
+            parts.append(f"{who} has no sendme and installs the pinned release on first use")
+        elif matches is False:
+            status = CheckStatus.WARN
+            parts.append(
+                f"{who} would run {theirs}, which is not the pinned release; it is replaced "
+                "before the web UI's next send or receive"
+            )
+        elif matches is None:
+            parts.append(f"{who} would run {theirs}, which could not be read to check it")
+        else:
+            parts.append(f"{who} runs {theirs} (sha256 verified)")
+    return _outcome(status, "; ".join(parts), install_now if status is CheckStatus.WARN else None)
 
 
 # --------------------------------------------------------------------------- git hosting

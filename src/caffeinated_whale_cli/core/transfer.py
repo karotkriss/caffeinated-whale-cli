@@ -13,11 +13,15 @@ Across machines the store set travels as a sendme ticket: ``send_sets`` serves o
 set or a bundle of sets (hard-linked into an outbox, so no copy) until the job is
 interrupted; ``receive_sets`` downloads a ticket and adopts every ``set.json`` it
 finds into this machine's store, where the restore wizard takes over. sendme is
-driven under a pty because ``sendme send`` refuses to run without a terminal.
+installed on first use and driven under a pty, because ``sendme send`` refuses to run
+without a terminal and both directions draw their progress bar only on one; that bar
+becomes throttled ``TransferBytes`` events for the web UI's job page. Where the OS has
+no pty (Windows), ``sendme receive`` runs piped and the job shows its steps only.
 """
 
 from __future__ import annotations
 
+import codecs
 import errno
 import os
 import re
@@ -25,7 +29,8 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +69,153 @@ class Ticket:
 class Received:
     message: str
     sets: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class TransferBytes:
+    """Bytes moved over sendme so far, for the web UI's progress bar. ``rate`` is
+    bytes a second and ``eta`` seconds left, both None until there is a second sample."""
+
+    message: str
+    phase: str  # send | receive
+    done: int
+    total: int
+    rate: float | None = None
+    eta: float | None = None
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+_UNIT = r"([KMGTPE]i?B|kB|B)"
+# indicatif's ``{bytes}/{total_bytes}``: "12.50 MiB/100.00 MiB" (never the "/s" speed)
+_PAIR = re.compile(rf"(\d+(?:\.\d+)?)\s*{_UNIT}\s*/\s*(\d+(?:\.\d+)?)\s*{_UNIT}(?![/\w])")
+# sendme send names each request "n <endpoint> r <connection>/<request> i <child>"
+_REQUEST = re.compile(r"\br (\d+)/(\d+) i (\d+)\b")
+# sendme receive labels its steps "[3/4] Downloading ...", "[4/4] Exporting ..."
+_STAGE = re.compile(r"\[\d+/\d+\]\W*(\w+)")
+_IMPORTED = re.compile(r"imported (?:file|directory) .*, (\d+(?:\.\d+)?)\s*" + _UNIT + r", hash")
+_SCALE = {"B": 1, "kB": 1000}
+for _i, _p in enumerate("KMGTPE", start=1):
+    _SCALE[f"{_p}iB"] = 1024**_i
+    _SCALE[f"{_p}B"] = 1000**_i
+
+
+def _bytes(number: str, unit: str) -> int:
+    return int(float(number) * _SCALE[unit])
+
+
+def _human(n: float) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024 or unit == "TiB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TiB"  # pragma: no cover - the loop always returns
+
+
+class SendmeProgress:
+    """Reads sendme's terminal output (indicatif bars redrawn with carriage returns
+    and cursor moves) and turns it into throttled ``TransferBytes``.
+
+    ``receive`` reads only the download bar: the per-file export bars that follow it
+    are ignored, and leaving the download step completes the reading at the whole
+    download's size. ``send`` sums the requests of the latest
+    connection (one bar per blob, each "done/size") against the size sendme printed
+    when it imported the outbox. ``feed`` returns an event at most once per
+    ``interval`` seconds, and only when the whole percent moved or ``refresh``
+    seconds passed, so a long transfer writes a bounded event log; completion is
+    always reported, and ``finish`` reports the last reading if it was held back.
+    """
+
+    def __init__(
+        self,
+        phase: str,
+        *,
+        interval: float = 1.0,
+        refresh: float = 10.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.phase = phase
+        self.interval = interval
+        self.refresh = refresh
+        self.clock = clock
+        self._carry = ""
+        self._imported: int | None = None
+        self._requests: dict[tuple[int, int, int], tuple[int, int]] = {}
+        self._reading: tuple[int, int] | None = None
+        self._downloading: bool | None = None  # None before the download step, False after
+        self._sent: tuple[float, int, int] | None = None  # time, done, percent
+        self._rate: float | None = None
+
+    def feed(self, text: str) -> TransferBytes | None:
+        segments = re.split(r"[\r\n]", self._carry + _ANSI.sub("", text))
+        self._carry = segments.pop()[-4096:]
+        for segment in segments:
+            self._parse(segment)
+        return self._maybe_emit(final=False)
+
+    def finish(self) -> TransferBytes | None:
+        if self._carry:
+            self._parse(self._carry)
+            self._carry = ""
+        return self._maybe_emit(final=True)
+
+    def _parse(self, line: str) -> None:
+        imported = _IMPORTED.search(line)
+        if imported:
+            self._imported = _bytes(imported.group(1), imported.group(2))
+        if self.phase != "send":
+            stage = _STAGE.search(line)
+            if stage is not None:
+                downloading = stage.group(1).lower().startswith("download")
+                if downloading and self._downloading is None:
+                    self._downloading = True
+                elif not downloading and self._downloading:
+                    self._downloading = False
+                    if self._reading is not None:
+                        self._reading = (self._reading[1], self._reading[1])
+            if not self._downloading:
+                return
+        pairs = list(_PAIR.finditer(line))
+        if not pairs:
+            return
+        pair = pairs[-1]
+        done, size = _bytes(pair.group(1), pair.group(2)), _bytes(pair.group(3), pair.group(4))
+        if self.phase != "send":
+            self._reading = (min(done, size), size)
+            return
+        request = _REQUEST.search(line)
+        if request is None:
+            return
+        key = (int(request.group(1)), int(request.group(2)), int(request.group(3)))
+        self._requests[key] = (min(done, size), size)
+        latest = max(k[0] for k in self._requests)
+        mine = [v for k, v in self._requests.items() if k[0] == latest]
+        total = self._imported or sum(v[1] for v in mine)
+        self._reading = (min(sum(v[0] for v in mine), total), total)
+
+    def _maybe_emit(self, *, final: bool) -> TransferBytes | None:
+        if self._reading is None or self._reading[1] <= 0:
+            return None
+        done, total = self._reading
+        now = self.clock()
+        percent = done * 100 // total
+        if self._sent is not None:
+            last_at, last_done, last_percent = self._sent
+            if done == last_done:
+                return None
+            complete = done >= total
+            due = now - last_at >= self.interval and (
+                percent != last_percent or now - last_at >= self.refresh
+            )
+            if not (complete or due or final):
+                return None
+            if now > last_at and done > last_done:
+                sample = (done - last_done) / (now - last_at)
+                self._rate = sample if self._rate is None else 0.5 * self._rate + 0.5 * sample
+        self._sent = (now, done, percent)
+        eta = (total - done) / self._rate if self._rate else None
+        verb = "Sent" if self.phase == "send" else "Received"
+        message = f"{verb} {_human(done)} of {_human(total)} ({percent}%)"
+        return TransferBytes(message, self.phase, done, total, self._rate, eta)
 
 
 def _noop(_e: Any) -> None:
@@ -296,16 +448,54 @@ def _site_exists(project: str, bench: str | None, site: str) -> bool:
 # ------------------------------------------------------------------ across machines
 
 
-def _sendme() -> str:
-    from ..utils.sendme_utils import get_sendme_command, is_sendme_installed
+@contextmanager
+def _sendme(emit: OnEvent) -> Iterator[str]:
+    """The sendme to run for the length of the ``with`` block: with a pinned build for
+    this platform, a private copy of the installed binary whose bytes were checked
+    against the pinned sha256 as they were copied (a missing or mismatched install is
+    first replaced by the pinned release, into ``~/.local/bin`` of the account cwcli
+    runs as, which for the web UI of a shared install is the service account);
+    without one, the sendme on PATH. The install prints nothing, so a web UI job or
+    ``--json`` output stays clean; when there is no sendme it may run, the error names
+    the manual command."""
+    from ..utils import sendme_utils  # lazy: sendme_utils pulls rich at load time
 
-    if not is_sendme_installed():
+    installing: list[str] = []
+
+    def announce(problem: str) -> None:
+        installing.append(f"Installing sendme {sendme_utils.PINNED_VERSION} ({problem})")
+        emit(StoreStep("install", installing[-1]))
+
+    try:
+        with sendme_utils.sendme_command(
+            progress=False,
+            on_install=announce,
+            on_warning=lambda text: emit(StoreNotice(text, "warning")),
+        ) as path:
+            if installing:
+                emit(
+                    StoreStep(
+                        "install", f"Installed sendme to {sendme_utils.get_sendme_path()}", "ok"
+                    )
+                )
+            yield path
+    except sendme_utils.SendmeInstallError as e:
+        if installing:
+            emit(StoreStep("install", installing[-1], "failed"))
+        if isinstance(e, sendme_utils.SendmePrivateCopyError):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "transfer.sendme_private_copy",
+                f"{e}.",
+                detail={"reason": str(e)},
+            ) from e
+        command = sendme_utils.manual_install_command()
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "transfer.sendme_missing",
-            "sendme is not installed; `cwcli doctor` names how to get it.",
-        )
-    return get_sendme_command()
+            f"{e}. Install it by hand: {command}",
+            detail={"install_command": command, "reason": str(e)},
+        ) from e
 
 
 def _outbox(keys: list[str]) -> Path:
@@ -333,6 +523,50 @@ def _outbox(keys: list[str]) -> Path:
     return box
 
 
+def _spawn_on_pty(argv: list[str], cwd: Path) -> tuple[subprocess.Popen, int]:
+    """Start ``argv`` on a pty and return it with the master fd. sendme needs a
+    terminal: ``send`` refuses to run without one, and both directions draw their
+    progress bars only on one. The pty is wide so a bar's byte counts are never cut."""
+    master, slave = os.openpty()
+    try:
+        import fcntl
+        import struct
+        import termios
+
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 400, 0, 0))
+    except (ImportError, OSError):
+        pass
+    try:
+        proc = subprocess.Popen(
+            argv, cwd=str(cwd), stdin=slave, stdout=slave, stderr=slave, close_fds=True
+        )
+    except OSError as e:
+        os.close(master)
+        raise _exec_failed(argv[0], e) from e
+    finally:
+        os.close(slave)
+    return proc, master
+
+
+def _exec_failed(path: str, error: OSError) -> CwcliError:
+    return CwcliError(
+        ErrorKind.PRECONDITION,
+        "transfer.sendme_exec",
+        f"Could not run sendme ({path}): {error.strerror or error}.",
+        detail={"path": path, "errno": error.errno},
+    )
+
+
+def _read_pty(master: int) -> bytes:
+    """One read from the pty; b"" once the child closed it (EIO on Linux)."""
+    try:
+        return os.read(master, 4096)
+    except OSError as e:
+        if e.errno == errno.EIO:
+            return b""
+        raise
+
+
 def send_sets(
     keys: list[str],
     *,
@@ -342,31 +576,27 @@ def send_sets(
     """Serve ``keys`` over sendme until interrupted (the ticket rides a ``ticket`` event
     as soon as sendme prints it). Returns when sendme exits or ``stop()`` says so."""
     emit = on_event or _noop
-    cmd = _sendme()
+    with _sendme(emit) as cmd:
+        return _serve(cmd, keys, emit, stop)
+
+
+def _serve(
+    cmd: str, keys: list[str], emit: OnEvent, stop: Callable[[], bool] | None
+) -> Result[dict[str, Any]]:
     box = _outbox(keys)
     emit(StoreStep("send", f"Serving {len(keys)} set{'s' if len(keys) != 1 else ''} over sendme"))
-    master, slave = os.openpty()
     try:
-        proc = subprocess.Popen(
-            [cmd, "send", str(box)],
-            cwd=str(box.parent),
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            close_fds=True,
-        )
-    finally:
-        os.close(slave)
+        proc, master = _spawn_on_pty([cmd, "send", str(box)], box.parent)
+    except CwcliError:
+        shutil.rmtree(box, ignore_errors=True)
+        raise
+    meter = SendmeProgress("send")
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     ticket = None
     buf = b""
     try:
         while True:
-            try:
-                chunk = os.read(master, 4096)
-            except OSError as e:
-                if e.errno == errno.EIO:
-                    break
-                raise
+            chunk = _read_pty(master)
             if not chunk:
                 break
             buf = (buf + chunk)[-65536:]
@@ -381,9 +611,15 @@ def send_sets(
                             list(keys),
                         )
                     )
+            progress = meter.feed(decoder.decode(chunk))
+            if progress is not None:
+                emit(progress)
             if stop is not None and stop():
                 break
     finally:
+        last = meter.finish()
+        if last is not None:
+            emit(last)
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -409,6 +645,43 @@ def send_sets(
     return Result(status=Status.OK, data={"ticket": ticket, "sets": list(keys), "served": True})
 
 
+def _run_receive(argv: list[str], cwd: Path, emit: OnEvent) -> tuple[int, str]:
+    """Run ``sendme receive`` to the end and return its exit code and output. On a pty
+    its download bar becomes progress (the redraws stripped from the output); where
+    the OS has no pty it runs piped, with no bar to read."""
+    if not hasattr(os, "openpty"):
+        try:
+            piped = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
+        except OSError as e:
+            raise _exec_failed(argv[0], e) from e
+        return piped.returncode, piped.stderr or piped.stdout or ""
+    proc, master = _spawn_on_pty(argv, cwd)
+    meter = SendmeProgress("receive")
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    tail = ""
+    try:
+        while True:
+            chunk = _read_pty(master)
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            tail = (tail + text)[-65536:]
+            progress = meter.feed(text)
+            if progress is not None:
+                emit(progress)
+        returncode = proc.wait()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        os.close(master)
+    last = meter.finish()
+    if last is not None:
+        emit(last)
+    lines = re.split(r"[\r\n]+", _ANSI.sub("", tail))
+    return returncode, "\n".join(line.strip() for line in lines if line.strip())
+
+
 def receive_sets(
     ticket: str,
     *,
@@ -423,22 +696,26 @@ def receive_sets(
     ticket = "".join(ticket.split())
     if not ticket.startswith("blob") or len(ticket) < 40:
         raise CwcliError(ErrorKind.USAGE, "transfer.ticket", "That is not a sendme ticket.")
-    cmd = _sendme()
+    with _sendme(emit) as cmd:
+        return _receive(cmd, ticket, project, site, emit)
+
+
+def _receive(
+    cmd: str, ticket: str, project: str | None, site: str | None, emit: OnEvent
+) -> Result[dict[str, Any]]:
     inbox = backup_store.store_root() / ".inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     shared_home.secure_dir_shared_only(inbox)
     tmp = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d_%H%M%S-"), dir=inbox))
     emit(StoreStep("receive", "Downloading over sendme"))
     try:
-        proc = subprocess.run(
-            [cmd, "receive", ticket], cwd=str(tmp), capture_output=True, text=True, timeout=None
-        )
-        if proc.returncode != 0:
+        returncode, output = _run_receive([cmd, "receive", ticket], tmp, emit)
+        if returncode != 0:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "transfer.receive_failed",
                 "sendme could not download the ticket.",
-                detail={"output": (proc.stderr or proc.stdout or "")[-800:]},
+                detail={"output": output[-800:]},
             )
         adopted = file_downloaded(tmp, project=project, site=site, reason="received")
         emit(

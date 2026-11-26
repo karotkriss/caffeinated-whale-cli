@@ -17,6 +17,7 @@ send direction) rather than only failing once the copy-out write or
 ``sendme send`` itself hit ENOSPC.
 """
 
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -156,7 +157,7 @@ class TestDownloadRoot:
             "copy_backup_files_out",
             lambda container, files, destination: None,
         )
-        monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
+        monkeypatch.setattr(restore_mod, "sendme_command", lambda **_k: contextlib.nullcontext("sendme"))
         monkeypatch.setattr(restore_mod, "copy_to_clipboard", lambda ticket: True)
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
@@ -387,7 +388,7 @@ class TestSendPreflightFreeSpace:
             copy_backup_files_out=lambda *a, **k: copy_calls.append(a),
             popen=lambda *a, **k: FakeProcess(),
         )
-        monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
+        monkeypatch.setattr(restore_mod, "sendme_command", lambda **_k: contextlib.nullcontext("sendme"))
         monkeypatch.setattr(restore_mod, "copy_to_clipboard", lambda ticket: True)
 
         restore_mod._run_send("project", site=SITE, bench_path="/bench", verbose=False)

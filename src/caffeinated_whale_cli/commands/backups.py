@@ -275,6 +275,8 @@ def _narrate_transfer(event) -> None:
         stderr_console.print(f"[cyan]{event.message}[/cyan]")
     elif kind == "Received":
         console.print("[bold green]✓[/bold green] " + ", ".join(event.sets))
+    elif kind == "TransferBytes":
+        pass  # the web UI's progress bar; a line per reading would flood a terminal
     else:
         _narrate(event)
 

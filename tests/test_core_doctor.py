@@ -9,6 +9,7 @@ ruled exit contract (warn exits clean, fail exits non-zero).
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 
 import pytest
@@ -738,50 +739,47 @@ class TestFreeSpace:
 
 
 class TestSendme:
-    def test_warn_when_not_installed(self, monkeypatch):
+    """Doctor reads the sendme it would run and checks it against the pinned release's
+    sha256 (here a stand-in pin, computed with ``hashlib``); it never runs the binary."""
+
+    @pytest.fixture(autouse=True)
+    def _pin(self, monkeypatch, tmp_path):
+        from caffeinated_whale_cli.utils import sendme_utils
+
+        self.sendme_utils = sendme_utils
+        self.fake = tmp_path / "path-bin" / "sendme"
+        self.fake.parent.mkdir()
+        self.fake.write_bytes(b"#!/bin/sh\n")
+        self.fake.chmod(0o755)
+        pinned = hashlib.sha256(b"#!/bin/sh\n").hexdigest()
+        monkeypatch.setattr(sendme_utils, "pinned_release", lambda: ("a.tar.gz", "x", pinned))
+        monkeypatch.setattr(sendme_utils, "manual_install_command", lambda: "install-it")
+        monkeypatch.setattr(core_doctor.shared_home, "shared_mode", lambda: False)
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.is_sendme_installed", lambda: False
+            core_doctor, "_probe_version", lambda _c: pytest.fail("doctor ran sendme")
         )
+
+    def test_warn_when_not_installed(self, monkeypatch):
+        monkeypatch.setattr(self.sendme_utils, "find_sendme", lambda: None)
         status, detail, fix = core_doctor._check_sendme()
         assert status is CheckStatus.WARN
         assert "not installed" in detail
         assert "optional" in detail
-        assert fix
+        assert fix and "install-it" in fix
 
-    def test_pass_when_installed(self, monkeypatch, tmp_path):
-        fake = tmp_path / "sendme"
-        fake.write_text("#!/bin/sh\n")
-        fake.chmod(0o755)
-        monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.is_sendme_installed", lambda: True
-        )
-        monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.get_sendme_command", lambda: str(fake)
-        )
-        monkeypatch.setattr(core_doctor, "_probe_version", lambda _cmd: "sendme 0.30.0")
+    def test_pass_when_the_resolved_sendme_is_the_pinned_release(self, monkeypatch):
+        monkeypatch.setattr(self.sendme_utils, "find_sendme", lambda: str(self.fake))
         status, detail, _fix = core_doctor._check_sendme()
         assert status is CheckStatus.PASS
-        assert "0.30.0" in detail
+        assert str(self.fake) in detail and "sha256 verified" in detail
 
-    def test_uses_executable_path_resolved_by_sendme_helper(self, monkeypatch, tmp_path):
-        resolved = tmp_path / "path-bin" / "sendme"
-        monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.is_sendme_installed", lambda: True
-        )
-        monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.get_sendme_command",
-            lambda: str(resolved),
-        )
-        commands = []
-        monkeypatch.setattr(
-            core_doctor,
-            "_probe_version",
-            lambda command: commands.append(command) or "sendme 0.30.0",
-        )
-        status, detail, _fix = core_doctor._check_sendme()
-        assert status is CheckStatus.PASS
-        assert str(resolved) in detail
-        assert commands == [[str(resolved), "--version"]]
+    def test_warn_when_the_resolved_sendme_differs(self, monkeypatch):
+        self.fake.write_bytes(b"something else\n")
+        monkeypatch.setattr(self.sendme_utils, "find_sendme", lambda: str(self.fake))
+        status, detail, fix = core_doctor._check_sendme()
+        assert status is CheckStatus.WARN
+        assert str(self.fake) in detail and "not the pinned sendme" in detail
+        assert fix and "install-it" in fix
 
 
 class TestGitHostingCli:
@@ -812,7 +810,9 @@ class TestGitHostingCli:
         assert fix
 
     def test_pass_when_the_allowed_hosts_are_signed_in(self, monkeypatch):
-        self._signed_in(monkeypatch, "/usr/bin/gh", {"github.com"}, {"github.com", "gitlab.example.com"})
+        self._signed_in(
+            monkeypatch, "/usr/bin/gh", {"github.com"}, {"github.com", "gitlab.example.com"}
+        )
         status, detail, fix = core_doctor._check_gh()
         assert status is CheckStatus.PASS
         assert "github.com: signed in" in detail
@@ -821,7 +821,10 @@ class TestGitHostingCli:
     def test_an_unused_signed_out_host_does_not_warn(self, monkeypatch):
         """The reported bug: glab is signed in to the host in use, not to gitlab.com."""
         calls = self._signed_in(
-            monkeypatch, "/usr/bin/glab", {"gitlab.example.com"}, {"github.com", "gitlab.example.com"}
+            monkeypatch,
+            "/usr/bin/glab",
+            {"gitlab.example.com"},
+            {"github.com", "gitlab.example.com"},
         )
         status, detail, fix = core_doctor._check_glab()
         assert status is CheckStatus.PASS

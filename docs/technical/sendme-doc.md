@@ -816,8 +816,8 @@ This shipped as `cwcli restore --send` / `cwcli restore --receive`, not as separ
 **Module:** `src/caffeinated_whale_cli/utils/sendme_utils.py`
 
 **Capabilities:**
-- Automatic sendme binary download and installation
-- Platform detection (macOS ARM64/x86_64, Linux x86_64, Windows x86_64)
+- Automatic install of a pinned, SHA-256-verified sendme release on the first send or receive, from the command line or the web UI (the README's P2P section owns the details)
+- Platform detection (macOS ARM64/x86_64, Linux ARM64/x86_64, Windows x86_64)
 - PATH setup for Unix and Windows
 - Clipboard integration
 
