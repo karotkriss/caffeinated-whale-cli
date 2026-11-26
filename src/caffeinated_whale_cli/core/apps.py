@@ -1166,6 +1166,11 @@ def _refuse_dirty_tree(frappe_container, app_dir: str, app: str) -> None:
     )
 
 
+def tree_moved(results: list[AppResult]) -> bool:
+    """Did a checkout change the app's working tree (a good ``reset`` or ``checkout``)?"""
+    return any(r.action in ("reset", "checkout") and r.ok for r in results)
+
+
 def checkout_app(
     project_name: str,
     app: str,
@@ -1271,15 +1276,16 @@ def checkout_app(
     # only into `.git`, so a run that stopped there changed no code any process could
     # be serving, while a good `--reset` followed by a failed checkout did.
     app_imports: list[resolvers.AppImport] = []
-    if reload and any(r.action in ("reset", "checkout") and r.ok for r in results):
-        _resync_after_mutation(
-            frappe_container,
-            path,
-            _sites_with_app_installed(frappe_container, path, app, warnings),
-            results,
-            warnings,
-            emit=emit,
-        )
+    if tree_moved(results):
+        if reload:
+            _resync_after_mutation(
+                frappe_container,
+                path,
+                _sites_with_app_installed(frappe_container, path, app, warnings),
+                results,
+                warnings,
+                emit=emit,
+            )
         # BUG-10: the checkout landed on whatever apps/<app> physically resolves to;
         # verify the bench actually imports THAT copy. When it imports a different
         # one, the checkout did not reach the running site - report it as a failed

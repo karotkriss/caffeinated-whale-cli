@@ -227,10 +227,11 @@ def new_site(
             # An app the bench holds at another ref moves there BEFORE the site exists (and
             # with it every site on the bench that has it); a refused or failed checkout
             # stops here with no site left behind.
-            code_added = True
             moved = core_apps.checkout_app(
                 project, a, at, bench_path=bench_path, reload=False, on_event=emit
             )
+            if moved.data is not None and core_apps.tree_moved(moved.data.results):
+                code_added = True
             if moved.data is None or not moved.data.ok:
                 raise CwcliError(
                     ErrorKind.PRECONDITION,

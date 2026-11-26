@@ -358,3 +358,67 @@ class TestInitErpnextOnAReusedBench:
         else:
             assert _restarts(log) == []
             assert f"cwcli restart {PROJECT}" in raised.value.message
+
+
+class TestComposedCheckout:
+    """``checkout_app(reload=False)`` skips only the reload; ``new_site`` reloads only
+    for a checkout that actually moved the tree."""
+
+    def test_reload_false_still_fails_a_checkout_the_bench_does_not_import(
+        self, monkeypatch, container  # noqa: F811
+    ):
+        from .test_core_apps import _bridge_spy, _patch_app_import
+
+        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+        _patch_app_import(monkeypatch, diverged=True, imported="/workspace/.hdsrc/payments")
+        log = _supervised_bench(monkeypatch)
+
+        result = core_apps.checkout_app("proj", "payments", "feature/x", reload=False)
+
+        assert ("verify-import", False) in [(r.action, r.ok) for r in result.data.results]
+        assert result.data.ok is False
+        assert log == []
+
+    @pytest.mark.parametrize(
+        "rows, restarts",
+        [
+            ([("fetch", False)], []),
+            ([("fetch", True), ("checkout", True), ("verify-import", False)], True),
+        ],
+    )
+    def test_a_failed_checkout_reloads_only_when_it_moved_the_tree(
+        self, world, container, monkeypatch, rows, restarts  # noqa: F811
+    ):
+        from .test_app_deps_flows import _bench_holding_toolkit
+
+        new_site = _wire_new_site(monkeypatch, container)
+        container.available.append("toolkit")
+        monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+        _bench_holding_toolkit(monkeypatch)
+        results = [core_apps.AppResult(app="toolkit", site=None, action=a, ok=ok) for a, ok in rows]
+        monkeypatch.setattr(
+            new_site.core_apps,
+            "checkout_app",
+            lambda project, *_a, **_k: core_apps.Result(
+                status=core_apps.Status.WARNING,
+                data=core_apps.AppsReport(
+                    project=project, bench_path=BENCH, results=results, ok=False
+                ),
+            ),
+        )
+        log = _supervised_bench(monkeypatch)
+
+        with pytest.raises(CwcliError) as raised:
+            _run_new_site(
+                monkeypatch,
+                container,
+                new_site,
+                log,
+                apps=["toolkit"],
+                refs={"toolkit": "develop"},
+            )
+
+        assert raised.value.code == "new_site.checkout_failed"
+        expected = ["web", "schedule", "worker_default"] if restarts else []
+        assert _restarts(log) == expected
