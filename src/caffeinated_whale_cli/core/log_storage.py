@@ -121,7 +121,7 @@ class LogStorageReport:
     instances: list[InstanceLogStorage]
     journal: JournalReport
     docker_total: int | None
-    bench_total: int | None  # None when any running instance's bench logs went unmeasured
+    bench_total: int | None  # None when any instance's bench logs went unmeasured
 
 
 def to_dict(report: Any) -> dict[str, Any]:
@@ -661,6 +661,7 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
                 benches_measured = False
                 notes.append(e.message)
         else:
+            benches_measured = False
             notes.append("Start the instance to measure its bench logs.")
         rows.append(
             InstanceLogStorage(
@@ -673,9 +674,7 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
         )
     docker_sizes = [r.docker.total if r.docker is not None else None for r in rows]
     docker_total = (
-        sum(s for s in docker_sizes if s is not None)
-        if docker_sizes and None not in docker_sizes
-        else None
+        sum(s for s in docker_sizes if s is not None) if None not in docker_sizes else None
     )
     bench_total = (
         sum(b.current_bytes + b.rotated_bytes for r in rows for b in r.benches)

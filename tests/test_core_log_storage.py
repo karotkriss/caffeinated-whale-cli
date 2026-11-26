@@ -526,7 +526,8 @@ class TestReport:
         p, q = rep.instances
         assert p.running and len(p.benches) == 1 and p.benches[0].bench_index is None
         assert not q.running and q.benches == [] and "Start the instance" in q.note
-        assert rep.docker_total == 320 and rep.bench_total == 1326 + 770
+        assert rep.docker_total == 320 and rep.bench_total is None
+        assert p.benches[0].current_bytes + p.benches[0].rotated_bytes == 1326 + 770
         assert ls.to_dict(rep)["journal"]["applies"] is False
 
     def test_an_instance_whose_docker_logs_failed_makes_the_total_unknown(
@@ -587,6 +588,28 @@ class TestReport:
         monkeypatch.setattr(ls.core_inspect, "inspect", fake_inspect)
         assert ls._cached_paths("p") == [("/workspace/real-bench", 0)]
         assert populated == [("p", False)]
+
+    def test_every_instance_running_and_measured_gives_a_real_bench_total(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        rows = [InstanceDTO(project_name="p", status="running", ports=[])]
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": rows})())
+        conts = _containers(tmp_path)
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: conts)
+        frappe = FakeContainer("p-frappe-1", "frappe", listing=LISTING)
+        monkeypatch.setattr(ls.core_docker, "get_frappe_container", lambda p: frappe)
+        monkeypatch.setattr(
+            ls.resolvers, "cached_benches", lambda p: [{"path": "/workspace/frappe-bench"}]
+        )
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        assert rep.docker_total == 160 and rep.bench_total == 1326 + 770
+
+    def test_an_empty_fleet_is_measured_as_zero(self, monkeypatch):
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": []})())
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        assert rep.instances == [] and rep.docker_total == 0 and rep.bench_total == 0
 
     def test_an_unknown_project_filter_is_not_found(self, monkeypatch):
         monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": []})())
