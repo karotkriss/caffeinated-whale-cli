@@ -15,16 +15,18 @@ axi storage logs``):
    the file ``O_APPEND``, so truncating it is safe while the container runs, and the
    helper is what works on a rootful Linux daemon and inside Docker Desktop's VM alike.
    A ``local``/other driver's files are binary-framed and never touched.
-2. **Bench logs** - ``<bench>/logs`` inside the frappe container: Frappe's rotating
-   handlers and supervisord leave ``*.log.1``, ``*.log.2.gz``, ... behind the current
-   file. :func:`prune_bench_logs` removes only those rotated files; the current file of
-   every program is kept, so nothing a running bench holds open is touched.
+2. **Bench logs** - ``<bench>/logs`` and each site's ``<bench>/sites/<site>/logs``
+   inside the frappe container: Frappe's rotating handlers and supervisord leave
+   ``*.log.1``, ``*.log.2.gz``, ... behind the current file. :func:`prune_bench_logs`
+   removes only those rotated files; the current file of every logger is kept, so
+   nothing a running bench holds open is touched.
 3. **The host journal** - ``journalctl --disk-usage`` where cwcli runs on a Linux host
-   with systemd-journald. Vacuuming needs root, so the report carries the commands and
-   says plainly when there is no journal to manage (macOS, Windows, a WSL distro without
-   systemd; Docker Desktop's VM keeps its own).
+   with systemd-journald. :func:`vacuum_journal` trims it when cwcli runs as root;
+   otherwise the report carries the commands to copy and says why, and it says plainly
+   when there is no journal to manage (macOS, Windows, a WSL distro without systemd;
+   Docker Desktop's VM keeps its own).
 
-Consent for the two removals is a core parameter (``NEEDS_CHOICE`` until ``consent``),
+Consent for the three removals is a core parameter (``NEEDS_CHOICE`` until ``consent``),
 the ``backup_store.prune`` shape: a frontend can never bypass the confirmation.
 """
 
@@ -55,7 +57,14 @@ DEFAULT_MAX_FILE = 3
 _MAX_SIZE_RE = re.compile(r"^0*[1-9]\d*[kmg]$")
 _ROTATED_RE = re.compile(r"\.log\.\d+(\.gz)?$")
 _HELPER_IMAGE_PREFIX = "frappe/bench"
-_JOURNAL_VACUUM = ("sudo journalctl --vacuum-size=500M", "sudo journalctl --vacuum-time=2weeks")
+DEFAULT_JOURNAL_SIZE = "500M"
+DEFAULT_JOURNAL_TIME = "2weeks"
+_JOURNAL_SIZE_RE = re.compile(r"^0*[1-9]\d*[KMGT]?$")
+_JOURNAL_TIME_RE = re.compile(r"^0*[1-9]\d*(s|min|h|d|weeks?|months?|years?)$")
+_JOURNAL_VACUUM = (
+    f"sudo journalctl --vacuum-size={DEFAULT_JOURNAL_SIZE}",
+    f"sudo journalctl --vacuum-time={DEFAULT_JOURNAL_TIME}",
+)
 
 
 # -------------------------------------------------------------------------- DTOs
@@ -439,15 +448,18 @@ def set_docker_log_rotation(
 
 
 def _bench_log_listing(container, bench_path: str) -> list[tuple[str, int]]:
-    """``[(path, bytes)]`` for every regular file under ``<bench>/logs`` (one exec; the
-    bench path rides as an argv positional, never inside the script text). A logs dir
-    that is missing or unreadable raises rather than reading as an empty one."""
+    """``[(path, bytes)]`` for every regular file under ``<bench>/logs`` and each
+    ``<bench>/sites/<site>/logs`` (one exec; the bench path rides as an argv positional,
+    never inside the script text). A bench logs dir that is missing or unreadable
+    raises rather than reading as an empty one."""
     code, output = container.exec_run(
         [
             "sh",
             "-c",
             '[ -d "$1/logs" ] || exit 3; '
-            'find "$1/logs" -maxdepth 1 -type f -exec stat -c "%s %n" {} + 2>/dev/null',
+            'for d in "$1/logs" "$1"/sites/*/logs; do [ -d "$d" ] || continue; '
+            'find "$d" -maxdepth 1 -type f -exec stat -c "%s %n" {} + 2>/dev/null '
+            "|| exit 4; done",
             "sh",
             bench_path,
         ]
@@ -508,7 +520,8 @@ def prune_bench_logs(
     project: str, *, bench: str | None = None, consent: bool = False
 ) -> Result[dict[str, Any]]:
     """Remove the rotated log files of one bench (``bench``) or of every cached bench.
-    Current files are never touched, so a running bench keeps every open log."""
+    Current files are never touched, so a running bench keeps every open log. Without
+    a selector, a cached bench whose logs cannot be read is skipped with a warning."""
     frappe = core_docker.get_frappe_container(project)
     # A stopped instance is a typed NOT_RUNNING (never an auto-start): the files live
     # inside the container, and a log cleanup must not start what a user stopped.
@@ -525,18 +538,37 @@ def prune_bench_logs(
         paths = [resolved[1]]
     else:
         paths = [p for p, _i in _cached_paths(project)]
-    reports = [bench_logs(frappe, project, p) for p in paths]
+    reports: list[BenchLogs] = []
+    warnings: list[Message] = []
+    for path in paths:
+        try:
+            reports.append(bench_logs(frappe, project, path))
+        except CwcliError as e:
+            if bench is not None:
+                raise
+            warnings.append(
+                Message(
+                    "logs.bench_skipped",
+                    f"{e.message} Skipped; refresh the cache with "
+                    f"`cwcli inspect {project} --update` or pass --bench.",
+                )
+            )
+    paths = [r.bench_path for r in reports]
     doomed = [f for r in reports for f in r.rotated_files]
     freed = sum(r.rotated_bytes for r in reports)
     if not doomed:
         return Result(
             status=Status.OK,
             data={"project": project, "removed": [], "freed_bytes": 0, "benches": paths},
-            warnings=[Message("logs.nothing_rotated", "No rotated bench log to remove.")],
+            warnings=[
+                *warnings,
+                Message("logs.nothing_rotated", "No rotated bench log to remove."),
+            ],
         )
     if not consent:
         return Result(
             status=Status.NEEDS_CHOICE,
+            warnings=warnings,
             choice=Choice(
                 kind="confirm_prune_logs",
                 param="consent",
@@ -563,6 +595,7 @@ def prune_bench_logs(
     return Result(
         status=Status.OK,
         data={"project": project, "removed": doomed, "freed_bytes": freed, "benches": paths},
+        warnings=warnings,
     )
 
 
@@ -608,8 +641,13 @@ def journal() -> JournalReport:
         partial = proc.returncode != 0 or "not seeing messages" in (proc.stderr or "")
     except (OSError, subprocess.TimeoutExpired) as e:
         text, partial = f"journalctl --disk-usage failed: {e}", True
-    privileged = hasattr(os, "geteuid") and os.geteuid() == 0
-    reason = None if privileged else "Vacuuming needs root; run one of the commands."
+    privileged = _is_root()
+    reason = (
+        None
+        if privileged
+        else "cwcli does not run as root here, so it cannot vacuum the journal; "
+        "run one of the commands in a terminal."
+    )
     if partial:
         reason = (
             "journalctl could not read every journal file from this account, so the "
@@ -622,6 +660,84 @@ def journal() -> JournalReport:
         size=None if partial else _parse_usage(text),
         privileged=privileged,
         commands=list(_JOURNAL_VACUUM),
+    )
+
+
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def vacuum_journal(
+    *,
+    max_size: str = DEFAULT_JOURNAL_SIZE,
+    max_time: str = DEFAULT_JOURNAL_TIME,
+    consent: bool = False,
+) -> Result[dict[str, Any]]:
+    """Trim the host journal to ``max_size`` and ``max_time`` (``journalctl
+    --vacuum-size``/``--vacuum-time``; archived files only, the active one is kept).
+    Root only: anywhere else it refuses and names the command to copy."""
+    if not _JOURNAL_SIZE_RE.match(max_size):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "journal.max_size_invalid",
+            f"max-size {max_size!r} is not a size like 500M, 200K or 2G.",
+        )
+    if not _JOURNAL_TIME_RE.match(max_time):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "journal.max_time_invalid",
+            f"max-time {max_time!r} is not an age like 2weeks, 14d or 1month.",
+        )
+    before = journal()
+    if not before.applies:
+        raise CwcliError(
+            ErrorKind.PRECONDITION, "journal.not_applicable", before.reason or "No journal."
+        )
+    command = ["journalctl", f"--vacuum-size={max_size}", f"--vacuum-time={max_time}"]
+    if not before.privileged:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "journal.not_root",
+            "Vacuuming the journal needs root, and cwcli does not run as root here.",
+            hint=f"Run `sudo {' '.join(command)}` in a terminal.",
+        )
+    if not consent:
+        return Result(
+            status=Status.NEEDS_CHOICE,
+            choice=Choice(
+                kind="confirm_vacuum_journal",
+                param="consent",
+                prompt=(
+                    f"Trim the host journal to at most {max_size} and {max_time} of history? "
+                    "Older archived journal entries are deleted for the whole host."
+                ),
+            ),
+        )
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION, "journal.vacuum_failed", f"journalctl failed: {e}"
+        ) from None
+    if proc.returncode != 0:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "journal.vacuum_failed",
+            "journalctl could not vacuum the journal.",
+            detail={"output": (proc.stderr or proc.stdout or "").strip()},
+        )
+    after = journal()
+    freed = before.size - after.size if before.size is not None and after.size is not None else None
+    return Result(
+        status=Status.OK,
+        data={
+            "max_size": max_size,
+            "max_time": max_time,
+            "size_before": before.size,
+            "size_after": after.size,
+            "freed_bytes": freed,
+            "output": (proc.stderr or proc.stdout or "").strip(),
+        },
     )
 
 

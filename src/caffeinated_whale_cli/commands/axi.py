@@ -609,6 +609,9 @@ def _choice_error_message(choice: Choice) -> str:
         # databases and files) and deletes the bench directory; the agent must
         # consent. The --yes flag rides the `help:` line below.
         return "removing this bench drops every site on it and deletes its directory"
+    if choice.kind in ("confirm_truncate_logs", "confirm_prune_logs", "confirm_vacuum_journal"):
+        # `axi storage` only. The prompt names what is deleted; --yes rides `help:`.
+        return choice.prompt
     return f"a decision is required: {choice.prompt}"
 
 
@@ -659,6 +662,8 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "re-run with --yes to consent to permanently dropping it"))
     elif choice.kind == "confirm_remove_bench":
         typer.echo(toon.kv("help", "re-run with --yes to consent to permanently removing it"))
+    elif choice.kind in ("confirm_truncate_logs", "confirm_prune_logs", "confirm_vacuum_journal"):
+        typer.echo(toon.kv("help", "re-run with --yes to consent"))
     elif choice.kind == "confirm_reuse_bench":
         typer.echo(
             toon.kv(
@@ -3729,11 +3734,10 @@ app.add_typer(storage_app, name="storage")
 
 
 def _emit_storage_result(result) -> None:
-    """One TOON document for a storage verb; a consent fork is a usage error naming --yes."""
+    """One TOON document for a storage verb; a choice fork is a usage error naming its flag."""
     if result.status is CoreStatus.NEEDS_CHOICE:
         assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
-        typer.echo(toon.kv("error", result.choice.prompt))
-        typer.echo(toon.kv("help", "re-run with --yes to consent"))
+        emit_axi_choice_as_usage_error(result.choice)
         raise typer.Exit(2)
     emit_result(result.data or {}, warnings=result.warnings)
     raise typer.Exit(0)
@@ -3831,12 +3835,32 @@ def axi_storage_prune_bench_logs(
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
-    choice = result.choice
-    if (
-        result.status is CoreStatus.NEEDS_CHOICE
-        and choice is not None
-        and choice.kind != "confirm_prune_logs"
-    ):
-        emit_axi_choice_as_usage_error(choice)
-        raise typer.Exit(2)
+    _emit_storage_result(result)
+
+
+@storage_app.command("vacuum-journal")
+def axi_storage_vacuum_journal(
+    max_size: str = typer.Option(
+        "500M", "--max-size", help="Keep at most this much journal (500M, 2G, ...)."
+    ),
+    max_time: str = typer.Option(
+        "2weeks", "--max-time", help="Keep at most this much history (2weeks, 14d, ...)."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="REQUIRED consent: older archived journal entries are deleted."
+    ),
+) -> None:
+    """Trim the host's systemd journal (``journalctl --vacuum-size --vacuum-time``).
+
+    Root only: when cwcli does not run as root this is refused (exit 1) and the hint
+    names the ``sudo journalctl`` command to run instead. Without ``--yes`` this is a
+    usage error naming the flag (exit 2), never a prompt.
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.vacuum_journal(max_size=max_size, max_time=max_time, consent=yes)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
     _emit_storage_result(result)

@@ -45,7 +45,7 @@ from pathlib import Path
 
 from ..utils import config_utils, shared_home
 from ..utils.port_utils import check_ports_in_use, format_port_list
-from . import credbridge, db_password, failure_causes, log_storage, resolvers
+from . import credbridge, db_password, failure_causes, resolvers
 from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -868,10 +868,6 @@ def init_instance(
                 f'{working_dir}\n    ports:\n      - "{web_mapping}"\n      - "{socketio_mapping}"'
             )
             content = content.replace(working_dir, published_ports, 1)
-        # A fresh instance's container logs are bounded from the start (json-file
-        # max-size/max-file on every service); `cwcli axi storage` reports and
-        # changes it later. An existing instance's compose is left as it is.
-        content = log_storage.with_log_rotation(content)
         if web_mapping not in content or socketio_mapping not in content:
             raise CwcliError(
                 ErrorKind.PRECONDITION,

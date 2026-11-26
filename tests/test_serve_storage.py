@@ -70,7 +70,8 @@ def test_storage_logs_is_same_origin_only(daemon, monkeypatch):  # noqa: F811
 
 
 @pytest.mark.parametrize(
-    "verb", ["truncate-docker-logs", "set-docker-log-rotation", "prune-bench-logs"]
+    "verb",
+    ["truncate-docker-logs", "set-docker-log-rotation", "prune-bench-logs", "vacuum-journal"],
 )
 def test_the_log_storage_jobs_are_admin_jobs(verb):
     assert verb in jobs.ALLOWED_VERBS
@@ -141,3 +142,19 @@ def test_rotation_job_passes_typed_values_through_for_the_core_to_judge(monkeypa
     args = {"max_size": "", "max_file": 0}
     jobs._dispatch("set-docker-log-rotation", {"project": "x"}, args, False, {}, rec)
     assert calls == [("", 0)]
+
+
+def test_vacuum_journal_is_a_projectless_job_carrying_its_limits_and_consent(monkeypatch):
+    calls = []
+    ok = Result(status=Status.OK, data={})
+    monkeypatch.setattr(
+        jobs.core_log_storage,
+        "vacuum_journal",
+        lambda *, max_size, max_time, consent: calls.append((max_size, max_time, consent)) or ok,
+    )
+    jobs._validate_spec("vacuum-journal", {}, {})
+    rec = jobs._Recorder.__new__(jobs._Recorder)
+    jobs._dispatch("vacuum-journal", {}, {"max_size": "1G", "max_time": "14d"}, True, {}, rec)
+    jobs._dispatch("vacuum-journal", {}, {}, False, {}, rec)
+    jobs._dispatch("vacuum-journal", {}, {"max_size": ""}, False, {}, rec)
+    assert calls == [("1G", "14d", True), ("500M", "2weeks", False), ("", "2weeks", False)]

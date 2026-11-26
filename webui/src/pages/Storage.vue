@@ -1,14 +1,14 @@
 <script setup>
 // Storage: what sits on disk around the instances and how to trim it. The backup
 // store has its own page; this one adds the three log stores (core.log_storage):
-// each instance's Docker container logs and bench log files, and the host journal.
+// each instance's Docker container logs and bench and site log files, and the host journal.
 import { computed, onMounted } from 'vue'
 import { Alert, Badge, Button, Tooltip } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
 import CommandLine from '../components/CommandLine.vue'
-import { backups, loadBackups } from '../data/backups'
-import { dockerSizeText, instanceRows, loadLogStorage, logStorage, rotationText, sizeText } from '../data/storage'
+import { backups, loadBackups, sizeText } from '../data/backups'
+import { dockerSizeText, instanceRows, loadLogStorage, logStorage, rotationText } from '../data/storage'
 import { setFocus } from '../data/fleet'
 import { openAction } from '../data/dialog'
 import { can } from '../data/session'
@@ -23,6 +23,7 @@ const benchName = (path) => path.split('/').filter(Boolean).pop() || path
 const admin = computed(() => can('admin'))
 const truncate = (r) => openAction('logs.truncate_docker', { project: r.project, dockerTotal: r.docker?.total })
 const rotation = (r) => openAction('logs.docker_rotation', { project: r.project })
+const vacuum = () => openAction('logs.vacuum_journal', { journalSize: journal.value?.size })
 const prune = (r, b) => openAction('logs.prune_bench', { project: r.project, bench: b.bench_index != null ? String(b.bench_index) : undefined, benchName: benchName(b.bench_path), rotated: b.rotated_files.length, rotatedBytes: b.rotated_bytes })
 </script>
 
@@ -78,7 +79,7 @@ const prune = (r, b) => openAction('logs.prune_bench', { project: r.project, ben
       <div v-if="r.benches.length">
         <div class="grid grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem] items-center gap-3 bg-surface-gray-1 px-3 py-1.5 text-xs text-ink-gray-5 max-lg:grid-cols-[minmax(0,1fr)_8rem]"><span>Bench logs</span><span class="max-lg:hidden">Current</span><span class="max-lg:hidden">Rotated</span><span class="text-right">Actions</span></div>
         <div v-for="b in r.benches" :key="b.bench_path" class="grid grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem] items-center gap-3 border-t border-outline-gray-1 px-3 py-2 text-sm max-lg:grid-cols-[minmax(0,1fr)_8rem]">
-          <span class="min-w-0"><span class="block truncate text-ink-gray-9">{{ benchName(b.bench_path) }}</span><span class="block truncate text-xs text-ink-gray-5" :title="b.bench_path">{{ b.bench_path }}/logs · {{ b.files }} {{ b.files === 1 ? 'file' : 'files' }}</span></span>
+          <span class="min-w-0"><span class="block truncate text-ink-gray-9">{{ benchName(b.bench_path) }}</span><span class="block truncate text-xs text-ink-gray-5" :title="b.bench_path">{{ b.bench_path }}/logs and sites/*/logs · {{ b.files }} {{ b.files === 1 ? 'file' : 'files' }}</span></span>
           <span class="tabular-nums text-ink-gray-7 max-lg:hidden">{{ sizeText(b.current_bytes) }}</span>
           <span class="tabular-nums max-lg:hidden" :class="b.rotated_bytes ? 'text-ink-gray-9' : 'text-ink-gray-5'">{{ sizeText(b.rotated_bytes) }} <span class="text-xs text-ink-gray-5">in {{ b.rotated_files.length }}</span></span>
           <span class="flex justify-end"><Tooltip :text="b.rotated_files.length ? 'Removes the rotated files; every current log is kept' : 'Nothing rotated to remove'"><Button v-if="admin" size="sm" variant="subtle" :disabled="!b.rotated_files.length" label="Remove rotated…" @click="prune(r, b)" /></Tooltip></span>
@@ -91,8 +92,11 @@ const prune = (r, b) => openAction('logs.prune_bench', { project: r.project, ben
       <p class="mt-1 text-sm text-ink-gray-6">{{ journal.applies ? (journal.usage_text || 'journalctl --disk-usage gave no answer.') : journal.reason }}</p>
       <p v-if="journal.applies && journal.size == null && journal.reason" class="mt-1 text-sm text-ink-amber-6">{{ journal.reason }}</p>
       <template v-if="journal.applies">
-        <p class="mt-2 text-xs text-ink-gray-5">{{ journal.privileged ? 'cwcli runs as root here, so these run as written.' : 'Vacuuming needs root, so cwcli shows the commands instead of running them. Copy one into a terminal:' }}</p>
-        <div class="mt-2 grid gap-2 sm:grid-cols-2"><CommandLine v-for="cmd in journal.commands" :key="cmd" :command="cmd" wrap /></div>
+        <div v-if="journal.privileged" class="mt-2 flex flex-wrap items-center gap-2"><span class="text-xs text-ink-gray-5">cwcli runs as root here, so it can trim the journal itself.</span><Button v-if="admin" size="sm" variant="subtle" theme="red" icon-left="lucide-eraser" label="Trim the journal…" @click="vacuum()" /></div>
+        <template v-else>
+          <p class="mt-2 text-xs text-ink-gray-5">Vacuuming needs root and cwcli does not run as root here, so it shows the commands instead of running them. Copy one into a terminal:</p>
+          <div class="mt-2 grid gap-2 sm:grid-cols-2"><CommandLine v-for="cmd in journal.commands" :key="cmd" :command="cmd" wrap /></div>
+        </template>
       </template>
     </section>
   </div>

@@ -76,7 +76,10 @@ class FakeContainer:
             bench = cmd[-1]
             if bench in self.missing_logs:
                 return 3, b""
-            rows = [f"{s} {bench}/logs/{p}" for p, s in self.listing]
+            rows = [
+                f"{s} {bench}/{p}" if p.startswith("sites/") else f"{s} {bench}/logs/{p}"
+                for p, s in self.listing
+            ]
             return 0, ("\n".join(rows) + "\n").encode()
         if cmd[0] == "rm":
             return 0, b""
@@ -377,6 +380,45 @@ class TestBenchLogs:
         find = c.calls[0]
         assert find[-1] == "/workspace/frappe-bench" and "/workspace" not in find[2]
 
+    def test_site_logs_count_and_their_rotated_files_are_prunable(self, running_frappe):
+        running_frappe.listing = [
+            ("web.log", 10),
+            ("sites/s1.localhost/logs/frappe.log", 40),
+            ("sites/s1.localhost/logs/frappe.log.1", 300),
+            ("sites/s1.localhost/logs/scheduler.log.20", 7),
+        ]
+        rep = ls.bench_logs(running_frappe, "p", "/workspace/frappe-bench")
+        assert (rep.current_bytes, rep.rotated_bytes, rep.files) == (50, 307, 4)
+        result = ls.prune_bench_logs("p", consent=True)
+        rm = next(call for call in running_frappe.calls if call[0] == "rm")
+        assert set(rm[3:]) == {
+            "/workspace/frappe-bench/sites/s1.localhost/logs/frappe.log.1",
+            "/workspace/frappe-bench/sites/s1.localhost/logs/scheduler.log.20",
+        }
+        assert result.data["freed_bytes"] == 307
+
+    def test_listing_a_real_bench_tree_reads_site_logs_and_fails_on_a_missing_dir(self, tmp_path):
+        import subprocess
+
+        bench = tmp_path / "bench"
+        (bench / "logs").mkdir(parents=True)
+        (bench / "logs" / "web.log").write_bytes(b"x" * 3)
+        site_logs = bench / "sites" / "a.localhost" / "logs"
+        site_logs.mkdir(parents=True)
+        (site_logs / "frappe.log.2").write_bytes(b"x" * 5)
+        (bench / "sites" / "assets").mkdir()
+
+        class ShellContainer:
+            def exec_run(self, cmd, **kw):
+                proc = subprocess.run(cmd, capture_output=True)
+                return proc.returncode, proc.stdout
+
+        rows = dict((p, s) for p, s in ls._bench_log_listing(ShellContainer(), str(bench)))
+        assert rows == {str(bench / "logs" / "web.log"): 3, str(site_logs / "frappe.log.2"): 5}
+        with pytest.raises(CwcliError) as e:
+            ls._bench_log_listing(ShellContainer(), str(tmp_path / "gone"))
+        assert e.value.code == "logs.bench_logs_unreadable"
+
 
 @pytest.fixture
 def running_frappe(monkeypatch):
@@ -389,6 +431,37 @@ def running_frappe(monkeypatch):
 
 
 class TestPruneBenchLogs:
+    def test_without_a_selector_a_stale_cached_bench_is_skipped_with_a_warning(
+        self, running_frappe, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ls.resolvers,
+            "cached_benches",
+            lambda p: [
+                {"path": "/workspace/gone-bench", "index": 0},
+                {"path": "/workspace/frappe-bench", "index": 1},
+            ],
+        )
+        running_frappe.missing_logs = {"/workspace/gone-bench"}
+        result = ls.prune_bench_logs("p", consent=True)
+        assert result.status is Status.OK
+        assert result.data["benches"] == ["/workspace/frappe-bench"]
+        assert len(result.data["removed"]) == 3
+        (warning,) = result.warnings
+        assert warning.code == "logs.bench_skipped" and "/workspace/gone-bench" in warning.text
+
+    def test_a_named_bench_whose_logs_are_missing_is_an_error(self, running_frappe, monkeypatch):
+        running_frappe.missing_logs = {"/workspace/gone-bench"}
+        monkeypatch.setattr(
+            ls.resolvers,
+            "resolve_container_and_bench",
+            lambda project, bench, path, **kw: (running_frappe, "/workspace/gone-bench", []),
+        )
+        with pytest.raises(CwcliError) as e:
+            ls.prune_bench_logs("p", bench="0", consent=True)
+        assert e.value.code == "logs.bench_logs_unreadable"
+        assert not any(call[0] == "rm" for call in running_frappe.calls)
+
     def test_a_stopped_instance_is_refused_never_started(self, running_frappe):
         running_frappe.status = "exited"
         with pytest.raises(CwcliError) as e:
@@ -616,3 +689,75 @@ class TestReport:
         with pytest.raises(CwcliError) as e:
             ls.report("ghost")
         assert e.value.kind is ErrorKind.NOT_FOUND
+
+
+# ----------------------------------------------------------------- journal vacuum
+
+
+@pytest.fixture
+def journald(monkeypatch):
+    """A Linux host with journald; ``journalctl`` calls are recorded and answered."""
+    monkeypatch.setattr(ls.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ls.shutil, "which", lambda name: "/usr/bin/journalctl")
+    monkeypatch.setattr(ls.Path, "exists", lambda self: True)
+    state = {"usage": "take up 2.0G in the file system", "runs": [], "vacuum_code": 0}
+
+    class P:
+        def __init__(self, stdout, returncode=0, stderr=""):
+            self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+    def run(cmd, **kw):
+        state["runs"].append(list(cmd))
+        if cmd[1] == "--disk-usage":
+            return P(f"Archived and active journals {state['usage']}.\n")
+        state["usage"] = "take up 500.0M in the file system"
+        return P("", state["vacuum_code"], "Vacuuming done, freed 1.5G.\n")
+
+    monkeypatch.setattr(ls.subprocess, "run", run)
+    return state
+
+
+class TestVacuumJournal:
+    def test_not_root_is_refused_with_the_command_to_copy(self, journald, monkeypatch):
+        monkeypatch.setattr(ls.os, "geteuid", lambda: 1000, raising=False)
+        with pytest.raises(CwcliError) as e:
+            ls.vacuum_journal(consent=True)
+        assert e.value.kind is ErrorKind.PRECONDITION and e.value.code == "journal.not_root"
+        assert "sudo journalctl --vacuum-size=500M --vacuum-time=2weeks" in (e.value.hint or "")
+        assert all(run[1] == "--disk-usage" for run in journald["runs"])
+
+    def test_root_without_consent_is_a_choice_and_nothing_is_vacuumed(self, journald, monkeypatch):
+        monkeypatch.setattr(ls.os, "geteuid", lambda: 0, raising=False)
+        result = ls.vacuum_journal()
+        assert result.status is Status.NEEDS_CHOICE
+        assert result.choice.kind == "confirm_vacuum_journal" and result.choice.param == "consent"
+        assert all(run[1] == "--disk-usage" for run in journald["runs"])
+
+    def test_root_with_consent_vacuums_to_the_chosen_size_and_age(self, journald, monkeypatch):
+        monkeypatch.setattr(ls.os, "geteuid", lambda: 0, raising=False)
+        result = ls.vacuum_journal(max_size="1G", max_time="14d", consent=True)
+        assert ["journalctl", "--vacuum-size=1G", "--vacuum-time=14d"] in journald["runs"]
+        assert result.data["size_before"] == 2 * 1024**3
+        assert result.data["size_after"] == 500 * 1024**2
+        assert result.data["freed_bytes"] == 2 * 1024**3 - 500 * 1024**2
+
+    def test_a_failed_vacuum_is_an_error_not_success(self, journald, monkeypatch):
+        monkeypatch.setattr(ls.os, "geteuid", lambda: 0, raising=False)
+        journald["vacuum_code"] = 1
+        with pytest.raises(CwcliError) as e:
+            ls.vacuum_journal(consent=True)
+        assert e.value.code == "journal.vacuum_failed"
+
+    @pytest.mark.parametrize(
+        "size,age", [("0M", "2weeks"), ("lots", "2weeks"), ("500M", "0d"), ("500M", "soon")]
+    )
+    def test_bad_limits_are_usage_errors_before_anything_runs(self, journald, size, age):
+        with pytest.raises(CwcliError) as e:
+            ls.vacuum_journal(max_size=size, max_time=age, consent=True)
+        assert e.value.kind is ErrorKind.USAGE and journald["runs"] == []
+
+    def test_a_host_without_journald_does_not_apply(self, monkeypatch):
+        monkeypatch.setattr(ls.platform, "system", lambda: "Darwin")
+        with pytest.raises(CwcliError) as e:
+            ls.vacuum_journal(consent=True)
+        assert e.value.code == "journal.not_applicable"

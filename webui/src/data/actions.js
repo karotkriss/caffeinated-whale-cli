@@ -335,9 +335,24 @@ export const ACTIONS = {
     icon: 'lucide-trash-2',
     confirm: 'confirm',
     cli: (c) => `cwcli axi storage prune-bench-logs ${q(c.project)}${benchFlag(c)} --yes`,
-    says: (c) => `Removes the ${c.rotated} rotated log file${c.rotated === 1 ? '' : 's'} (${sizeText(c.rotatedBytes || 0)}) under ${c.benchName}'s logs/ on ${c.project}. Every current log file is kept, so the running bench loses nothing it holds open.`,
+    says: (c) => `Removes the ${c.rotated} rotated log file${c.rotated === 1 ? '' : 's'} (${sizeText(c.rotatedBytes || 0)}) under ${c.benchName}'s logs/ and its sites' logs/ on ${c.project}. Every current log file is kept, so the running bench loses nothing it holds open.`,
     request: (c) => ({ verb: 'prune-bench-logs', target: { project: c.project, bench: c.bench || undefined }, args: {}, consent: true }),
     done: (c) => `${c.benchName}'s rotated logs removed`,
+  },
+  'logs.vacuum_journal': {
+    job: true,
+    danger: true,
+    label: 'Trim the host journal',
+    icon: 'lucide-eraser',
+    confirm: 'confirm',
+    fields: [
+      { name: 'max_size', type: 'text', label: 'Keep at most', placeholder: '500M', default: '500M' },
+      { name: 'max_time', type: 'text', label: 'Keep history for', placeholder: '2weeks', default: '2weeks' },
+    ],
+    cli: (c, v) => `cwcli axi storage vacuum-journal --max-size ${q(v?.max_size ?? '500M')} --max-time ${q(v?.max_time ?? '2weeks')} --yes`,
+    says: (c, v) => `Runs journalctl --vacuum-size=${v?.max_size ?? '500M'} --vacuum-time=${v?.max_time ?? '2weeks'} on this host (${c.journalSize == null ? 'size unknown' : sizeText(c.journalSize)} now). Older archived journal entries are deleted for every service on the machine, not only cwcli's.`,
+    request: (c, v) => ({ verb: 'vacuum-journal', target: {}, args: { max_size: v?.max_size, max_time: v?.max_time }, consent: true }),
+    done: () => 'Host journal trimmed',
   },
 
   // app

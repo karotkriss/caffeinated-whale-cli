@@ -43,8 +43,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``GET /api/v1/storage/logs[?project=<p>]`` - ``core.log_storage.report``: every
   instance's Docker container logs (driver, rotation, size) and bench log files
   (current vs rotated), plus the host journal's usage; same-origin only (it names
-  paths). The trims are the ``truncate-docker-logs``, ``set-docker-log-rotation``
-  and ``prune-bench-logs`` jobs
+  paths). The trims are the ``truncate-docker-logs``, ``set-docker-log-rotation``,
+  ``prune-bench-logs`` and ``vacuum-journal`` jobs
 * ``GET /api/v1/doctor``                    - system-wide ``core.doctor.run_all``
 * ``GET /api/v1/config``                    - ``core.config.show_config`` (read)
 * ``GET /api/v1/cache``                     - the cache inventory (remembered projects)

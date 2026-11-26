@@ -76,7 +76,9 @@ from .utils.config_utils import cwcli_home
 
 ACTIVE_STATES = frozenset({"queued", "running", "interrupting"})
 # Verbs that act on the machine, not on one instance: no target.project is required.
-_PROJECTLESS_VERBS = frozenset({"self-update", "check-updates", "send-backup", "receive-backup"})
+_PROJECTLESS_VERBS = frozenset(
+    {"self-update", "check-updates", "send-backup", "receive-backup", "vacuum-journal"}
+)
 TERMINAL_STATES = frozenset({"succeeded", "failed", "interrupted", "unknown", "needs_choice"})
 ALLOWED_VERBS = frozenset(
     {
@@ -136,11 +138,12 @@ ALLOWED_VERBS = frozenset(
         "publish-site",
         "unpublish-site",
         # Log storage (core.log_storage): empty an instance's Docker container logs,
-        # write their rotation into its compose file, remove a bench's rotated log files.
-        # The two removals keep the core's own consent gate (the page's confirmation).
+        # write their rotation into its compose file, remove a bench's rotated log files,
+        # trim the host journal (root only). The removals keep the core's own consent gate.
         "truncate-docker-logs",
         "set-docker-log-rotation",
         "prune-bench-logs",
+        "vacuum-journal",
     }
 )
 # One public name is published in one place, so these are keyed by the name, not the
@@ -1903,6 +1906,13 @@ def _dispatch(
         )
     if verb == "prune-bench-logs":
         return core_log_storage.prune_bench_logs(project, bench=bench, consent=consent)
+    if verb == "vacuum-journal":
+        raw_size, raw_time = args.get("max_size"), args.get("max_time")
+        return core_log_storage.vacuum_journal(
+            max_size=core_log_storage.DEFAULT_JOURNAL_SIZE if raw_size is None else str(raw_size),
+            max_time=core_log_storage.DEFAULT_JOURNAL_TIME if raw_time is None else str(raw_time),
+            consent=consent,
+        )
     if verb == "prune-backups":
         return core_backup_store.prune(
             project, consent=consent, dry_run=bool(args.get("dry_run")), on_event=emit

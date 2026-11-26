@@ -2,12 +2,12 @@
 
 What only real Docker can prove, on the shared session instance:
 
-* a fresh ``cwcli init`` writes json-file rotation into the compose file and the
-  containers it created carry it LIVE (``rotation: true``);
+* a fresh ``cwcli init`` writes no logging options of its own into the compose file;
 * the Docker log sizes are measured (from the host or through the read-only root
   helper - whichever this daemon allows) and ``truncate-docker-logs`` empties them;
-* ``prune-bench-logs`` removes a rotated file under ``<bench>/logs`` and keeps the
-  current file beside it, on a RUNNING bench, which keeps serving;
+* ``prune-bench-logs`` removes rotated files under ``<bench>/logs`` and the site's
+  ``sites/<site>/logs`` and keeps the current files beside them, on a RUNNING bench,
+  which keeps serving;
 * ``set-docker-log-rotation`` rewrites the compose file and the report reads it back.
 
 Shared group: everything this test adds (a rotated file, a sentinel, the compose edit)
@@ -47,14 +47,10 @@ def _compose_path(project: str) -> Path:
     return Path(os.environ["CWCLI_HOME"]) / "projects" / project / "conf" / "docker-compose.yml"
 
 
-def test_init_writes_live_rotation_and_the_report_measures_the_logs(running_instance):
+def test_init_writes_no_rotation_and_the_report_measures_the_logs(running_instance):
     compose = _compose_path(running_instance.name).read_text()
-    assert 'max-size: "10m"' in compose and 'max-file: "3"' in compose
+    assert "logging:" not in compose and "max-size" not in compose
     doc = _storage_logs(running_instance.name)
-    # Every container of a fresh instance was created from that compose, so the
-    # rotation is live, not merely declared.
-    assert "json-file,null,null,false" not in doc, doc
-    assert 'json-file,10m,"3",true' in doc, doc
     assert running_instance.bench in doc  # the bench's logs dir was read
     total = _docker_total(doc)
     assert total is not None, "the Docker log sizes were not measured:\n" + doc
@@ -83,14 +79,19 @@ def test_truncate_empties_the_docker_logs_of_a_running_instance(running_instance
 def test_prune_removes_rotated_bench_logs_and_keeps_the_current_file(running_instance):
     name, bench = running_instance.name, running_instance.bench
     logs = f"{bench}/logs"
+    site_logs = f"{bench}/sites/{running_instance.site}/logs"
     current, rotated = f"{logs}/cwe2e-storage.log", f"{logs}/cwe2e-storage.log.1"
+    site_current, site_rotated = f"{site_logs}/cwe2e-site.log", f"{site_logs}/cwe2e-site.log.1"
     code, out = harness.exec_in_frappe(
-        name, f"printf 'current\\n' > {current} && head -c 4096 /dev/zero > {rotated}"
+        name,
+        f"mkdir -p {site_logs} && printf 'current\\n' > {current} && "
+        f"head -c 4096 /dev/zero > {rotated} && printf 'current\\n' > {site_current} && "
+        f"head -c 2048 /dev/zero > {site_rotated}",
     )
     assert code == 0, out
     try:
         doc = _storage_logs(name)
-        assert "cwe2e-storage.log.1" in doc, doc
+        assert "cwe2e-storage.log.1" in doc and "cwe2e-site.log.1" in doc, doc
         refused = harness.run_cwcli("axi", "storage", "prune-bench-logs", name, timeout=120)
         assert refused.returncode == 2 and "--yes" in refused.stdout, (
             refused.stdout + refused.stderr
@@ -99,14 +100,16 @@ def test_prune_removes_rotated_bench_logs_and_keeps_the_current_file(running_ins
         assert code == 0, "the refusal must not remove anything"
         r = harness.run_cwcli("axi", "storage", "prune-bench-logs", name, "--yes", timeout=120)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "cwe2e-storage.log.1" in r.stdout
-        code, _ = harness.exec_in_frappe(name, f"test -f {rotated}")
-        assert code != 0, "the rotated file survived the prune"
-        code, out = harness.exec_in_frappe(name, f"cat {current}")
-        assert code == 0 and "current" in out, "the current file must be kept untouched"
+        assert "cwe2e-storage.log.1" in r.stdout and "cwe2e-site.log.1" in r.stdout
+        for gone in (rotated, site_rotated):
+            code, _ = harness.exec_in_frappe(name, f"test -f {gone}")
+            assert code != 0, f"the rotated file {gone} survived the prune"
+        for kept in (current, site_current):
+            code, out = harness.exec_in_frappe(name, f"cat {kept}")
+            assert code == 0 and "current" in out, f"{kept} must be kept untouched"
         harness.wait_for_site_ready(name, running_instance.site)
     finally:
-        harness.exec_in_frappe(name, f"rm -f {current} {rotated}")
+        harness.exec_in_frappe(name, f"rm -f {current} {rotated} {site_current} {site_rotated}")
 
 
 def test_set_rotation_rewrites_the_compose_file_and_the_report_reads_it_back(running_instance):
@@ -128,11 +131,11 @@ def test_set_rotation_rewrites_the_compose_file_and_the_report_reads_it_back(run
         assert r.returncode == 0, r.stdout + r.stderr
         assert "changed: true" in r.stdout and "rotation_on_recreate" in r.stdout
         text = path.read_text()
-        assert text.count('max-size: "5m"') == original.count('max-size: "10m"') > 0
+        assert text.count('max-size: "5m"') == text.count("driver: json-file") > 0
         doc = _storage_logs(name)
         assert "max_size: 5m" in doc and 'max_file: "2"' in doc, doc
-        # The running containers keep the rotation they were created with.
-        assert 'json-file,10m,"3",true' in doc, doc
+        # The running containers keep the log settings they were created with.
+        assert "json-file,5m," not in doc, doc
         bad = harness.run_cwcli(
             "axi", "storage", "set-docker-log-rotation", name, "--max-size", "huge", timeout=120
         )

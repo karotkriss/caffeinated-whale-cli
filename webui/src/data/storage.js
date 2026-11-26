@@ -1,6 +1,7 @@
 import { computed, reactive, watch } from 'vue'
 import { getJson } from './api'
 import { jobList } from './jobs'
+import { sizeText } from './backups'
 
 // Log storage around the instances (core.log_storage): every instance's Docker
 // container logs (driver, rotation, size), its bench log files (current vs rotated)
@@ -20,7 +21,7 @@ export async function loadLogStorage() {
   }
 }
 
-export const STORAGE_VERBS = new Set(['truncate-docker-logs', 'set-docker-log-rotation', 'prune-bench-logs'])
+export const STORAGE_VERBS = new Set(['truncate-docker-logs', 'set-docker-log-rotation', 'prune-bench-logs', 'vacuum-journal'])
 const TERMINAL = new Set(['succeeded', 'failed', 'interrupted', 'unknown', 'needs_choice'])
 const seen = new Set()
 // A storage job that just ended changes what the page shows; re-read once per job.
@@ -36,17 +37,12 @@ watch(
 export const instanceRows = computed(() => logStorage.data?.instances || [])
 // The size of a container's logs, or why it is unknown.
 export function dockerSizeText(row) {
+  if (row.driver === 'journald') return 'managed by the system journal'
   if (row.driver !== 'json-file') return `${row.driver || 'driver'}-managed`
   return row.size == null ? 'not measured' : sizeText(row.size)
 }
 export function rotationText(row) {
+  if (row.driver === 'journald') return 'system journal'
   if (row.driver !== 'json-file') return row.driver || 'other driver'
   return row.rotation ? `${row.max_size}${row.max_file ? ` × ${row.max_file}` : ''}` : 'unbounded'
-}
-export function sizeText(n) {
-  if (n == null) return ''
-  if (n < 1024) return `${n} B`
-  if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`
-  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`
-  return `${(n / 1073741824).toFixed(2)} GB`
 }

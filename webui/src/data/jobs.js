@@ -157,6 +157,7 @@ export const JOB_LABEL = {
   'truncate-docker-logs': 'Empty Docker logs',
   'set-docker-log-rotation': 'Set Docker log rotation',
   'prune-bench-logs': 'Remove rotated bench logs',
+  'vacuum-journal': 'Trim the host journal',
   'publish-site': 'Publish site',
   'unpublish-site': 'Unpublish site',
   'backup-sites': 'Scheduled backup',

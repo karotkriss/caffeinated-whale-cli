@@ -105,6 +105,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   storage truncate-docker-logs     Empty every json-file container log of the instance and remove its rotated files.
   storage set-docker-log-rotation  Write json-file log rotation (max-size, max-file) into every service of the
   storage prune-bench-logs         Remove the rotated log files (`*.log.1`, `*.log.2.gz`, ...) under a bench's
+  storage vacuum-journal           Trim the host's systemd journal (`journalctl --vacuum-size --vacuum-time`).
 ```
 
 Run `uvx --from caffeinated-whale-cli cwcli axi <verb> --help` for a verb's flags.

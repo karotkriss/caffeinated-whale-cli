@@ -1,6 +1,6 @@
-"""``cwcli axi storage`` - the log-storage group (``logs`` read, and the three trims).
+"""``cwcli axi storage`` - the log-storage group (``logs`` read, and the four trims).
 
-Pins: the group and its four verbs are registered; ``logs`` emits ONE TOON document; a
+Pins: the group and its five verbs are registered; ``logs`` emits ONE TOON document; a
 removal without ``--yes`` is a usage error naming the flag (exit 2), never a prompt;
 with ``--yes`` the core's consent is passed; ``prune-bench-logs`` renders a
 ``select_bench`` fork as the shared usage error; typed errors keep the exit mapping.
@@ -23,9 +23,15 @@ def _group():
     return next(g for g in axi_mod.app.registered_groups if g.name == "storage").typer_instance
 
 
-def test_the_storage_group_carries_the_four_verbs():
+def test_the_storage_group_carries_the_five_verbs():
     names = {c.name for c in _group().registered_commands}
-    assert names == {"logs", "truncate-docker-logs", "set-docker-log-rotation", "prune-bench-logs"}
+    assert names == {
+        "logs",
+        "truncate-docker-logs",
+        "set-docker-log-rotation",
+        "prune-bench-logs",
+        "vacuum-journal",
+    }
 
 
 def _report():
@@ -197,3 +203,32 @@ def test_prune_without_yes_is_a_usage_error_and_with_yes_removes(monkeypatch, ca
     out = capsys.readouterr().out
     assert exc.value.exit_code == 0 and "x.log.1" in out
     assert calls == [("0", False), ("0", True)]
+
+
+def test_vacuum_journal_needs_yes_and_a_refusal_names_the_command(monkeypatch, capsys):
+    calls = []
+
+    def fake(*, max_size, max_time, consent=False):
+        calls.append((max_size, max_time, consent))
+        if not consent:
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_vacuum_journal", param="consent", prompt="Trim?"),
+            )
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "journal.not_root",
+            "Vacuuming the journal needs root.",
+            hint="Run `sudo journalctl --vacuum-size=1G --vacuum-time=14d` in a terminal.",
+        )
+
+    monkeypatch.setattr(ls, "vacuum_journal", fake)
+    with pytest.raises(typer.Exit) as exc:
+        axi_mod.axi_storage_vacuum_journal(max_size="1G", max_time="14d", yes=False)
+    out = capsys.readouterr().out
+    assert exc.value.exit_code == 2 and "error: Trim?" in out and "--yes" in out
+    with pytest.raises(typer.Exit) as exc:
+        axi_mod.axi_storage_vacuum_journal(max_size="1G", max_time="14d", yes=True)
+    out = capsys.readouterr().out
+    assert exc.value.exit_code == 1 and "sudo journalctl --vacuum-size=1G" in out
+    assert calls == [("1G", "14d", False), ("1G", "14d", True)]

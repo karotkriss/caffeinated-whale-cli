@@ -71,6 +71,7 @@ ADMIN_VERBS = frozenset(
         "truncate-docker-logs",
         "set-docker-log-rotation",
         "prune-bench-logs",
+        "vacuum-journal",
     }
 )
 
