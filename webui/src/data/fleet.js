@@ -329,8 +329,8 @@ export function duration(seconds) {
 
 // --- why a bench is degraded (BenchStatus.reasons, from core.status) ---------------
 // The probe's own words: which check failed (supervisor, process, web), the state it
-// saw, and the cwcli command that addresses it. `cwcli status` renders the same list,
-// so a page and the CLI never disagree about the cause.
+// saw, and a plain sentence. `cwcli axi status` reports the same list, so a page and
+// the agent surface never disagree about the cause.
 
 export const reasonsCurrent = (inst) => !!inst && !inst.probe_error && !staleInstance(inst)
 export const reasonsOf = (inst) => (reasonsCurrent(inst) ? inst.benches || [] : []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))

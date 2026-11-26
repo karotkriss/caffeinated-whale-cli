@@ -97,7 +97,6 @@ raises ``DOCKER``. No print/prompt/``typer.Exit``.
 
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass, field, replace
 
 from docker.errors import APIError, NotFound
@@ -124,9 +123,8 @@ class HealthReason:
     failed (``supervisor``, ``process`` or ``web``), its subject (the program label,
     ``supervisord``, or ``web``), the state the check observed (supervisord's
     ``FATAL``/``BACKOFF``/``EXITED``/``STOPPED``, ``down`` for a process ``ps`` did not
-    find, ``no response``/``not listening`` for the web probe), one plain sentence,
-    and the cwcli command that addresses it. Every frontend (the human ``status``,
-    ``axi status``, the web UI) renders these rather than deriving its own, so they
+    find, ``no response``/``not listening`` for the web probe) and one plain sentence.
+    ``axi status`` and the web UI render these rather than deriving their own, so they
     always name the same faults ``overall`` was computed from.
     """
 
@@ -134,7 +132,6 @@ class HealthReason:
     subject: str
     state: str
     text: str
-    fix: str | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -621,8 +618,6 @@ def _bench_status(
             web_probed=probed,
             web_port=web_port,
             web_site=web_site,
-            project_name=project_name,
-            bench_flag=bench_flag,
         )
     else:
         # No cwcli supervisord for this bench. Before reporting all-down, fall back
@@ -642,11 +637,8 @@ def _bench_status(
                 web_code=web_code,
                 web_listening=web_listening,
                 web_probed=probed,
-                not_cwcli_supervised=True,
                 web_port=web_port,
                 web_site=web_site,
-                project_name=project_name,
-                bench_flag=bench_flag,
             )
             # One hint per report, not per bench: the text is generic, so N benches
             # under honcho would otherwise repeat it verbatim N times.
@@ -663,8 +655,6 @@ def _bench_status(
                 web_code=web_code,
                 web_port=web_port,
                 web_site=web_site,
-                project_name=project_name,
-                bench_flag=bench_flag,
             )
     # A bench never started has nothing wrong with it, so no reason either.
     if not started:
@@ -763,8 +753,6 @@ def _bench_status_fused(
         web_probed=probed,
         web_port=web_port,
         web_site=web_site,
-        project_name=project_name,
-        bench_flag=bench_flag,
     )
     return BenchStatus(
         index=index,
@@ -886,20 +874,16 @@ def _reasons(
     web_probed: bool = True,
     web_port: int | None = None,
     web_site: str | None = None,
-    not_cwcli_supervised: bool = False,
-    project_name: str = "",
-    bench_flag: str = "",
 ) -> list[HealthReason]:
     """Every failed check behind a started bench's ``degraded``, in reading order.
 
     Unlike the honcho model, a stable partial stack (a program BACKOFF/FATAL/EXITED/
     STOPPED/down while supervisord keeps the rest alive) is a genuine fault and is
     named per program. A dead supervisor is ONE reason, not one per program: every
-    program is down because of it, and the fix is one command. When ``web_probed``
+    program is down because of it. When ``web_probed``
     is False (watch mode suppressed the web probe) a missing web code alone is not
     a fault - only supervisor-down or an unhealthy program is.
     """
-    start = f"cwcli start {project_name}{bench_flag}"
     if not supervisor_up:
         return [
             HealthReason(
@@ -910,7 +894,6 @@ def _reasons(
                     "The bench was started but its supervisor is not running, so none of "
                     "its processes are."
                 ),
-                fix=start,
             )
         ]
     out: list[HealthReason] = []
@@ -931,12 +914,6 @@ def _reasons(
                 subject=p.label,
                 state=state,
                 text=f"{p.label} is {state}" + (f": {detail}." if detail else "."),
-                fix=(
-                    start
-                    if not_cwcli_supervised
-                    else f"cwcli restart {project_name}{bench_flag} --process "
-                    f"{shlex.quote(p.label)}"
-                ),
             )
         )
     if web_probed:
@@ -955,11 +932,6 @@ def _reasons(
                     subject="web",
                     state=state,
                     text=text,
-                    fix=(
-                        start
-                        if not_cwcli_supervised
-                        else f"cwcli restart {project_name}{bench_flag} --process web"
-                    ),
                 )
             )
     return out

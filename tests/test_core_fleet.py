@@ -189,7 +189,7 @@ class TestHealthKey:
                 "reasons",
                 [
                     core_status.HealthReason(
-                        check="web", subject="web", state="no response", text="t", fix=None
+                        check="web", subject="web", state="no response", text="t"
                     )
                 ],
             ),

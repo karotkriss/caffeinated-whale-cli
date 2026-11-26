@@ -3,7 +3,7 @@
 // by core.status from the same facts as `overall`): which check failed (supervisor,
 // process or web), the state it saw, when the probe saw it, and the action that
 // addresses it. One component for the instance, bench and site pages, so every page
-// names the same reasons `cwcli status` prints. Several reasons fold into a native
+// names the same reasons `cwcli axi status` reports. Several reasons fold into a native
 // <details> panel, open by default, so nothing is hidden but the list can be tucked away.
 import { computed } from 'vue'
 import { Alert, Button } from 'frappe-ui'
@@ -27,7 +27,7 @@ const title = computed(() => {
   return props.site ? `${props.site} runs on a degraded bench (${props.ctx.benchName}): ${what}` : `${props.ctx.benchName} is degraded: ${what}`
 })
 // The action for a reason: restart that one program, or bring the bench (back) under
-// cwcli's supervisor when there is no supervisord to ask - the same fix the CLI names.
+// cwcli's supervisor when there is no supervisord to ask.
 const fix = (r) =>
   r.check === 'supervisor' || props.bench?.not_cwcli_supervised
     ? { label: 'Start bench', id: 'bench.start', ctx: props.ctx }
