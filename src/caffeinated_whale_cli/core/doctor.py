@@ -582,7 +582,9 @@ def _check_sendme() -> tuple:
     whole load-time import graph). WARN, never FAIL - sendme is optional, and the
     pinned release installs itself on the first send or receive (CLI or web UI),
     replacing a copy that does not match. Never runs the binary: a copy that does
-    not match is exactly the one that must not be executed.
+    not match is exactly the one that must not be executed. On a platform with no
+    pinned build there is nothing to check against, so the sendme on PATH is reported
+    as used unchecked (WARN), never as verified.
     """
     from ..utils.sendme_utils import (
         PINNED_VERSION,
@@ -592,7 +594,20 @@ def _check_sendme() -> tuple:
         pinned_release,
     )
 
-    pinned = pinned_release()[2]
+    release = pinned_release()
+    if release is None:
+        resolved = find_sendme()
+        if resolved is None:
+            return _outcome(
+                CheckStatus.WARN,
+                "not installed, and there is no pinned build for this platform",
+                manual_install_command(),
+            )
+        return _outcome(
+            CheckStatus.WARN,
+            f"no pinned build for this platform; using sendme from PATH ({resolved}) unchecked",
+        )
+    pinned = release[2]
     install_now = (
         f"the pinned sendme {PINNED_VERSION} installs itself on the first send or receive; "
         "to install it now: " + manual_install_command()
@@ -605,7 +620,10 @@ def _check_sendme() -> tuple:
             "not installed (optional; needed only to send or receive backups between machines)"
         ]
     elif _pin_matches(resolved, pinned):
-        parts = [f"{resolved} (sendme {PINNED_VERSION}, sha256 verified)"]
+        parts = [
+            f"{resolved} (sendme {PINNED_VERSION}, sha256 verified; each send or receive "
+            "runs a private copy whose bytes are checked against the same sha256)"
+        ]
     else:
         status = CheckStatus.WARN
         parts = [

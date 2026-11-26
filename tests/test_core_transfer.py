@@ -5,6 +5,7 @@ is a script so the pty path and the ticket parse run for real."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
@@ -315,7 +316,9 @@ def _fake_sendme(tmp_path, bundle: Path | None = None) -> Path:
 def test_send_bundles_the_sets_prints_one_ticket_and_cleans_its_outbox(home, monkeypatch, tmp_path):
     a = _set(home, "p", "a.localhost")
     b = _set(home, "p", "b.localhost")
-    monkeypatch.setattr(transfer, "_sendme", lambda _emit: str(_fake_sendme(tmp_path)))
+    monkeypatch.setattr(
+        transfer, "_sendme", lambda _emit: contextlib.nullcontext(str(_fake_sendme(tmp_path)))
+    )
     events = []
     seen = {"stop": False}
 
@@ -332,7 +335,9 @@ def test_send_bundles_the_sets_prints_one_ticket_and_cleans_its_outbox(home, mon
 
 def test_send_refuses_an_unverified_set(home, monkeypatch, tmp_path):
     bad = _set(home, "p", "a.localhost", verified=False)
-    monkeypatch.setattr(transfer, "_sendme", lambda _emit: str(_fake_sendme(tmp_path)))
+    monkeypatch.setattr(
+        transfer, "_sendme", lambda _emit: contextlib.nullcontext(str(_fake_sendme(tmp_path)))
+    )
     with pytest.raises(CwcliError) as e:
         transfer.send_sets([bad.key])
     assert e.value.code == "transfer.set_unverified"
@@ -354,7 +359,7 @@ def test_receive_runs_sendme_piped_where_the_os_has_no_pty(home, monkeypatch, tm
         f"cp -r '{other / 'backups'}'/. .\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setattr(transfer, "_sendme", lambda _emit: str(script))
+    monkeypatch.setattr(transfer, "_sendme", lambda _emit: contextlib.nullcontext(str(script)))
     monkeypatch.setattr(store, "_bench_index", lambda p, bp: 0)
     events = []
     r = transfer.receive_sets("blob" + "a" * 60, on_event=events.append)
@@ -373,7 +378,11 @@ def test_receive_files_every_set_in_the_download_into_the_store(home, monkeypatc
     a = _set(other, "my-instance", "shop.localhost")
     monkeypatch.setattr(store, "cwcli_home", lambda: home)
     bundle = other / "backups"
-    monkeypatch.setattr(transfer, "_sendme", lambda _emit: str(_fake_sendme(tmp_path, bundle)))
+    monkeypatch.setattr(
+        transfer,
+        "_sendme",
+        lambda _emit: contextlib.nullcontext(str(_fake_sendme(tmp_path, bundle))),
+    )
     monkeypatch.setattr(store, "_bench_index", lambda p, bp: 0)
     events = []
     r = transfer.receive_sets("blob" + "a" * 60, on_event=events.append)

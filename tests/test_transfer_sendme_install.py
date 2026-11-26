@@ -11,10 +11,12 @@ real job.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -135,19 +137,56 @@ def test_the_binary_check_matches_only_the_pinned_bytes(pinned, tmp_path):
 # ------------------------------------------------------------- install and run
 
 
-def test_an_installed_pinned_sendme_is_used_without_installing(pinned, tmp_path):
+def test_a_run_executes_a_private_verified_copy_never_the_installed_path(pinned, tmp_path):
+    """The bytes that run are the bytes that were hashed: a private copy in a fresh
+    0700 directory, removed once the run is over."""
     mine = _binary(tmp_path / "bin" / "sendme")
     events: list = []
-    assert transfer._sendme(events.append) == str(mine)
+    with transfer._sendme(events.append) as path:
+        copy = Path(path)
+        assert copy != mine and copy.read_bytes() == GOOD
+        assert os.access(copy, os.X_OK)
+        assert stat.S_IMODE(copy.parent.stat().st_mode) == 0o700
+        assert copy.parent.stat().st_uid == os.getuid()
+        assert not copy.parent.is_relative_to(tmp_path / "bin")
+    assert not copy.parent.exists()
     assert events == [] and pinned.urls == []
+
+
+def test_the_private_copy_is_removed_when_the_run_fails(pinned, tmp_path):
+    _binary(tmp_path / "bin" / "sendme")
+    with pytest.raises(RuntimeError):
+        with transfer._sendme(lambda _e: None) as path:
+            raise RuntimeError("sendme died")
+    assert not Path(path).parent.exists()
+
+
+def test_a_copy_that_does_not_match_is_never_executed(pinned, tmp_path, monkeypatch):
+    """Swap the installed file for another one exactly as it is being copied: the
+    copy's own bytes are what is hashed, so it is thrown away, never run."""
+    installed = _binary(tmp_path / "bin" / "sendme")
+    real_open = open
+
+    def swapping_open(file, mode="r", *a, **k):
+        if str(file) == str(installed) and "b" in mode and "r" in mode:
+            _binary(installed, EVIL)
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr("builtins.open", swapping_open)
+    monkeypatch.setattr(sendme_utils, "fetch_sendme", lambda **_k: _binary(installed, EVIL))
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(transfer, "_spawn_on_pty", _never_run)
+    with pytest.raises(CwcliError) as e:
+        transfer.receive_sets(TICKET)
+    assert "still does not match its sha256" in e.value.message
 
 
 def test_a_missing_sendme_is_installed_quietly_with_a_visible_step(pinned, tmp_path, capsys):
     events: list = []
-    path = transfer._sendme(events.append)
+    with transfer._sendme(events.append) as path:
+        assert Path(path).read_bytes() == GOOD
     installed = tmp_path / "bin" / "sendme"
-    assert path == str(installed) and installed.read_bytes() == GOOD
-    assert os.access(installed, os.X_OK)
+    assert installed.read_bytes() == GOOD and os.access(installed, os.X_OK)
     assert pinned.urls == [ASSET_URL]
     assert _steps(events) == [
         ("install", "Installing sendme v0.37.1 (sendme is not installed)", "start"),
@@ -160,7 +199,8 @@ def test_a_missing_sendme_is_installed_quietly_with_a_visible_step(pinned, tmp_p
 def test_a_mismatched_sendme_is_replaced_by_the_pinned_release_before_it_runs(pinned, tmp_path):
     swapped = _binary(tmp_path / "bin" / "sendme", EVIL)
     events: list = []
-    assert transfer._sendme(events.append) == str(swapped)
+    with transfer._sendme(events.append) as path:
+        assert Path(path).read_bytes() == GOOD
     assert swapped.read_bytes() == GOOD
     start = _steps(events)[0]
     assert start[2] == "start" and "is not the pinned sendme v0.37.1" in start[1]
@@ -200,7 +240,8 @@ def test_a_failed_install_names_the_reason_and_the_manual_command(pinned, tmp_pa
     pinned.offline = True
     events: list = []
     with pytest.raises(CwcliError) as e:
-        transfer._sendme(events.append)
+        with transfer._sendme(events.append):
+            pytest.fail("ran without sendme")
     command = f"mkdir -p {tmp_path / 'bin'} && cd {tmp_path / 'bin'} && "
     assert e.value.code == "transfer.sendme_missing"
     assert "Network error" in e.value.message and "no route to host" in e.value.message
@@ -277,6 +318,58 @@ def test_an_install_replaces_a_sendme_another_job_is_running(pinned, tmp_path):
     finally:
         proc.kill()
         proc.wait()
+
+
+# --------------------------------------------------- a platform with no pinned build
+
+
+@pytest.fixture
+def unpinned(monkeypatch, tmp_path):
+    """Linux on riscv64, which cwcli pins no sendme build for."""
+    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sendme_utils.platform, "machine", lambda: "riscv64")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda *_a: tmp_path / "bin")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(sendme_utils.requests, "get", lambda *a, **k: pytest.fail("downloaded"))
+    monkeypatch.setattr(sendme_utils, "sha256_file", lambda *_a: pytest.fail("hashed"))
+    monkeypatch.setattr(core_doctor.shared_home, "shared_mode", lambda: False)
+
+
+def test_an_unpinned_platform_never_gets_another_platforms_build(unpinned):
+    assert sendme_utils.get_platform_target() is None
+    assert sendme_utils.pinned_release() is None
+
+
+def test_an_unpinned_platform_runs_the_sendme_on_path_as_it_is(unpinned, monkeypatch, tmp_path):
+    own = _binary(tmp_path / "usr" / "bin" / "sendme", EVIL)
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: str(own))
+    events: list = []
+    with transfer._sendme(events.append) as path:
+        assert path == str(own)
+    assert events == [] and not (tmp_path / "bin").exists()
+
+
+def test_an_unpinned_platform_without_sendme_refuses_clearly(unpinned):
+    with pytest.raises(CwcliError) as e:
+        with transfer._sendme(lambda _e: None):
+            pytest.fail("ran without sendme")
+    assert e.value.code == "transfer.sendme_missing"
+    assert "no pinned sendme build for this platform" in e.value.message
+    assert "install sendme by hand" in e.value.message
+
+
+def test_doctor_on_an_unpinned_platform_reports_the_path_sendme_unchecked(
+    unpinned, monkeypatch, tmp_path
+):
+    own = _binary(tmp_path / "usr" / "bin" / "sendme")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: str(own))
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN
+    assert detail.startswith("no pinned build for this platform; using sendme from PATH")
+    assert str(own) in detail and "verified" not in detail
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
+    status, detail, _fix = core_doctor._check_sendme()
+    assert status is CheckStatus.WARN and detail.startswith("not installed")
 
 
 # --------------------------------------------------------------- cwcli doctor
@@ -485,7 +578,7 @@ def test_receive_reports_progress_from_sendmes_bar_on_a_pty(monkeypatch, tmp_pat
         "echo 'boom' >&2; exit 1\n"
     )
     script.chmod(0o755)
-    monkeypatch.setattr(transfer, "_sendme", lambda _emit: str(script))
+    monkeypatch.setattr(transfer, "_sendme", lambda _emit: contextlib.nullcontext(str(script)))
     events: list = []
     with pytest.raises(CwcliError) as e:
         transfer.receive_sets(TICKET, on_event=events.append)

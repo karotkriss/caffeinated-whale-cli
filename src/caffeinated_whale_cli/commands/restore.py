@@ -23,6 +23,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -57,8 +59,8 @@ from ..utils.sendme_utils import (
     SendmeInstallError,
     copy_to_clipboard,
     ensure_sendme_installed,
-    get_sendme_command,
     manual_install_command,
+    sendme_command,
 )
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running, resolve_bench_path_with_fallback
@@ -122,11 +124,14 @@ def _format_bytes(n: int) -> str:
     return f"{n / (1024**3):.2f} GiB"
 
 
-def _trusted_sendme() -> str:
-    """The pinned sendme, its sha256 checked right before it runs; exits 1 naming the
-    problem and the manual install command when no matching copy can be had."""
+@contextmanager
+def _trusted_sendme() -> Iterator[str]:
+    """The sendme to run for the length of the ``with`` block (a private copy checked
+    against the pinned sha256, see ``sendme_command``); exits 1 naming the problem and
+    the manual install command when there is no sendme it may run."""
     try:
-        return get_sendme_command()
+        with sendme_command() as path:
+            yield path
     except SendmeInstallError as e:
         stderr_console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
         stderr_console.print("[bold]Install it by hand:[/bold]")
@@ -874,34 +879,34 @@ def _run_receive(
         temp_path = Path(temp_dir).resolve()
         console.print()
         console.print("[bold cyan]Downloading backup files...[/bold cyan]")
-        sendme_cmd = _trusted_sendme()
-        try:
-            receive_cmd = [sendme_cmd, "receive", ticket]
-            if verbose:
-                stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
-            proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
-            if proc.returncode != 0:
-                stderr_text = proc.stderr or ""
-                explanation = _explain_sendme_failure(
-                    stderr_text,
-                    temp_path,
-                    space_error_detected=proc.space_error_detected,
-                )
-                if explanation:
-                    stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
-                else:
-                    stderr_console.print(
-                        "[bold red]Error:[/bold red] Failed to download files via sendme"
+        with _trusted_sendme() as sendme_cmd:
+            try:
+                receive_cmd = [sendme_cmd, "receive", ticket]
+                if verbose:
+                    stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
+                proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
+                if proc.returncode != 0:
+                    stderr_text = proc.stderr or ""
+                    explanation = _explain_sendme_failure(
+                        stderr_text,
+                        temp_path,
+                        space_error_detected=proc.space_error_detected,
                     )
-                if stderr_text and not verbose:
-                    stderr_console.print(stderr_text)
-                raise typer.Exit(code=1)
-        except FileNotFoundError as e:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] sendme command not found. "
-                "Try restarting your terminal or running: source ~/.bashrc"
-            )
-            raise typer.Exit(code=1) from e
+                    if explanation:
+                        stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
+                    else:
+                        stderr_console.print(
+                            "[bold red]Error:[/bold red] Failed to download files via sendme"
+                        )
+                    if stderr_text and not verbose:
+                        stderr_console.print(stderr_text)
+                    raise typer.Exit(code=1)
+            except FileNotFoundError as e:
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] sendme command not found. "
+                    "Try restarting your terminal or running: source ~/.bashrc"
+                )
+                raise typer.Exit(code=1) from e
 
         console.print("[bold green]✓[/bold green] Files downloaded successfully")
         console.print()
@@ -1004,71 +1009,71 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         console.print("[bold green]✓[/bold green] Files prepared for transfer")
         console.print()
 
-        sendme_cmd = _trusted_sendme()
-        console.print("[bold cyan]Creating sendme ticket...[/bold cyan]")
-        console.print()
-        try:
-            cmd = [sendme_cmd, "send", str(payload_path)]
-            if verbose:
-                stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(temp_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-            ticket = None
-            ticket_line_pattern = re.compile(r"sendme receive (\S+)")
-            if process.stdout:
-                for line in iter(process.stdout.readline, ""):
-                    stripped = line.strip()
-                    if verbose and stripped and line and not line[0].isspace():
-                        stderr_console.print(f"[dim]\\[sendme] {stripped}[/dim]")
-                    match = ticket_line_pattern.search(line)
-                    if match:
-                        ticket = match.group(1)
-                        break
-                    if process.poll() is not None:
-                        break
-
-            if ticket:
-                if copy_to_clipboard(ticket):
-                    clipboard_msg = "[dim]Ticket copied to clipboard.[/dim]"
-                else:
-                    clipboard_msg = (
-                        "[yellow]Could not copy to clipboard. Please copy it manually.[/yellow]"
-                    )
-                console.print(f"\n[bold green]sendme ticket:[/bold green] {ticket}")
-                console.print(clipboard_msg)
-                console.print("\n[bold cyan]Instructions for the other machine:[/bold cyan]")
-                console.print("1. Run: [bold]cwcli restore <project_name> --receive[/bold]")
-                console.print("2. Paste the ticket when prompted.")
-                console.print("\n[dim]Waiting for transfer... Press Ctrl+C when done.[/dim]\n")
-                process.wait()
-            else:
-                stderr_console.print(
-                    "[bold red]Error:[/bold red] Could not extract sendme ticket from output."
-                )
-                stderr_output = process.stderr.read() if process.stderr else ""
-                if stderr_output:
-                    stderr_console.print(f"[dim]sendme error output:[/dim]\n{stderr_output}")
-                raise typer.Exit(code=1)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Send operation cancelled by user.[/yellow]")
-            process.terminate()
+        with _trusted_sendme() as sendme_cmd:
+            console.print("[bold cyan]Creating sendme ticket...[/bold cyan]")
+            console.print()
             try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            raise typer.Exit(code=0) from None
-        except FileNotFoundError as e:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] sendme command not found. "
-                "Try restarting your terminal or running: source ~/.bashrc"
-            )
-            raise typer.Exit(code=1) from e
+                cmd = [sendme_cmd, "send", str(payload_path)]
+                if verbose:
+                    stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=str(temp_path),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                )
+                ticket = None
+                ticket_line_pattern = re.compile(r"sendme receive (\S+)")
+                if process.stdout:
+                    for line in iter(process.stdout.readline, ""):
+                        stripped = line.strip()
+                        if verbose and stripped and line and not line[0].isspace():
+                            stderr_console.print(f"[dim]\\[sendme] {stripped}[/dim]")
+                        match = ticket_line_pattern.search(line)
+                        if match:
+                            ticket = match.group(1)
+                            break
+                        if process.poll() is not None:
+                            break
+
+                if ticket:
+                    if copy_to_clipboard(ticket):
+                        clipboard_msg = "[dim]Ticket copied to clipboard.[/dim]"
+                    else:
+                        clipboard_msg = (
+                            "[yellow]Could not copy to clipboard. Please copy it manually.[/yellow]"
+                        )
+                    console.print(f"\n[bold green]sendme ticket:[/bold green] {ticket}")
+                    console.print(clipboard_msg)
+                    console.print("\n[bold cyan]Instructions for the other machine:[/bold cyan]")
+                    console.print("1. Run: [bold]cwcli restore <project_name> --receive[/bold]")
+                    console.print("2. Paste the ticket when prompted.")
+                    console.print("\n[dim]Waiting for transfer... Press Ctrl+C when done.[/dim]\n")
+                    process.wait()
+                else:
+                    stderr_console.print(
+                        "[bold red]Error:[/bold red] Could not extract sendme ticket from output."
+                    )
+                    stderr_output = process.stderr.read() if process.stderr else ""
+                    if stderr_output:
+                        stderr_console.print(f"[dim]sendme error output:[/dim]\n{stderr_output}")
+                    raise typer.Exit(code=1)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Send operation cancelled by user.[/yellow]")
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                raise typer.Exit(code=0) from None
+            except FileNotFoundError as e:
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] sendme command not found. "
+                    "Try restarting your terminal or running: source ~/.bashrc"
+                )
+                raise typer.Exit(code=1) from e
 
 
 @handle_docker_errors

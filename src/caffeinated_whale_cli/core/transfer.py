@@ -29,7 +29,8 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -447,14 +448,16 @@ def _site_exists(project: str, bench: str | None, site: str) -> bool:
 # ------------------------------------------------------------------ across machines
 
 
-def _sendme(emit: OnEvent) -> str:
-    """The sendme binary to run, checked against the pinned release's sha256 right
-    before every run; a missing or mismatched one is replaced by the pinned release
-    first, the way `cwcli restore --send/--receive` does, into ``~/.local/bin`` of the
-    account cwcli runs as (for the web UI of a shared install, the service account).
-    The install prints nothing, so a web UI job or ``--json`` output stays clean; a
-    sendme that still does not match is never run, and the error names the manual
-    command."""
+@contextmanager
+def _sendme(emit: OnEvent) -> Iterator[str]:
+    """The sendme to run for the length of the ``with`` block: with a pinned build for
+    this platform, a private copy of the installed binary whose bytes were checked
+    against the pinned sha256 as they were copied (a missing or mismatched install is
+    first replaced by the pinned release, into ``~/.local/bin`` of the account cwcli
+    runs as, which for the web UI of a shared install is the service account);
+    without one, the sendme on PATH. The install prints nothing, so a web UI job or
+    ``--json`` output stays clean; when there is no sendme it may run, the error names
+    the manual command."""
     from ..utils import sendme_utils  # lazy: sendme_utils pulls rich at load time
 
     installing: list[str] = []
@@ -464,7 +467,14 @@ def _sendme(emit: OnEvent) -> str:
         emit(StoreStep("install", installing[-1]))
 
     try:
-        path = sendme_utils.get_sendme_command(progress=False, on_install=announce)
+        with sendme_utils.sendme_command(progress=False, on_install=announce) as path:
+            if installing:
+                emit(
+                    StoreStep(
+                        "install", f"Installed sendme to {sendme_utils.get_sendme_path()}", "ok"
+                    )
+                )
+            yield path
     except sendme_utils.SendmeInstallError as e:
         if installing:
             emit(StoreStep("install", installing[-1], "failed"))
@@ -475,9 +485,6 @@ def _sendme(emit: OnEvent) -> str:
             f"{e}. Install it by hand: {command}",
             detail={"install_command": command, "reason": str(e)},
         ) from e
-    if installing:
-        emit(StoreStep("install", f"Installed sendme to {path}", "ok"))
-    return path
 
 
 def _outbox(keys: list[str]) -> Path:
@@ -546,7 +553,13 @@ def send_sets(
     """Serve ``keys`` over sendme until interrupted (the ticket rides a ``ticket`` event
     as soon as sendme prints it). Returns when sendme exits or ``stop()`` says so."""
     emit = on_event or _noop
-    cmd = _sendme(emit)
+    with _sendme(emit) as cmd:
+        return _serve(cmd, keys, emit, stop)
+
+
+def _serve(
+    cmd: str, keys: list[str], emit: OnEvent, stop: Callable[[], bool] | None
+) -> Result[dict[str, Any]]:
     box = _outbox(keys)
     emit(StoreStep("send", f"Serving {len(keys)} set{'s' if len(keys) != 1 else ''} over sendme"))
     proc, master = _spawn_on_pty([cmd, "send", str(box)], box.parent)
@@ -653,7 +666,13 @@ def receive_sets(
     ticket = "".join(ticket.split())
     if not ticket.startswith("blob") or len(ticket) < 40:
         raise CwcliError(ErrorKind.USAGE, "transfer.ticket", "That is not a sendme ticket.")
-    cmd = _sendme(emit)
+    with _sendme(emit) as cmd:
+        return _receive(cmd, ticket, project, site, emit)
+
+
+def _receive(
+    cmd: str, ticket: str, project: str | None, site: str | None, emit: OnEvent
+) -> Result[dict[str, Any]]:
     inbox = backup_store.store_root() / ".inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     shared_home.secure_dir_shared_only(inbox)

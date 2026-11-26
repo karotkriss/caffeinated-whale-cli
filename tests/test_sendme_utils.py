@@ -55,7 +55,10 @@ def test_sendme_path_unix_vs_windows(monkeypatch, tmp_path):
         ("Linux", "aarch64", "linux-aarch64"),
         ("Linux", "arm64", "linux-aarch64"),
         ("Linux", "x86_64", "linux-x86_64"),
-        ("Plan9", "riscv", "linux-x86_64"),  # unknown OS -> linux-x86_64 default
+        ("Windows", "AMD64", "windows-x86_64"),
+        ("Plan9", "riscv", None),  # no pinned build: never another platform's
+        ("Linux", "armv7l", None),
+        ("Windows", "arm64", None),
     ],
 )
 def test_platform_target(monkeypatch, system, machine, expected):
@@ -302,9 +305,31 @@ def test_setup_path_creates_bashrc_when_no_config(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # ensure_sendme_installed (composition over the pinned check)
 # --------------------------------------------------------------------------- #
-def test_ensure_short_circuits_when_the_pinned_sendme_is_installed(monkeypatch):
-    monkeypatch.setattr(sendme_utils, "find_sendme", lambda: "/opt/sendme")
-    monkeypatch.setattr(sendme_utils, "is_pinned_sendme", lambda _p: True)
+@pytest.fixture
+def pinned_binary(monkeypatch, tmp_path):
+    """A Linux x86_64 box pinned to ``_BINARY`` (its sha256 from ``hashlib``), whose
+    install dir is ``tmp_path/bin``; nothing on PATH."""
+    monkeypatch.setitem(
+        sendme_utils._PINNED,
+        "linux-x86_64",
+        ("a.tar.gz", "x", hashlib.sha256(_BINARY).hexdigest()),
+    )
+    monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    monkeypatch.setattr(sendme_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr(sendme_utils.shutil, "which", lambda _n: None)
+    return tmp_path / "bin" / "sendme"
+
+
+def _write(path: Path, data: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    path.chmod(0o755)
+    return path
+
+
+def test_ensure_short_circuits_when_the_pinned_sendme_is_installed(monkeypatch, pinned_binary):
+    _write(pinned_binary, _BINARY)
     monkeypatch.setattr(
         sendme_utils,
         "fetch_sendme",
@@ -313,28 +338,17 @@ def test_ensure_short_circuits_when_the_pinned_sendme_is_installed(monkeypatch):
     assert sendme_utils.ensure_sendme_installed(verbose=True) is True
 
 
-def test_ensure_installs_when_absent(monkeypatch, tmp_path):
-    installed = tmp_path / "sendme"
-    state = {"present": False}
-
-    def fetch(**_k):
-        state["present"] = True
-        return installed
-
-    monkeypatch.setattr(
-        sendme_utils, "find_sendme", lambda: str(installed) if state["present"] else None
-    )
-    monkeypatch.setattr(sendme_utils, "is_pinned_sendme", lambda _p: True)
-    monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
+def test_ensure_installs_when_absent(monkeypatch, pinned_binary):
+    monkeypatch.setattr(sendme_utils, "fetch_sendme", lambda **_k: _write(pinned_binary, _BINARY))
     monkeypatch.setattr(sendme_utils, "setup_path", lambda *a, **k: None)
     assert sendme_utils.ensure_sendme_installed() is True
+    assert pinned_binary.read_bytes() == _BINARY
 
 
-def test_ensure_reports_failure_when_install_fails(monkeypatch):
+def test_ensure_reports_failure_when_install_fails(monkeypatch, pinned_binary):
     def fetch(**_k):
         raise sendme_utils.SendmeInstallError("offline")
 
-    monkeypatch.setattr(sendme_utils, "find_sendme", lambda: None)
     monkeypatch.setattr(sendme_utils, "fetch_sendme", fetch)
     monkeypatch.setattr(sendme_utils, "manual_install_command", lambda: "install-it")
     assert sendme_utils.ensure_sendme_installed() is False
