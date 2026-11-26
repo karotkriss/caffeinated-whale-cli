@@ -1,26 +1,29 @@
-"""App code added to a serving bench must be loaded by the bench's running processes.
+"""Apps installed on a site of a serving bench must be loaded by its running processes.
 
 The defect: an app reached a RUNNING bench and was installed on a site, and the site
 answered HTTP 500 until ``cwcli restart``, because the web and worker processes booted
 before the app existed and a Python process computes its import path once, at boot.
+cwcli cannot tell when an app already in ``apps/`` arrived (``cwcli run <p> get-app``,
+an older cwcli), so the rule pinned here, with no Docker (every container read is
+faked at the supervisord and HTTP boundary), is:
 
-The rule pinned here, with no Docker (every container read is faked at the
-supervisord boundary):
-
-(a) only an operation that ADDED code (a fetch, a moved checkout) reloads; a site that
-    installs apps already on the bench restarts nothing;
-(b) a composed operation (``new_site``) reloads ONCE, at its end, after every install;
-(c) the reload is judged by the restarted programs returning to RUNNING, and no site
-    is ever probed, so an unrelated site in maintenance cannot fail the operation.
+1. an operation that installed an app on a site reloads the bench ONCE, at its end,
+   whether or not this call fetched the app; a fetch alone reloads nothing;
+2. the reload is proven by the restarted programs returning to RUNNING and by ONLY
+   the changed sites answering HTTP 200: an unrelated site is never probed.
 """
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
+from caffeinated_whale_cli import jobs
 from caffeinated_whale_cli.core import app_deps, supervision
 from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import init as core_init
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 from .test_app_deps_flows import _gets, _wire_new_site, world  # noqa: F401 - the fixture
@@ -36,13 +39,25 @@ LIVE = {
     "worker_long": ("STOPPED", None),
     "redis_cache": ("RUNNING", 5),
 }
+PYTHON_PROGRAMS = ["web", "schedule", "worker_default"]
 
 
-def _supervised_bench(monkeypatch, *, after=None, supervised=True, manager_up=False):
-    """A bench whose supervisord reports ``LIVE``; ``after`` is what each status read
-    returns once a restart happened. Returns the shared event log."""
+def _bench(monkeypatch, *, after=None, supervised=True, manager_up=False, serving=None):
+    """A bench whose supervisord reports ``LIVE`` (``after``: the status reads once a
+    restart happened) and whose sites answer ``serving`` (any other site probed is a
+    test failure). Returns the shared event log; probes are logged as ``probe <site>``."""
     log: list[str] = []
     reads = iter(after or [])
+    answers = {"a.localhost": "200", "shop.localhost": "200", **(serving or {})}
+    clock = [0.0]
+    monkeypatch.setattr(
+        supervision,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: clock[0],
+            sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+        ),
+    )
     monkeypatch.setattr(
         supervision,
         "discover_stack",
@@ -65,13 +80,17 @@ def _supervised_bench(monkeypatch, *, after=None, supervised=True, manager_up=Fa
         log.append(f"restart {program}")
         return 0, ""
 
-    def probe(*_a, **_k):
-        raise AssertionError("a site was probed")
+    def probe(_c, *, port, site, **_k):
+        assert site in answers, f"an unrelated site was probed: {site}"
+        log.append(f"probe {site}")
+        return answers[site]
 
     monkeypatch.setattr(supervision, "supervisorctl_states", states)
     monkeypatch.setattr(supervision, "restart_program", restart)
     monkeypatch.setattr(supervision, "web_http_code", probe)
-    monkeypatch.setattr(supervision.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        supervision.resolvers, "resolve_web_ports", lambda _c, paths: dict.fromkeys(paths, 8000)
+    )
     return log
 
 
@@ -79,124 +98,142 @@ def _restarts(log):
     return [e.split(" ", 1)[1] for e in log if e.startswith("restart ")]
 
 
-class TestReloadAfterFetch:
-    """(a) and (c) at the shared step."""
+def _probes(log):
+    return sorted({e.split(" ", 1)[1] for e in log if e.startswith("probe ")})
 
-    def test_no_added_code_restarts_nothing(self, monkeypatch):
-        log = _supervised_bench(monkeypatch)
-        outcome = supervision.reload_after_fetch(object(), BENCH, code_added=False, project="proj")
+
+def _reload(**kwargs):
+    return supervision.reload_after_install(object(), BENCH, project="proj", **kwargs)
+
+
+class TestReloadAfterInstall:
+    """The shared step: restart the live Python programs, prove only the changed sites."""
+
+    def test_nothing_installed_restarts_nothing(self, monkeypatch):
+        log = _bench(monkeypatch)
+        outcome = _reload(needed=False, sites=["a.localhost"])
         assert outcome.ok and outcome.restarted == [] and log == []
 
-    def test_added_code_restarts_only_the_live_python_programs(self, monkeypatch):
-        log = _supervised_bench(monkeypatch)
-        outcome = supervision.reload_after_fetch(object(), BENCH, code_added=True, project="proj")
-        # socketio and redis import no app; a stopped worker stays stopped.
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
-        assert outcome.ok and outcome.restarted == ["web", "schedule", "worker_default"]
+    def test_restarts_the_live_python_programs_and_probes_only_the_changed_site(self, monkeypatch):
+        log = _bench(monkeypatch, serving={"broken.localhost": "500"})
+        outcome = _reload(needed=True, sites=["a.localhost"])
+        # socketio and redis import no app; a stopped worker stays stopped; the bench's
+        # other site (answering 500) is never asked.
+        assert _restarts(log) == PYTHON_PROGRAMS
+        assert _probes(log) == ["a.localhost"]
+        assert outcome.ok and outcome.restarted == PYTHON_PROGRAMS
+
+    def test_a_changed_site_that_does_not_serve_fails_the_reload(self, monkeypatch):
+        _bench(monkeypatch, serving={"a.localhost": "500"})
+        outcome = _reload(needed=True, sites=["a.localhost"], timeout=5)
+        assert not outcome.ok and outcome.unserved_sites == ["a.localhost"]
 
     def test_a_program_still_starting_is_waited_for(self, monkeypatch):
         starting = dict(LIVE, web=("STARTING", 9))
-        _supervised_bench(monkeypatch, after=[starting, dict(LIVE)])
-        outcome = supervision.reload_after_fetch(object(), BENCH, code_added=True, project="proj")
-        assert outcome.ok
+        _bench(monkeypatch, after=[starting, dict(LIVE)])
+        assert _reload(needed=True, sites=["a.localhost"]).ok
 
     def test_a_program_that_does_not_return_to_running_fails_the_reload(self, monkeypatch):
         fatal = dict(LIVE, worker_default=("FATAL", None))
-        _supervised_bench(monkeypatch, after=[fatal] * 5)
-        outcome = supervision.reload_after_fetch(
-            object(), BENCH, code_added=True, project="proj", timeout=0
-        )
+        _bench(monkeypatch, after=[fatal] * 50)
+        outcome = _reload(needed=True, sites=["a.localhost"], timeout=5)
         assert not outcome.ok
         assert "worker_default" in outcome.error and "cwcli restart proj" in outcome.error
 
+    def test_an_unreadable_supervisord_state_fails_honestly(self, monkeypatch):
+        log = _bench(monkeypatch)
+        monkeypatch.setattr(supervision, "supervisorctl_states", lambda *_a, **_k: {})
+        outcome = _reload(needed=True, sites=["a.localhost"])
+        assert not outcome.ok and "cwcli restart proj" in outcome.error
+        assert log == []
+
     def test_an_unsupervised_running_bench_is_reported_with_the_restart_remedy(self, monkeypatch):
-        log = _supervised_bench(monkeypatch, supervised=False, manager_up=True)
-        outcome = supervision.reload_after_fetch(object(), BENCH, code_added=True, project="proj")
+        log = _bench(monkeypatch, supervised=False, manager_up=True)
+        outcome = _reload(needed=True, sites=["a.localhost"])
         assert not outcome.ok and "cwcli restart proj" in outcome.error
         assert log == []
 
     def test_a_stopped_bench_stays_stopped(self, monkeypatch):
-        log = _supervised_bench(monkeypatch, supervised=False, manager_up=False)
-        outcome = supervision.reload_after_fetch(object(), BENCH, code_added=True, project="proj")
-        assert outcome.ok and log == []
+        log = _bench(monkeypatch, supervised=False, manager_up=False)
+        assert _reload(needed=True, sites=["a.localhost"]).ok and log == []
 
 
-class TestReloadForAddedCode:
+class TestReloadForInstalledApps:
     """The report-shaping step ``new_site`` and ``init`` share."""
 
     def test_a_failed_reload_is_a_warning_and_not_ok(self, monkeypatch):
-        _supervised_bench(monkeypatch, supervised=False, manager_up=True)
+        _bench(monkeypatch, supervised=False, manager_up=True)
         warnings: list = []
         events: list = []
-        _restarted, ok = core_init.reload_for_added_code(
-            object(), BENCH, project="proj", code_added=True, warnings=warnings, emit=events.append
+        _restarted, ok = core_init.reload_for_installed_apps(
+            object(),
+            BENCH,
+            project="proj",
+            needed=True,
+            site="a.localhost",
+            warnings=warnings,
+            emit=events.append,
         )
         assert ok is False
         assert [w.code for w in warnings] == ["site.reload_failed"]
         assert events[-1].code == "site.reload_failed"
 
     def test_restarts_are_announced(self, monkeypatch):
-        _supervised_bench(monkeypatch)
+        _bench(monkeypatch)
         events: list = []
-        restarted, ok = core_init.reload_for_added_code(
-            object(), BENCH, project="proj", code_added=True, warnings=[], emit=events.append
+        restarted, ok = core_init.reload_for_installed_apps(
+            object(),
+            BENCH,
+            project="proj",
+            needed=True,
+            site="a.localhost",
+            warnings=[],
+            emit=events.append,
         )
-        assert ok and restarted == ["web", "schedule", "worker_default"]
+        assert ok and restarted == PYTHON_PROGRAMS
         assert [e.item for e in events if e.phase == "restart_processes"] == restarted
 
 
+def _cached(monkeypatch):
+    monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+
+
 class TestAppsInstall:
-    def test_fetch_only_reloads_once_without_probing_a_site(
+    def test_an_app_already_on_the_bench_installed_on_a_site_reloads(
         self, monkeypatch, container  # noqa: F811
     ):
-        log = _supervised_bench(monkeypatch)
-        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
-
-        result = core_apps.install_apps("proj", ["payments"], fetch_only=True)
-
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
-        assert [(r.action, r.ok) for r in result.data.results] == [
-            ("get-app", True),
-            ("restart-processes", True),
-        ]
-        assert result.data.ok
-
-    def test_an_app_already_on_the_bench_is_installed_without_a_reload(
-        self, monkeypatch, container  # noqa: F811
-    ):
+        """The staging16 sequence: the app reached apps/ outside this call."""
         container.available = ["frappe", "payments"]
-        log = _supervised_bench(monkeypatch)
-        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+        log = _bench(monkeypatch)
+        _cached(monkeypatch)
 
         result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
-        assert log == []
-        assert [r.action for r in result.data.results] == ["get-app", "install-app"]
+        assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == ["a.localhost"]
+        assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", True)
         assert result.data.ok
+
+    def test_fetch_only_reloads_nothing(self, monkeypatch, container):  # noqa: F811
+        log = _bench(monkeypatch)
+        _cached(monkeypatch)
+
+        result = core_apps.install_apps("proj", ["payments"], fetch_only=True)
+
+        assert log == [] and [r.action for r in result.data.results] == ["get-app"]
 
     def test_a_failed_install_is_an_install_failure_not_a_restart_failure(
         self, monkeypatch, container  # noqa: F811
     ):
         container.fail_on = ["install-app"]
-        log = _supervised_bench(monkeypatch)
-        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+        log = _bench(monkeypatch)
+        _cached(monkeypatch)
 
         result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
         rows = [(r.action, r.ok) for r in result.data.results]
         assert ("install-app", False) in rows
-        assert ("restart-processes", True) in rows and ("restart-processes", False) not in rows
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
-
-    def test_reload_false_leaves_the_reload_to_the_caller(
-        self, monkeypatch, container  # noqa: F811
-    ):
-        log = _supervised_bench(monkeypatch)
-        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
-
-        result = core_apps.install_apps("proj", ["payments"], fetch_only=True, reload=False)
-
-        assert log == [] and [r.action for r in result.data.results] == ["get-app"]
+        assert not [r for r in rows if r[0] == "restart-processes"]
+        assert log == []
 
 
 def _run_new_site(monkeypatch, container, new_site, log, fail_phase=None, **kwargs):  # noqa: F811
@@ -216,52 +253,65 @@ def _run_new_site(monkeypatch, container, new_site, log, fail_phase=None, **kwar
     return new_site.new_site("proj", site="shop.localhost", admin_password="a", **kwargs)
 
 
+def _fetching_new_site(monkeypatch, world, container):  # noqa: F811
+    new_site = _wire_new_site(monkeypatch, container)
+    monkeypatch.setattr(
+        app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
+    )
+    monkeypatch.setattr(
+        new_site,
+        "_directory_exists",
+        lambda _c, path: "/apps/" in path and bool(_gets(container)),
+    )
+    return new_site
+
+
 class TestNewSite:
-    def test_two_fetched_repositories_reload_once_after_the_installs(
+    def test_apps_already_on_the_bench_reload_once_after_the_installs(
         self, world, container, monkeypatch  # noqa: F811
     ):
         new_site = _wire_new_site(monkeypatch, container)
-        monkeypatch.setattr(
-            app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
-        )
-        monkeypatch.setattr(
-            new_site,
-            "_directory_exists",
-            lambda _c, path: "/apps/" in path and bool(_gets(container)),
-        )
-        log = _supervised_bench(monkeypatch)
+        container.available.extend(["toolkit", "booking"])
+        monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+        log = _bench(monkeypatch)
+
+        result = _run_new_site(monkeypatch, container, new_site, log, apps=["toolkit"])
+
+        assert _gets(container) == []
+        assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == ["shop.localhost"]
+        last_install = max(i for i, e in enumerate(log) if e.startswith("install_app "))
+        assert min(i for i, e in enumerate(log) if e.startswith("restart ")) > last_install
+        assert result.data.ok and result.data.processes_restarted == PYTHON_PROGRAMS
+
+    def test_two_fetched_repositories_reload_exactly_once_at_the_end(
+        self, world, container, monkeypatch  # noqa: F811
+    ):
+        new_site = _fetching_new_site(monkeypatch, world, container)
+        log = _bench(monkeypatch)
 
         result = _run_new_site(
-            monkeypatch,
-            container,
-            new_site,
-            log,
-            apps=["booking"],
-            fetch=[BOOKING],
-            with_deps=True,
+            monkeypatch, container, new_site, log, apps=["booking"], fetch=[BOOKING], with_deps=True
         )
 
         assert len(_gets(container)) == 2
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
+        assert _restarts(log) == PYTHON_PROGRAMS
         last_install = max(i for i, e in enumerate(log) if e.startswith("install_app "))
-        first_restart = min(i for i, e in enumerate(log) if e.startswith("restart "))
-        assert first_restart > last_install
-        assert result.data.ok and result.data.processes_restarted == _restarts(log)
+        assert min(i for i, e in enumerate(log) if e.startswith("restart ")) > last_install
+        assert result.data.ok
 
-    @pytest.mark.parametrize("supervised", [True, False])
-    def test_a_fetch_that_landed_is_reloaded_when_creating_the_site_fails(
-        self, world, container, monkeypatch, supervised  # noqa: F811
-    ):
+    def test_a_site_with_no_app_restarts_nothing(self, world, container, monkeypatch):  # noqa: F811
         new_site = _wire_new_site(monkeypatch, container)
-        monkeypatch.setattr(
-            app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
-        )
-        monkeypatch.setattr(
-            new_site,
-            "_directory_exists",
-            lambda _c, path: "/apps/" in path and bool(_gets(container)),
-        )
-        log = _supervised_bench(monkeypatch, supervised=supervised, manager_up=True)
+        log = _bench(monkeypatch)
+
+        result = _run_new_site(monkeypatch, container, new_site, log)
+
+        assert _restarts(log) == [] and result.data.processes_restarted == []
+
+    def test_a_fetch_alone_reloads_nothing_when_creating_the_site_fails(
+        self, world, container, monkeypatch  # noqa: F811
+    ):
+        new_site = _fetching_new_site(monkeypatch, world, container)
+        log = _bench(monkeypatch)
 
         with pytest.raises(CwcliError) as raised:
             _run_new_site(
@@ -276,103 +326,100 @@ class TestNewSite:
             )
 
         assert raised.value.code == "init.command_failed"
-        assert len(_gets(container)) == 2
-        if supervised:
-            assert _restarts(log) == ["web", "schedule", "worker_default"]
-            assert "cwcli restart" not in raised.value.message
-        else:
-            # A bench cwcli cannot restart: the remedy rides the error every surface shows.
-            assert _restarts(log) == []
-            assert raised.value.message.startswith("new_site failed")
-            assert "cwcli restart proj" in raised.value.message
+        assert len(_gets(container)) == 2 and _restarts(log) == []
 
-    def test_a_site_with_only_bench_apps_restarts_nothing(
-        self, world, container, monkeypatch  # noqa: F811
+    @pytest.mark.parametrize("supervised", [True, False])
+    def test_installed_apps_are_reloaded_when_a_later_step_fails(
+        self, world, container, monkeypatch, supervised  # noqa: F811
     ):
         new_site = _wire_new_site(monkeypatch, container)
         container.available.extend(["toolkit", "booking"])
         monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
-        log = _supervised_bench(monkeypatch)
+        log = _bench(monkeypatch, supervised=supervised, manager_up=True)
 
-        result = _run_new_site(monkeypatch, container, new_site, log, apps=["toolkit"])
+        with pytest.raises(CwcliError) as raised:
+            _run_new_site(
+                monkeypatch,
+                container,
+                new_site,
+                log,
+                fail_phase="use",
+                apps=["toolkit"],
+                default=True,
+            )
 
-        assert _gets(container) == []
-        assert any(e.startswith("install_app ") for e in log)
-        assert _restarts(log) == []
-        assert result.data.ok and result.data.processes_restarted == []
+        if supervised:
+            assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == []
+            assert "cwcli restart" not in raised.value.message
+        else:
+            # A bench cwcli cannot restart: the remedy rides the error every surface shows.
+            assert _restarts(log) == []
+            assert raised.value.message.startswith("use failed")
+            assert "cwcli restart proj" in raised.value.message
 
 
 class TestInitErpnextOnAReusedBench:
-    """Init's ERPNext reloads a reused bench only when apps/erpnext was not there."""
-
-    def _init(self, monkeypatch, dirs):
+    def test_erpnext_already_on_the_bench_still_reloads(self, monkeypatch, patched):  # noqa: F811
         from .test_core_init import (
             BENCH_PATH,
             PROJECT,
+            SITE,
             FakeContainer,
             bench_kwargs,
             use_container,
         )
 
-        log = _supervised_bench(monkeypatch)
-        use_container(monkeypatch, FakeContainer(dirs_exist={BENCH_PATH, *dirs}))
-        result = core_init.init_bench(
+        log = _bench(monkeypatch, serving={SITE: "200"})
+        use_container(
+            monkeypatch, FakeContainer(dirs_exist={BENCH_PATH, f"{BENCH_PATH}/apps/erpnext"})
+        )
+
+        report = core_init.init_bench(
             PROJECT, **bench_kwargs(reuse_bench=True, install_erpnext=True)
-        )
-        return result.data, _restarts(log)
+        ).data
 
-    def test_a_newly_fetched_erpnext_reloads_the_bench(self, monkeypatch, patched):  # noqa: F811
-        report, restarts = self._init(monkeypatch, dirs=())
         assert report.erpnext_installed and report.ok
-        assert restarts == ["web", "schedule", "worker_default"]
-        assert report.processes_restarted == restarts
+        assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == [SITE]
+        assert report.processes_restarted == PYTHON_PROGRAMS
 
-    def test_an_erpnext_already_on_the_bench_restarts_nothing(
-        self, monkeypatch, patched  # noqa: F811
-    ):
-        report, restarts = self._init(monkeypatch, dirs=(f"{BENCH}/apps/erpnext",))
-        assert report.erpnext_installed and report.ok
-        assert restarts == [] and report.processes_restarted == []
 
-    @pytest.mark.parametrize("supervised", [True, False])
-    def test_a_fetched_erpnext_is_reloaded_when_its_install_fails(
-        self, monkeypatch, patched, supervised  # noqa: F811
-    ):
-        from .test_core_init import (
-            BENCH_PATH,
-            PROJECT,
-            FakeApi,
-            FakeContainer,
-            bench_kwargs,
-            use_container,
-        )
+def test_the_web_ui_init_job_fails_when_the_reload_failed(monkeypatch):
+    report = core_init.InitReport(
+        project="p",
+        bench_name="frappe-bench",
+        bench_path=BENCH,
+        site_name="p.localhost",
+        bench_created=False,
+        site_created=True,
+        erpnext_installed=True,
+        ok=False,
+    )
+    monkeypatch.setattr(jobs.core_init, "init_instance", lambda *_a, **_k: Result(status=Status.OK))
+    monkeypatch.setattr(
+        jobs.core_init, "init_bench", lambda *_a, **_k: Result(status=Status.WARNING, data=report)
+    )
+    monkeypatch.setattr(jobs.cache, "recache_project", lambda *_a, **_k: True)
 
-        log = _supervised_bench(monkeypatch, supervised=supervised, manager_up=True)
-        api = FakeApi(fail_command="install-app erpnext")
-        use_container(monkeypatch, FakeContainer(api=api, dirs_exist={BENCH_PATH}))
-        with pytest.raises(CwcliError) as raised:
-            core_init.init_bench(PROJECT, **bench_kwargs(reuse_bench=True, install_erpnext=True))
-        assert any("get-app" in c["command"] for c in api.exec_calls)
-        if supervised:
-            assert _restarts(log) == ["web", "schedule", "worker_default"]
-        else:
-            assert _restarts(log) == []
-            assert f"cwcli restart {PROJECT}" in raised.value.message
+    result = jobs._run_init(
+        {"project": "p"}, {"start": False}, {"admin_password": "x"}, lambda _e: None
+    )
+
+    assert jobs._result_ok(result) is False
 
 
 class TestComposedCheckout:
-    """``checkout_app(reload=False)`` skips only the reload; ``new_site`` reloads only
-    for a checkout that actually moved the tree."""
+    """``checkout_app(reload=False)`` skips only the reload; ``new_site`` reloads on
+    failure only for a checkout that actually moved the tree."""
 
     def test_reload_false_still_fails_a_checkout_the_bench_does_not_import(
         self, monkeypatch, container  # noqa: F811
     ):
         from .test_core_apps import _bridge_spy, _patch_app_import
 
-        monkeypatch.setattr(core_apps.resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+        _cached(monkeypatch)
         _bridge_spy(monkeypatch)
         _patch_app_import(monkeypatch, diverged=True, imported="/workspace/.hdsrc/payments")
-        log = _supervised_bench(monkeypatch)
+        log = _bench(monkeypatch)
 
         result = core_apps.checkout_app("proj", "payments", "feature/x", reload=False)
 
@@ -384,7 +431,7 @@ class TestComposedCheckout:
         "rows, restarts",
         [
             ([("fetch", False)], []),
-            ([("fetch", True), ("checkout", True), ("verify-import", False)], True),
+            ([("fetch", True), ("checkout", True), ("verify-import", False)], PYTHON_PROGRAMS),
         ],
     )
     def test_a_failed_checkout_reloads_only_when_it_moved_the_tree(
@@ -400,25 +447,19 @@ class TestComposedCheckout:
         monkeypatch.setattr(
             new_site.core_apps,
             "checkout_app",
-            lambda project, *_a, **_k: core_apps.Result(
-                status=core_apps.Status.WARNING,
+            lambda project, *_a, **_k: Result(
+                status=Status.WARNING,
                 data=core_apps.AppsReport(
                     project=project, bench_path=BENCH, results=results, ok=False
                 ),
             ),
         )
-        log = _supervised_bench(monkeypatch)
+        log = _bench(monkeypatch)
 
         with pytest.raises(CwcliError) as raised:
             _run_new_site(
-                monkeypatch,
-                container,
-                new_site,
-                log,
-                apps=["toolkit"],
-                refs={"toolkit": "develop"},
+                monkeypatch, container, new_site, log, apps=["toolkit"], refs={"toolkit": "develop"}
             )
 
         assert raised.value.code == "new_site.checkout_failed"
-        expected = ["web", "schedule", "worker_default"] if restarts else []
-        assert _restarts(log) == expected
+        assert _restarts(log) == restarts

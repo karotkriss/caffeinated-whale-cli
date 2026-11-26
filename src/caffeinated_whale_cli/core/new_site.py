@@ -30,7 +30,7 @@ from .init import (
     _run_exec,
     _select_mariadb_flag,
     reload_before_reraise,
-    reload_for_added_code,
+    reload_for_installed_apps,
 )
 
 OnEvent = Callable[[Any], None]
@@ -48,9 +48,9 @@ class NewSiteReport:
     apps_installed: list[str] = field(default_factory=list)
     default_set: bool = False
     developer_mode: bool = False
-    # The bench processes cwcli restarted so they load app code this call fetched or
-    # checked out (see core.init.reload_for_added_code); False ``ok`` = the site was
-    # created but cwcli could not reload the bench, named in a warning.
+    # The bench processes cwcli restarted so they load the installed apps (see
+    # core.init.reload_for_installed_apps); False ``ok`` = the site was created but
+    # cwcli could not reload the bench or the site did not serve, named in a warning.
     processes_restarted: list[str] = field(default_factory=list)
     ok: bool = True
 
@@ -198,7 +198,8 @@ def new_site(
     )
     if unverified is not None:
         warnings.append(unverified)
-    code_added = False
+    moved = False
+    installed: list[str] = []
     try:
         for target, ref in to_fetch:
             # Remote picks and required apps land on the bench BEFORE the site exists: a
@@ -210,7 +211,6 @@ def new_site(
                 branch=ref,
                 fetch_only=True,
                 check_deps=False,
-                reload=False,
                 on_event=emit,
             )
             if fetched.data is None or not fetched.data.ok:
@@ -219,7 +219,6 @@ def new_site(
                     "new_site.fetch_failed",
                     f"Fetching {target} failed; the site was not created.",
                 )
-            code_added = True
         for a in wanted:
             if not _directory_exists(container, f"{bench_path}/apps/{a}"):
                 raise _app_missing(project, bench_path, a)
@@ -227,12 +226,12 @@ def new_site(
             # An app the bench holds at another ref moves there BEFORE the site exists (and
             # with it every site on the bench that has it); a refused or failed checkout
             # stops here with no site left behind.
-            moved = core_apps.checkout_app(
+            checkout = core_apps.checkout_app(
                 project, a, at, bench_path=bench_path, reload=False, on_event=emit
             )
-            if moved.data is not None and core_apps.tree_moved(moved.data.results):
-                code_added = True
-            if moved.data is None or not moved.data.ok:
+            if checkout.data is not None and core_apps.tree_moved(checkout.data.results):
+                moved = True
+            if checkout.data is None or not checkout.data.ok:
                 raise CwcliError(
                     ErrorKind.PRECONDITION,
                     "new_site.checkout_failed",
@@ -282,7 +281,6 @@ def new_site(
         if widen_warning is not None:
             warnings.append(widen_warning)
 
-        installed: list[str] = []
         for a in wanted:
             emit(InitStepStart(phase="install_app", item=a, message=f"Installing {a} on {site}"))
             _run_exec(
@@ -330,17 +328,23 @@ def new_site(
             dev_set = True
     except BaseException as error:
         reload_before_reraise(
-            error, container, bench_path, project=project, code_added=code_added, emit=emit
+            error,
+            container,
+            bench_path,
+            project=project,
+            needed=moved or bool(installed),
+            emit=emit,
         )
         raise
 
-    # ONE reload, after every fetch, checkout and install: the inner calls above
-    # were told not to reload on their own.
-    restarted, reloaded = reload_for_added_code(
+    # ONE reload, after every fetch, checkout and install: the fetches never reload
+    # and the checkout was told not to.
+    restarted, reloaded = reload_for_installed_apps(
         container,
         bench_path,
         project=project,
-        code_added=code_added,
+        needed=moved or bool(installed),
+        site=site,
         warnings=warnings,
         emit=emit,
     )

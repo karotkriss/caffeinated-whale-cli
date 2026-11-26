@@ -1438,47 +1438,57 @@ def resync_after_code_change(
         )
 
 
-def reload_after_fetch(
+def reload_after_install(
     container,
     bench_path: str,
     *,
-    code_added: bool,
+    needed: bool,
+    sites: list[str],
     project: str,
     on_restart: Callable[[str], None] | None = None,
     timeout: float = 60.0,
     interval: float = 1.0,
 ) -> ResyncOutcome:
-    """Reload a serving bench after an operation added app code to it.
+    """Reload a serving bench once, at the end of an operation that installed apps.
 
     A Python process computes its import path when it boots, so a web or worker
-    process that started before an app was fetched onto the bench cannot import it
-    and the sites using that app answer 500 until a restart. Only ``code_added``
-    reloads: a site that installs apps already on the bench needs none, since the
-    running processes booted with them importable.
+    process that started before an app reached the bench cannot import it, and a
+    site the app is installed on answers 500 until a restart. cwcli cannot tell
+    whether the running processes booted before or after an app already in
+    ``apps/`` arrived, so ``needed`` (an app was installed on a site, or a checkout
+    moved code) always reloads.
 
-    The reload restarts only the code-bearing programs supervisord reports live, so
-    a stopped bench stays stopped, and it is judged by those programs returning to
-    ``RUNNING`` within ``timeout`` - never by probing sites, so an unrelated site in
-    maintenance or broken cannot fail the caller's operation. A bench run by a
-    manager cwcli does not own cannot be restarted here: that is reported, with
+    Only the code-bearing programs supervisord reports live are restarted, so a
+    stopped bench stays stopped. The reload is proven by each restarted program
+    returning to ``RUNNING`` and by ``sites`` - only the sites the operation changed
+    - answering Frappe's ping with HTTP 200, all within ``timeout``; no other site
+    is probed, so an unrelated site in maintenance or broken cannot fail it. A bench
+    run by a manager cwcli does not own cannot be restarted here, and an unreadable
+    supervisord state is never read as "nothing to restart": both are reported with
     ``cwcli restart <project>`` as the remedy. Never raises.
     """
     quiet = ResyncOutcome(attempted=False, restarted=[], unserved_sites=[], error=None)
-    if not code_added:
+    if not needed:
         return quiet
     announce = on_restart or (lambda _program: None)
     restarted: list[str] = []
     remedy = f"run `cwcli restart {project}`"
+    deadline = time.monotonic() + timeout
     try:
         if not discover_stack(container, bench_path, required=True).supervisor_up:
             if not discover_unsupervised_stack(container, bench_path, required=True).manager_up:
                 return quiet
             return _resync_failed(
                 "the bench runs under a manager cwcli does not supervise, so cwcli could not "
-                f"reload it to load the new app code; {remedy}",
+                f"reload it to load the installed apps; {remedy}",
                 restarted,
             )
         states = supervisorctl_states(container, bench_path)
+        if not states:
+            return _resync_failed(
+                f"cwcli could not read the bench's supervised processes to reload them; {remedy}",
+                restarted,
+            )
         for program in code_bearing_programs(list(states)):
             if states[program][0] not in _LIVE_STATES:
                 continue
@@ -1493,8 +1503,9 @@ def reload_after_fetch(
                     restarted,
                 )
             restarted.append(program)
+        if not restarted:
+            return quiet
 
-        deadline = time.monotonic() + timeout
         pending = list(restarted)
         while pending:
             states = supervisorctl_states(container, bench_path)
@@ -1508,6 +1519,31 @@ def reload_after_fetch(
                 "these bench processes did not return to RUNNING after the reload: "
                 f"{', '.join(pending)}; {remedy}",
                 restarted,
+            )
+
+        unique_sites = list(dict.fromkeys(sites))
+        if not unique_sites:
+            return ResyncOutcome(attempted=True, restarted=restarted, unserved_sites=[], error=None)
+        web_port = resolvers.resolve_web_ports(container, [bench_path]).get(bench_path)
+        if web_port is None:
+            return _resync_failed(
+                "the bench's serving port could not be determined safely, so cwcli could not "
+                "confirm the installed sites serve",
+                restarted,
+            )
+        unserved, codes = _wait_for_serving_sites(
+            container,
+            port=web_port,
+            sites=unique_sites,
+            timeout=max(deadline - time.monotonic(), 1.0),
+        )
+        if unserved:
+            observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in unserved)
+            return ResyncOutcome(
+                attempted=True,
+                restarted=restarted,
+                unserved_sites=unserved,
+                error=f"these sites did not answer Frappe's ping with HTTP 200: {observed}",
             )
         return ResyncOutcome(attempted=True, restarted=restarted, unserved_sites=[], error=None)
     except Exception as error:  # noqa: BLE001

@@ -1166,29 +1166,33 @@ def _install_nvm_node(container, major: str, emit: OnEvent, warnings: list[Messa
 # ------------------------------------------------------------------ stage 2: the bench
 
 
-def reload_for_added_code(
+def reload_for_installed_apps(
     container,
     bench_path: str,
     *,
     project: str,
-    code_added: bool,
+    needed: bool,
+    site: str,
     warnings: list[Message],
     emit: OnEvent,
 ) -> tuple[list[str], bool]:
-    """Once an operation that may have added app code to the bench has finished,
-    reload the bench's running web and worker processes; return (restarted, ok).
+    """Once an operation that installed apps on ``site`` has finished, reload the
+    bench's running web and worker processes; return (restarted, ok).
 
-    Shared by ``new_site`` and ``init``, which call it ONCE at their end. The rule and
-    its proof live in :func:`supervision.reload_after_fetch`: only added code (a
-    fetched app, a moved checkout) reloads, and the reload is judged by the restarted
-    programs returning to RUNNING. So a restore drill, a transfer or the web UI's New
-    site reloads a live bench only when it fetched code. A failed reload is a warning
-    and ``ok`` False, never a raise: the site and its apps already exist.
+    Shared by ``new_site`` and ``init``, which call it ONCE at their end with
+    ``needed`` True whenever an app was installed on the site (or a checkout moved an
+    app's code). The rule and its proof live in
+    :func:`supervision.reload_after_install`: the restarted programs return to
+    RUNNING and ``site``, and no other site, answers HTTP 200. So a restore drill, a
+    transfer or the web UI's New site that installs apps reloads a live bench too.
+    A failed reload is a warning and ``ok`` False, never a raise: the site and its
+    apps already exist.
     """
-    outcome = supervision.reload_after_fetch(
+    outcome = supervision.reload_after_install(
         container,
         bench_path,
-        code_added=code_added,
+        needed=needed,
+        sites=[site],
         project=project,
         on_restart=_restart_announcer(emit),
     )
@@ -1205,26 +1209,29 @@ def reload_before_reraise(
     bench_path: str,
     *,
     project: str,
-    code_added: bool,
+    needed: bool,
     emit: OnEvent,
 ) -> None:
-    """Run the reload an operation that failed part-way still owes for code it added.
+    """Run the reload an operation that failed part-way still owes for the apps it
+    installed or the code its checkout moved; no site is verified, since the one
+    being created may not exist.
 
     A failed reload is folded into ``error``'s message, the one thing every frontend
     shows for a failed operation, so the ``cwcli restart`` remedy is never lost with
     the discarded report. Never raises: the original error is what propagates.
     """
-    outcome = supervision.reload_after_fetch(
+    outcome = supervision.reload_after_install(
         container,
         bench_path,
-        code_added=code_added,
+        needed=needed,
+        sites=[],
         project=project,
         on_restart=_restart_announcer(emit),
     )
     if outcome.error is None:
         return
     text = (
-        "The running bench was not reloaded to load the app code this run added: "
+        "The running bench was not reloaded to load the app code this run changed: "
         f"{outcome.error}"
     )
     emit(InitNotice(code="site.reload_failed", text=text))
@@ -1667,68 +1674,53 @@ def init_bench(
     emit(InitStepEnd(phase="finalize"))
 
     erpnext_installed = False
-    erpnext_added = False
     if install_erpnext:
-        # A bench this run created is not serving yet; on a reused one, only an
-        # ERPNext that was not already on the bench adds code its processes lack.
-        erpnext_added = not bench_created and not _directory_exists(
-            frappe_container, f"{bench_full_path}/apps/erpnext"
-        )
-        try:
-            emit(
-                InitStepStart(
-                    phase="erpnext_get",
-                    item=erpnext_branch,
-                    message=f"Fetching ERPNext app (branch: {erpnext_branch})",
-                )
-            )
-            _run_exec(
-                frappe_container,
-                _build_cd_command(
-                    bench_full_path,
-                    f"bench get-app --branch {shlex.quote(erpnext_branch)} "
-                    "--resolve-deps erpnext",
-                ),
+        emit(
+            InitStepStart(
                 phase="erpnext_get",
-                emit=emit,
-                collect=not stream_output,
+                item=erpnext_branch,
+                message=f"Fetching ERPNext app (branch: {erpnext_branch})",
             )
-            emit(InitStepEnd(phase="erpnext_get"))
-
-            emit(
-                InitStepStart(
-                    phase="erpnext_install",
-                    item=site_name,
-                    message=f"Installing ERPNext on site '{site_name}'",
-                )
-            )
-            _run_exec(
-                frappe_container,
-                _build_cd_command(
-                    bench_full_path,
-                    f"bench --site {shlex.quote(site_name)} install-app erpnext",
-                ),
-                phase="erpnext_install",
-                emit=emit,
-                collect=not stream_output,
-            )
-            emit(InitStepEnd(phase="erpnext_install"))
-            erpnext_installed = True
-        except BaseException as error:
-            reload_before_reraise(
-                error,
-                frappe_container,
+        )
+        _run_exec(
+            frappe_container,
+            _build_cd_command(
                 bench_full_path,
-                project=project_name,
-                code_added=erpnext_added,
-                emit=emit,
+                f"bench get-app --branch {shlex.quote(erpnext_branch)} " "--resolve-deps erpnext",
+            ),
+            phase="erpnext_get",
+            emit=emit,
+            collect=not stream_output,
+        )
+        emit(InitStepEnd(phase="erpnext_get"))
+
+        emit(
+            InitStepStart(
+                phase="erpnext_install",
+                item=site_name,
+                message=f"Installing ERPNext on site '{site_name}'",
             )
-            raise
-    restarted, reloaded = reload_for_added_code(
+        )
+        _run_exec(
+            frappe_container,
+            _build_cd_command(
+                bench_full_path,
+                f"bench --site {shlex.quote(site_name)} install-app erpnext",
+            ),
+            phase="erpnext_install",
+            emit=emit,
+            collect=not stream_output,
+        )
+        emit(InitStepEnd(phase="erpnext_install"))
+        erpnext_installed = True
+    # A reused bench may be serving with processes that cannot import ERPNext; a
+    # bench this run created is not serving yet.
+    restarted, reloaded = reload_for_installed_apps(
         frappe_container,
         bench_full_path,
         project=project_name,
-        code_added=erpnext_added,
+        needed=erpnext_installed and not bench_created,
+        site=site_name,
         warnings=warnings,
         emit=emit,
     )

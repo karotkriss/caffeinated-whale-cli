@@ -435,13 +435,6 @@ def _resync_after_mutation(
             sites=sites,
             on_restart=lambda program: emit(AppsAnnounce(phase="restart-processes", app=program)),
         )
-    _report_resync(outcome, results, warnings)
-
-
-def _report_resync(
-    outcome: supervision.ResyncOutcome, results: list[AppResult], warnings: list[Message]
-) -> None:
-    """The ``restart-processes`` row and warning every apps verb reports for a reload."""
     if outcome.error:
         results.append(AppResult(app="bench", site=None, action="restart-processes", ok=False))
         warnings.append(
@@ -778,17 +771,9 @@ def install_apps(
     dep_sources: dict[str, str] | None = None,
     prefer_ref: str | None = None,
     check_deps: bool = True,
-    reload: bool = True,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
     """Fetch (``bench get-app``) and install app(s) on the target site(s).
-
-    A fetch adds code the bench's running processes cannot import, so when one
-    landed this reloads a serving bench once at the end: through the shared resync
-    proving each changed site serves, or, when no site install changed anything
-    (``fetch_only``), through :func:`supervision.reload_after_fetch`. Installing only
-    apps already on the bench reloads nothing. ``reload=False`` is for a composed
-    caller (``core.new_site``) that runs the single reload itself at its own end.
 
     Before anything is fetched, :mod:`core.app_deps` reads each app's declared Frappe
     range and ``required_apps`` at the ref that will land and plans the install
@@ -888,7 +873,6 @@ def install_apps(
         (n.target, n.ref, n) for n in deps if not n.on_bench
     ] + [(*_requested(target), None) for target in apps]
     dep_fetch_failed = False
-    landed = False
 
     # Bridge the container's git back to the host's gh/glab for private-repo
     # fetches. Inert for public repos (git only calls a credential helper on 401),
@@ -960,7 +944,6 @@ def install_apps(
                     _remove_app_dir(frappe_container, path, created, emit=emit)
                 continue
             results.append(AppResult(app=target, site=None, action="get-app", ok=True))
-            landed = True
 
             command, after_apps = _available_apps(frappe_container, path)
             emit(AppsCommand(command=command))
@@ -1045,28 +1028,12 @@ def install_apps(
                 if if_not_present and code == 0:
                     installed_by_site.setdefault(site, set()).add(app_name)
 
-    # Only a fetch adds code the running processes lack; installing an app already on
-    # the bench needs no reload. The sites an install landed on are proven to serve;
-    # a site whose install-app failed was not changed and must not fail the restart.
+    # Only the sites an install actually landed on: a site whose install-app failed
+    # was not changed, so it has nothing to re-verify and must not fail the restart.
     changed_sites = [
         r.site for r in results if r.action == "install-app" and r.ok and r.site is not None
     ]
-    if reload and landed and changed_sites:
-        _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
-    else:
-        _report_resync(
-            supervision.reload_after_fetch(
-                frappe_container,
-                path,
-                code_added=reload and landed,
-                project=project_name,
-                on_restart=lambda program: emit(
-                    AppsAnnounce(phase="restart-processes", app=program)
-                ),
-            ),
-            results,
-            warnings,
-        )
+    _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
 
     any_fail = any(not r.ok for r in results)
     return Result(
