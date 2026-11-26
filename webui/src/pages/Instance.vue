@@ -117,7 +117,7 @@ const machine = computed(() => (host ? hostName(host) : 'this Docker daemon'))
     <Alert v-else-if="inst && !running" theme="gray" :title="`${project} is stopped`" description="Benches, sites and apps below are remembered from the cwcli cache. Process health and logs need the container running." />
     <template v-if="running">
       <HealthReasons
-        v-for="b in (inst.benches || []).filter((b) => b.reasons?.length)"
+        v-for="b in (inst.benches || []).filter((b) => !inst.probe_error && b.reasons?.length)"
         :key="'reasons' + b.index"
         :bench="b"
         :inst="inst"
