@@ -12,6 +12,7 @@ real job.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import io
 import os
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import pytest
 import requests
+import typer
 
 from caffeinated_whale_cli.core import doctor as core_doctor
 from caffeinated_whale_cli.core import transfer
@@ -435,6 +437,62 @@ def test_a_send_whose_sendme_cannot_be_executed_is_a_clear_error(monkeypatch, tm
         transfer.send_sets(["p/s/id"])
     assert e.value.code == "transfer.sendme_exec"
     assert not box.exists()
+
+
+def test_a_private_copy_that_cannot_be_written_is_not_called_a_tampered_binary(
+    pinned, tmp_path, monkeypatch
+):
+    """No space in the private dir is the private dir's problem: the installed binary
+    is fine, so nothing is reinstalled and the error names the real cause."""
+    _binary(tmp_path / "bin" / "sendme")
+    private_root = tmp_path / "private"
+    private_root.mkdir(mode=0o700)
+    monkeypatch.setattr(sendme_utils, "private_exec_root", lambda: private_root)
+    real_open = os.open
+
+    def full(path, *a, **k):
+        if Path(path).parent.parent == private_root:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(sendme_utils.os, "open", full)
+    events: list = []
+    with pytest.raises(CwcliError) as e:
+        with transfer._sendme(events.append):
+            pytest.fail("ran without a verified copy")
+    assert "could not write the private sendme copy" in e.value.message
+    assert os.strerror(errno.ENOSPC) in e.value.message
+    assert "is not the pinned sendme" not in e.value.message
+    assert pinned.urls == [] and _steps(events) == []
+    assert list(private_root.iterdir()) == []
+
+
+def test_a_private_directory_that_cannot_be_made_is_a_clear_error(pinned, tmp_path, monkeypatch):
+    _binary(tmp_path / "bin" / "sendme")
+    monkeypatch.setattr(sendme_utils, "private_exec_root", lambda: tmp_path / "gone")
+    with pytest.raises(CwcliError) as e:
+        with transfer._sendme(lambda _e: None):
+            pytest.fail("ran without a private directory")
+    assert f"could not create a private directory for sendme in {tmp_path / 'gone'}" in (
+        e.value.message
+    )
+    assert pinned.urls == []
+
+
+def test_restore_receive_names_a_sendme_it_cannot_run(tmp_path, capsys):
+    from caffeinated_whale_cli.commands import restore as restore_mod
+
+    blocked = tmp_path / "sendme"
+    blocked.write_bytes(GOOD)
+    blocked.chmod(0o600)
+    for verbose in (False, True):
+        with pytest.raises(typer.Exit) as e:
+            restore_mod._run_sendme_receive(
+                [str(blocked), "receive", TICKET], str(tmp_path), verbose=verbose
+            )
+        assert e.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "Could not run sendme" in err and "Permission denied" in err
 
 
 # --------------------------------------------------- a platform with no pinned build

@@ -222,11 +222,23 @@ def _explain_sendme_failure(
     )
 
 
+def _sendme_exec_error(path: str, error: OSError) -> NoReturn:
+    """sendme could not be started (a noexec mount, a wrong-architecture binary, ...)."""
+    stderr_console.print(
+        f"[bold red]Error:[/bold red] Could not run sendme ({escape(path)}): "
+        f"{escape(error.strerror or str(error))}."
+    )
+    raise typer.Exit(code=1) from error
+
+
 def _run_sendme_receive(
     command: list[str], download_dir: str, *, verbose: bool
 ) -> _SendmeReceiveResult:
     if not verbose:
-        completed = subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
+        try:
+            completed = subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
+        except OSError as e:
+            _sendme_exec_error(command[0], e)
         stderr_text = completed.stderr or ""
         return _SendmeReceiveResult(
             returncode=completed.returncode,
@@ -251,6 +263,10 @@ def _run_sendme_receive(
             stderr=stderr_target,
             bufsize=0,
         )
+    except OSError as e:
+        if master_fd is not None:
+            os.close(master_fd)
+        _sendme_exec_error(command[0], e)
     finally:
         if slave_fd is not None:
             os.close(slave_fd)
@@ -882,33 +898,26 @@ def _run_receive(
         console.print()
         console.print("[bold cyan]Downloading backup files...[/bold cyan]")
         with _trusted_sendme() as sendme_cmd:
-            try:
-                receive_cmd = [sendme_cmd, "receive", ticket]
-                if verbose:
-                    stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
-                proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
-                if proc.returncode != 0:
-                    stderr_text = proc.stderr or ""
-                    explanation = _explain_sendme_failure(
-                        stderr_text,
-                        temp_path,
-                        space_error_detected=proc.space_error_detected,
-                    )
-                    if explanation:
-                        stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
-                    else:
-                        stderr_console.print(
-                            "[bold red]Error:[/bold red] Failed to download files via sendme"
-                        )
-                    if stderr_text and not verbose:
-                        stderr_console.print(stderr_text)
-                    raise typer.Exit(code=1)
-            except OSError as e:
-                stderr_console.print(
-                    f"[bold red]Error:[/bold red] Could not run sendme ({escape(sendme_cmd)}): "
-                    f"{escape(e.strerror or str(e))}."
+            receive_cmd = [sendme_cmd, "receive", ticket]
+            if verbose:
+                stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
+            proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
+            if proc.returncode != 0:
+                stderr_text = proc.stderr or ""
+                explanation = _explain_sendme_failure(
+                    stderr_text,
+                    temp_path,
+                    space_error_detected=proc.space_error_detected,
                 )
-                raise typer.Exit(code=1) from e
+                if explanation:
+                    stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
+                else:
+                    stderr_console.print(
+                        "[bold red]Error:[/bold red] Failed to download files via sendme"
+                    )
+                if stderr_text and not verbose:
+                    stderr_console.print(stderr_text)
+                raise typer.Exit(code=1)
 
         console.print("[bold green]✓[/bold green] Files downloaded successfully")
         console.print()
@@ -1018,14 +1027,17 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
                 cmd = [sendme_cmd, "send", str(payload_path)]
                 if verbose:
                     stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-                process = subprocess.Popen(
-                    cmd,
-                    cwd=str(temp_path),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                )
+                try:
+                    process = subprocess.Popen(
+                        cmd,
+                        cwd=str(temp_path),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                    )
+                except OSError as e:
+                    _sendme_exec_error(sendme_cmd, e)
                 ticket = None
                 ticket_line_pattern = re.compile(r"sendme receive (\S+)")
                 if process.stdout:
@@ -1070,12 +1082,6 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
                 except subprocess.TimeoutExpired:
                     process.kill()
                 raise typer.Exit(code=0) from None
-            except OSError as e:
-                stderr_console.print(
-                    f"[bold red]Error:[/bold red] Could not run sendme ({escape(sendme_cmd)}): "
-                    f"{escape(e.strerror or str(e))}."
-                )
-                raise typer.Exit(code=1) from e
 
 
 @handle_docker_errors

@@ -340,24 +340,37 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
 
 def _copy_if_pinned(source: str, dest: Path, pinned_sha256: str) -> bool:
     """Copy ``source`` to ``dest`` (0700), hashing the bytes as they are written; keep
-    the copy only when that hash is the pinned one. An unreadable source is a miss."""
+    the copy only when that hash is the pinned one. An unreadable source is a miss; a
+    copy that cannot be written (no space, no permission) raises ``SendmeInstallError``
+    naming the private directory, since the installed binary is not at fault."""
     digest = hashlib.sha256()
+    reading = True
     try:
         with open(source, "rb") as src:
+            reading = False
             fd = os.open(
                 dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o700
             )
             with os.fdopen(fd, "wb") as out:
-                for block in iter(lambda: src.read(1 << 20), b""):
+                while True:
+                    reading = True
+                    block = src.read(1 << 20)
+                    reading = False
+                    if not block:
+                        break
                     digest.update(block)
                     out.write(block)
-    except OSError:
+            os.chmod(dest, 0o700)
+    except OSError as e:
         dest.unlink(missing_ok=True)
-        return False
+        if reading:
+            return False
+        raise SendmeInstallError(
+            f"could not write the private sendme copy in {dest.parent}: {e.strerror or e}"
+        ) from e
     if digest.hexdigest() != pinned_sha256:
         dest.unlink()
         return False
-    os.chmod(dest, 0o700)
     return True
 
 
@@ -456,7 +469,14 @@ def sendme_command(
         yield found
         return
     root = private_exec_root()
-    private = Path(tempfile.mkdtemp(prefix="cwcli-sendme-", dir=root)) if root is not None else None
+    try:
+        private = (
+            Path(tempfile.mkdtemp(prefix="cwcli-sendme-", dir=root)) if root is not None else None
+        )
+    except OSError as e:
+        raise SendmeInstallError(
+            f"could not create a private directory for sendme in {root}: {e.strerror or e}"
+        ) from e
     try:
         copy = private / get_sendme_path().name if private else None
 
