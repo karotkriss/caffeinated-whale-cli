@@ -482,6 +482,13 @@ def _sendme(emit: OnEvent) -> Iterator[str]:
     except sendme_utils.SendmeInstallError as e:
         if installing:
             emit(StoreStep("install", installing[-1], "failed"))
+        if isinstance(e, sendme_utils.SendmePrivateCopyError):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "transfer.sendme_private_copy",
+                f"{e}.",
+                detail={"reason": str(e)},
+            ) from e
         command = sendme_utils.manual_install_command()
         raise CwcliError(
             ErrorKind.PRECONDITION,

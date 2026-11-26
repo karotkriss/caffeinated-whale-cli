@@ -160,6 +160,11 @@ class SendmeInstallError(Exception):
     """No sendme matching the pinned release could be installed; ``str(error)`` says why."""
 
 
+class SendmePrivateCopyError(SendmeInstallError):
+    """The installed sendme is fine, but its private run copy could not be made (no
+    space, no permission); installing sendme again would not help."""
+
+
 PINNED_VERSION = "v0.37.1"
 SENDME_DOWNLOAD_URL = f"https://github.com/n0-computer/sendme/releases/download/{PINNED_VERSION}"
 # target: (release asset, its sha256, the sha256 of the sendme binary inside it)
@@ -365,7 +370,7 @@ def _copy_if_pinned(source: str, dest: Path, pinned_sha256: str) -> bool:
         dest.unlink(missing_ok=True)
         if reading:
             return False
-        raise SendmeInstallError(
+        raise SendmePrivateCopyError(
             f"could not write the private sendme copy in {dest.parent}: {e.strerror or e}"
         ) from e
     if digest.hexdigest() != pinned_sha256:
@@ -474,7 +479,7 @@ def sendme_command(
             Path(tempfile.mkdtemp(prefix="cwcli-sendme-", dir=root)) if root is not None else None
         )
     except OSError as e:
-        raise SendmeInstallError(
+        raise SendmePrivateCopyError(
             f"could not create a private directory for sendme in {root}: {e.strerror or e}"
         ) from e
     try:
@@ -645,9 +650,10 @@ def ensure_sendme_installed(verbose: bool = False) -> bool:
     except SendmeInstallError as e:
         console.print()
         stderr_console.print(f"[bold red]✗[/bold red] {escape(str(e))}", highlight=False)
-        stderr_console.print()
-        stderr_console.print("[bold]Install it by hand:[/bold]")
-        stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
+        if not isinstance(e, SendmePrivateCopyError):
+            stderr_console.print()
+            stderr_console.print("[bold]Install it by hand:[/bold]")
+            stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
         console.print()
         return False
 

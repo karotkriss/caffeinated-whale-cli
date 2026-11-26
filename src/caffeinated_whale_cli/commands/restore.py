@@ -57,6 +57,7 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.sendme_utils import (
     SendmeInstallError,
+    SendmePrivateCopyError,
     copy_to_clipboard,
     ensure_sendme_installed,
     manual_install_command,
@@ -136,8 +137,9 @@ def _trusted_sendme() -> Iterator[str]:
             yield path
     except SendmeInstallError as e:
         stderr_console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
-        stderr_console.print("[bold]Install it by hand:[/bold]")
-        stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
+        if not isinstance(e, SendmePrivateCopyError):
+            stderr_console.print("[bold]Install it by hand:[/bold]")
+            stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
         raise typer.Exit(code=1) from e
 
 

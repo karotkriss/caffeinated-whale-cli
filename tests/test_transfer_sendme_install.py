@@ -460,9 +460,11 @@ def test_a_private_copy_that_cannot_be_written_is_not_called_a_tampered_binary(
     with pytest.raises(CwcliError) as e:
         with transfer._sendme(events.append):
             pytest.fail("ran without a verified copy")
+    assert e.value.code == "transfer.sendme_private_copy"
     assert "could not write the private sendme copy" in e.value.message
     assert os.strerror(errno.ENOSPC) in e.value.message
     assert "is not the pinned sendme" not in e.value.message
+    assert "Install it by hand" not in e.value.message
     assert pinned.urls == [] and _steps(events) == []
     assert list(private_root.iterdir()) == []
 
@@ -473,10 +475,28 @@ def test_a_private_directory_that_cannot_be_made_is_a_clear_error(pinned, tmp_pa
     with pytest.raises(CwcliError) as e:
         with transfer._sendme(lambda _e: None):
             pytest.fail("ran without a private directory")
+    assert e.value.code == "transfer.sendme_private_copy"
     assert f"could not create a private directory for sendme in {tmp_path / 'gone'}" in (
         e.value.message
     )
+    assert "Install it by hand" not in e.value.message
     assert pinned.urls == []
+
+
+def test_the_cli_does_not_advise_a_reinstall_when_the_private_copy_fails(
+    pinned, tmp_path, monkeypatch, capsys
+):
+    from caffeinated_whale_cli.commands import restore as restore_mod
+
+    _binary(tmp_path / "bin" / "sendme")
+    monkeypatch.setattr(sendme_utils, "private_exec_root", lambda: tmp_path / "gone")
+    assert sendme_utils.ensure_sendme_installed() is False
+    with pytest.raises(typer.Exit):
+        with restore_mod._trusted_sendme():
+            pytest.fail("ran without a private directory")
+    err = capsys.readouterr().err
+    assert err.count("could not create a private directory for sendme") == 2
+    assert "Install it by hand" not in err and pinned.urls == []
 
 
 def test_restore_receive_names_a_sendme_it_cannot_run(tmp_path, capsys):
