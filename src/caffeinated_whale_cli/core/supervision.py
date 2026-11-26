@@ -1308,8 +1308,8 @@ def resync_after_code_change(
     """Cycle a running bench's code-bearing programs, then prove ``sites`` still serve.
 
     THE ONE resynchronisation step, shared by every verb that changes app code on
-    disk: ``apps install``, ``apps uninstall``, ``apps checkout`` and ``apps update``.
-    They differ only in which sites they changed, so that is the only thing they pass;
+    disk: ``apps install``, ``apps uninstall``, ``apps checkout`` and ``apps update``,
+    plus ``new-site`` and ``init`` when they install apps on a serving bench. They differ only in which sites they changed, so that is the only thing they pass;
     everything else about "the code moved underneath processes that are already
     running" is identical, and four private copies of it would drift the way install's
     and uninstall's would have if the first fix had not already been shared.
