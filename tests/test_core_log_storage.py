@@ -137,7 +137,9 @@ class TestWithLogRotation:
         assert '"10m"' not in twice and twice.count('max-size: "50m"') == 3
         assert ls.with_log_rotation(twice, "50m", 5) == twice
 
-    @pytest.mark.parametrize("size,count", [("ten", 3), ("10", 3), ("10m", 0), ("10m", 101)])
+    @pytest.mark.parametrize(
+        "size,count", [("ten", 3), ("10", 3), ("0m", 3), ("00k", 3), ("10m", 0), ("10m", 101)]
+    )
     def test_bad_options_are_usage_errors(self, size, count):
         with pytest.raises(CwcliError) as e:
             ls.with_log_rotation(COMPOSE, size, count)
@@ -287,6 +289,33 @@ class TestTruncateDockerLogs:
         assert ': > "$f"' in script and "rm -f /logs/*/*-json.log.*" in script
         # Only the json log files inside the mounted directory are named; never the data root.
         assert "/var/lib/docker" not in script
+
+    def test_unmeasured_sizes_report_freed_bytes_as_unknown_never_zero(self, tmp_path, monkeypatch):
+        conts = _containers(tmp_path)
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: conts)
+        monkeypatch.setattr(ls, "_host_sizes", lambda paths: None)
+        monkeypatch.setattr(ls.docker, "from_env", lambda: FakeClient(fail=True))
+        unmeasured = ls.docker_logs("p")
+        monkeypatch.setattr(ls, "docker_logs", lambda p: unmeasured)
+        client = FakeClient()
+        monkeypatch.setattr(ls.docker, "from_env", lambda: client)
+        result = ls.truncate_docker_logs("p", consent=True)
+        assert result.data["truncated"] == ["p-frappe-1", "p-mariadb-1"]
+        assert result.data["freed_bytes"] is None
+
+    def test_helper_mounts_use_the_daemon_side_posix_path_on_a_windows_host(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        from pathlib import PureWindowsPath
+
+        conts = _containers(tmp_path)
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: conts)
+        monkeypatch.setattr(ls, "Path", PureWindowsPath)
+        client = FakeClient()
+        monkeypatch.setattr(ls.docker, "from_env", lambda: client)
+        ls.truncate_docker_logs("p", consent=True)
+        posix_dirs = {c.attrs["LogPath"].rsplit("/", 1)[0] for c in conts}
+        assert [set(run["volumes"]) for run in client.runs] == [posix_dirs, posix_dirs]
 
     def test_no_json_file_log_is_an_ok_no_op_with_a_warning(self, tmp_path, monkeypatch):
         conts = _containers(tmp_path, driver="local")
@@ -473,6 +502,25 @@ class TestReport:
         assert not q.running and q.benches == [] and "Start the instance" in q.note
         assert rep.docker_total == 320 and rep.bench_total == 1326 + 770
         assert ls.to_dict(rep)["journal"]["applies"] is False
+
+    def test_an_instance_whose_docker_logs_failed_makes_the_total_unknown(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        rows = [
+            InstanceDTO(project_name="p", status="exited", ports=[]),
+            InstanceDTO(project_name="q", status="exited", ports=[]),
+        ]
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": rows})())
+        conts = _containers(tmp_path)
+
+        def containers(project):
+            return conts if project == "p" else None
+
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", containers)
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        assert rep.instances[0].docker.total == 160 and rep.instances[1].docker is None
+        assert rep.docker_total is None
 
     def test_an_unknown_project_filter_is_not_found(self, monkeypatch):
         monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": []})())

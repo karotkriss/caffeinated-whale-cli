@@ -113,3 +113,31 @@ def test_dispatch_routes_the_three_verbs_with_their_consent_and_args(monkeypatch
         ("r", "x", "10m", 3),
         ("p", "x", "1", False),
     ]
+
+
+@pytest.mark.parametrize("bad", ["2.5", "abc", "", 2.5, True, [3]])
+def test_rotation_job_refuses_a_max_file_that_is_not_a_whole_number(monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(
+        jobs.core_log_storage, "set_docker_log_rotation", lambda *a, **k: calls.append(k)
+    )
+    rec = jobs._Recorder.__new__(jobs._Recorder)
+    with pytest.raises(CwcliError) as e:
+        jobs._dispatch(
+            "set-docker-log-rotation", {"project": "x"}, {"max_file": bad}, False, {}, rec
+        )
+    assert e.value.kind is ErrorKind.USAGE and calls == []
+
+
+def test_rotation_job_passes_typed_values_through_for_the_core_to_judge(monkeypatch):
+    calls = []
+    ok = Result(status=Status.OK, data={})
+    monkeypatch.setattr(
+        jobs.core_log_storage,
+        "set_docker_log_rotation",
+        lambda p, *, max_size, max_file: calls.append((max_size, max_file)) or ok,
+    )
+    rec = jobs._Recorder.__new__(jobs._Recorder)
+    args = {"max_size": "", "max_file": 0}
+    jobs._dispatch("set-docker-log-rotation", {"project": "x"}, args, False, {}, rec)
+    assert calls == [("", 0)]

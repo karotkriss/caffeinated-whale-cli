@@ -323,9 +323,9 @@ export const ACTIONS = {
       { name: 'max_size', type: 'text', label: 'Rotate each log at', placeholder: '10m', default: '10m' },
       { name: 'max_file', type: 'text', label: 'Rotated files to keep', placeholder: '3', default: '3' },
     ],
-    cli: (c, v) => `cwcli axi storage set-docker-log-rotation ${q(c.project)} --max-size ${q(v?.max_size || '10m')} --max-file ${q(v?.max_file || '3')}`,
-    says: (c, v) => `Writes json-file logging with max-size ${v?.max_size || '10m'} and max-file ${v?.max_file || '3'} into every service of ${c.project}'s compose file. Running containers keep their current log settings; the rotation binds when each container is next recreated.`,
-    request: (c, v) => ({ verb: 'set-docker-log-rotation', target: { project: c.project }, args: { max_size: v?.max_size || '10m', max_file: Number(v?.max_file || 3) } }),
+    cli: (c, v) => `cwcli axi storage set-docker-log-rotation ${q(c.project)} --max-size ${q(v?.max_size ?? '10m')} --max-file ${q(v?.max_file ?? '3')}`,
+    says: (c, v) => `Writes json-file logging with max-size ${v?.max_size ?? '10m'} and max-file ${v?.max_file ?? '3'} into every service of ${c.project}'s compose file. Running containers keep their current log settings; the rotation binds when each container is next recreated.`,
+    request: (c, v) => ({ verb: 'set-docker-log-rotation', target: { project: c.project }, args: { max_size: v?.max_size, max_file: v?.max_file } }),
     done: (c) => `${c.project}'s compose file now rotates its container logs`,
   },
   'logs.prune_bench': {

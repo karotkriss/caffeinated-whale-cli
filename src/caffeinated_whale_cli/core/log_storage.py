@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import platform
+import posixpath
 import re
 import shutil
 import subprocess
@@ -50,7 +51,7 @@ from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 DEFAULT_MAX_SIZE = "10m"
 DEFAULT_MAX_FILE = 3
-_MAX_SIZE_RE = re.compile(r"^\d+[kmg]$")
+_MAX_SIZE_RE = re.compile(r"^0*[1-9]\d*[kmg]$")
 _ROTATED_RE = re.compile(r"\.log\.\d+(\.gz)?$")
 _HELPER_IMAGE_PREFIX = "frappe/bench"
 _JOURNAL_VACUUM = ("sudo journalctl --vacuum-size=500M", "sudo journalctl --vacuum-time=2weeks")
@@ -198,7 +199,8 @@ def _host_sizes(paths: list[str]) -> dict[str, tuple[int, int]] | None:
 def _helper_sizes(client, containers, paths: list[str]) -> dict[str, tuple[int, int]]:
     """The same sizes through a read-only root helper mounting each log directory."""
     volumes = {
-        str(Path(path).parent): {"bind": f"/logs/{i}", "mode": "ro"} for i, path in enumerate(paths)
+        posixpath.dirname(path): {"bind": f"/logs/{i}", "mode": "ro"}
+        for i, path in enumerate(paths)
     }
     script = 'for f in /logs/*/*-json.log*; do [ -f "$f" ] && stat -c \'%s %n\' "$f"; done; true'
     out = _run_helper(client, _helper_image(client, containers), volumes, script)
@@ -321,7 +323,7 @@ def truncate_docker_logs(project: str, *, consent: bool = False) -> Result[dict[
     client = docker.from_env()
     containers = core_docker.get_project_containers(project) or []
     volumes = {
-        str(Path(r.log_path).parent): {"bind": f"/logs/{i}", "mode": "rw"}
+        posixpath.dirname(r.log_path): {"bind": f"/logs/{i}", "mode": "rw"}
         for i, r in enumerate(targets)
         if r.log_path
     }
@@ -330,7 +332,8 @@ def truncate_docker_logs(project: str, *, consent: bool = False) -> Result[dict[
         "rm -f /logs/*/*-json.log.*; true"
     )
     _run_helper(client, _helper_image(client, containers), volumes, script)
-    freed = sum(r.size or 0 for r in targets)
+    sizes = [r.size for r in targets]
+    freed = None if None in sizes else sum(s for s in sizes if s is not None)
     return Result(
         status=Status.OK,
         data={
@@ -635,10 +638,10 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
                 project=inst.project_name, running=running, docker=dl, benches=benches, note=note
             )
         )
-    docker_sizes = [r.docker.total for r in rows if r.docker is not None]
+    docker_sizes = [r.docker.total if r.docker is not None else None for r in rows]
     docker_total = (
         sum(s for s in docker_sizes if s is not None)
-        if docker_sizes and all(s is not None for s in docker_sizes)
+        if docker_sizes and None not in docker_sizes
         else None
     )
     bench_total = sum(b.current_bytes + b.rotated_bytes for r in rows for b in r.benches)

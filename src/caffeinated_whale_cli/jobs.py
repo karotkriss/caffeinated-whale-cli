@@ -1884,15 +1884,21 @@ def _dispatch(
     if verb == "truncate-docker-logs":
         return core_log_storage.truncate_docker_logs(project, consent=consent)
     if verb == "set-docker-log-rotation":
-        try:
-            max_file = int(args.get("max_file") or core_log_storage.DEFAULT_MAX_FILE)
-        except (TypeError, ValueError):
+        raw_size = args.get("max_size")
+        raw_file = args.get("max_file")
+        if raw_file is None:
+            max_file = core_log_storage.DEFAULT_MAX_FILE
+        elif type(raw_file) is int:
+            max_file = raw_file
+        elif isinstance(raw_file, str) and raw_file.strip().isdigit():
+            max_file = int(raw_file)
+        else:
             raise CwcliError(
                 ErrorKind.USAGE, "logs.max_file_invalid", "max_file must be a whole number."
-            ) from None
+            )
         return core_log_storage.set_docker_log_rotation(
             project,
-            max_size=str(args.get("max_size") or core_log_storage.DEFAULT_MAX_SIZE),
+            max_size=core_log_storage.DEFAULT_MAX_SIZE if raw_size is None else str(raw_size),
             max_file=max_file,
         )
     if verb == "prune-bench-logs":
