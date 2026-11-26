@@ -50,7 +50,8 @@ class NewSiteReport:
     developer_mode: bool = False
     # The bench processes cwcli restarted so they load the installed apps (see
     # core.init.reload_for_installed_apps); False ``ok`` = the site was created but
-    # cwcli could not reload the bench or the site did not serve, named in a warning.
+    # cwcli could not reload the bench, or a site whose code changed did not serve,
+    # named in a warning.
     processes_restarted: list[str] = field(default_factory=list)
     ok: bool = True
 
@@ -198,8 +199,14 @@ def new_site(
     )
     if unverified is not None:
         warnings.append(unverified)
-    moved = False
+    # Each existing site whose code a checkout moved, with the (app, ref) that moved it.
+    moved_under: dict[str, tuple[str, str]] = {}
+    moved_scope_unknown = False
     installed: list[str] = []
+
+    def changed_sites() -> list[str]:
+        return ([site] if installed else []) + list(moved_under)
+
     try:
         for target, ref in to_fetch:
             # Remote picks and required apps land on the bench BEFORE the site exists: a
@@ -226,11 +233,14 @@ def new_site(
             # An app the bench holds at another ref moves there BEFORE the site exists (and
             # with it every site on the bench that has it); a refused or failed checkout
             # stops here with no site left behind.
+            had_app = core_apps._sites_with_app_installed(container, bench_path, a, warnings)
             checkout = core_apps.checkout_app(
                 project, a, at, bench_path=bench_path, reload=False, on_event=emit
             )
             if checkout.data is not None and core_apps.tree_moved(checkout.data.results):
-                moved = True
+                moved_scope_unknown = moved_scope_unknown or had_app is None
+                for existing in had_app or []:
+                    moved_under.setdefault(existing, (a, at))
             if checkout.data is None or not checkout.data.ok:
                 raise CwcliError(
                     ErrorKind.PRECONDITION,
@@ -327,27 +337,24 @@ def new_site(
             emit(InitStepEnd(phase="developer_mode"))
             dev_set = True
     except BaseException as error:
-        reload_before_reraise(
-            error,
-            container,
-            bench_path,
-            project=project,
-            needed=moved or bool(installed),
-            emit=emit,
-        )
+        reload_before_reraise(error, container, bench_path, sites=changed_sites(), emit=emit)
         raise
 
     # ONE reload, after every fetch, checkout and install: the fetches never reload
     # and the checkout was told not to.
-    restarted, reloaded = reload_for_installed_apps(
-        container,
-        bench_path,
-        project=project,
-        needed=moved or bool(installed),
-        site=site,
-        warnings=warnings,
-        emit=emit,
+    reloaded = reload_for_installed_apps(
+        container, bench_path, sites=changed_sites(), warnings=warnings, emit=emit
     )
+    for broken in reloaded.unserved_sites:
+        if broken in moved_under:
+            app, ref = moved_under[broken]
+            warnings.append(
+                Message(
+                    "new_site.checkout_broke_site",
+                    f"Checking out {ref} in {app} moved the code {broken} runs, and "
+                    f"{broken} no longer answers Frappe.",
+                )
+            )
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -358,8 +365,8 @@ def new_site(
             apps_installed=installed,
             default_set=default_set,
             developer_mode=dev_set,
-            processes_restarted=restarted,
-            ok=reloaded,
+            processes_restarted=reloaded.restarted,
+            ok=reloaded.ok and not moved_scope_unknown,
         ),
         warnings=warnings,
     )

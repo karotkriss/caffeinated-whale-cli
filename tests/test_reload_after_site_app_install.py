@@ -9,8 +9,9 @@ faked at the supervisord and HTTP boundary), is:
 
 1. an operation that installed an app on a site reloads the bench ONCE, at its end,
    whether or not this call fetched the app; a fetch alone reloads nothing;
-2. the reload is proven by the restarted programs returning to RUNNING and by ONLY
-   the changed sites answering HTTP 200: an unrelated site is never probed.
+2. the reload is the shared ``resync_after_code_change`` step, proven by ONLY the
+   sites whose code changed answering HTTP 200: the new site, and any existing site a
+   new-site checkout moved an app under. An unrelated site is never probed.
 """
 
 from __future__ import annotations
@@ -42,12 +43,11 @@ LIVE = {
 PYTHON_PROGRAMS = ["web", "schedule", "worker_default"]
 
 
-def _bench(monkeypatch, *, after=None, supervised=True, manager_up=False, serving=None):
-    """A bench whose supervisord reports ``LIVE`` (``after``: the status reads once a
-    restart happened) and whose sites answer ``serving`` (any other site probed is a
-    test failure). Returns the shared event log; probes are logged as ``probe <site>``."""
+def _bench(monkeypatch, *, supervised=True, manager_up=False, serving=None):
+    """A bench whose supervisord reports ``LIVE`` and whose sites answer ``serving``
+    (any other site probed is a test failure). Returns the shared event log; probes
+    are logged as ``probe <site>``."""
     log: list[str] = []
-    reads = iter(after or [])
     answers = {"a.localhost": "200", "shop.localhost": "200", **(serving or {})}
     clock = [0.0]
     monkeypatch.setattr(
@@ -72,9 +72,7 @@ def _bench(monkeypatch, *, after=None, supervised=True, manager_up=False, servin
     )
 
     def states(*_a, **_k):
-        if not any(e.startswith("restart ") for e in log):
-            return dict(LIVE)
-        return next(reads, dict(LIVE))
+        return dict(LIVE)
 
     def restart(_c, _p, program):
         log.append(f"restart {program}")
@@ -102,21 +100,21 @@ def _probes(log):
     return sorted({e.split(" ", 1)[1] for e in log if e.startswith("probe ")})
 
 
-def _reload(**kwargs):
-    return supervision.reload_after_install(object(), BENCH, project="proj", **kwargs)
+def _resync(**kwargs):
+    return supervision.resync_after_code_change(object(), BENCH, **kwargs)
 
 
-class TestReloadAfterInstall:
-    """The shared step: restart the live Python programs, prove only the changed sites."""
+class TestTheSharedResync:
+    """The one step every install path reloads through."""
 
-    def test_nothing_installed_restarts_nothing(self, monkeypatch):
+    def test_no_changed_site_restarts_nothing(self, monkeypatch):
         log = _bench(monkeypatch)
-        outcome = _reload(needed=False, sites=["a.localhost"])
+        outcome = _resync(sites=[])
         assert outcome.ok and outcome.restarted == [] and log == []
 
     def test_restarts_the_live_python_programs_and_probes_only_the_changed_site(self, monkeypatch):
         log = _bench(monkeypatch, serving={"broken.localhost": "500"})
-        outcome = _reload(needed=True, sites=["a.localhost"])
+        outcome = _resync(sites=["a.localhost"])
         # socketio and redis import no app; a stopped worker stays stopped; the bench's
         # other site (answering 500) is never asked.
         assert _restarts(log) == PYTHON_PROGRAMS
@@ -125,73 +123,48 @@ class TestReloadAfterInstall:
 
     def test_a_changed_site_that_does_not_serve_fails_the_reload(self, monkeypatch):
         _bench(monkeypatch, serving={"a.localhost": "500"})
-        outcome = _reload(needed=True, sites=["a.localhost"], timeout=5)
+        outcome = _resync(sites=["a.localhost"], timeout=5)
         assert not outcome.ok and outcome.unserved_sites == ["a.localhost"]
-
-    def test_a_program_still_starting_is_waited_for(self, monkeypatch):
-        starting = dict(LIVE, web=("STARTING", 9))
-        _bench(monkeypatch, after=[starting, dict(LIVE)])
-        assert _reload(needed=True, sites=["a.localhost"]).ok
-
-    def test_a_program_that_does_not_return_to_running_fails_the_reload(self, monkeypatch):
-        fatal = dict(LIVE, worker_default=("FATAL", None))
-        _bench(monkeypatch, after=[fatal] * 50)
-        outcome = _reload(needed=True, sites=["a.localhost"], timeout=5)
-        assert not outcome.ok
-        assert "worker_default" in outcome.error and "cwcli restart proj" in outcome.error
 
     def test_an_unreadable_supervisord_state_fails_honestly(self, monkeypatch):
         log = _bench(monkeypatch)
         monkeypatch.setattr(supervision, "supervisorctl_states", lambda *_a, **_k: {})
-        outcome = _reload(needed=True, sites=["a.localhost"])
-        assert not outcome.ok and "cwcli restart proj" in outcome.error
+        outcome = _resync(sites=["a.localhost"])
+        assert not outcome.ok and "no supervised web process" in outcome.error
         assert log == []
 
-    def test_an_unsupervised_running_bench_is_reported_with_the_restart_remedy(self, monkeypatch):
+    def test_an_unsupervised_bench_is_probed_without_a_restart(self, monkeypatch):
         log = _bench(monkeypatch, supervised=False, manager_up=True)
-        outcome = _reload(needed=True, sites=["a.localhost"])
-        assert not outcome.ok and "cwcli restart proj" in outcome.error
-        assert log == []
+        outcome = _resync(sites=["a.localhost"])
+        assert outcome.ok and _restarts(log) == [] and _probes(log) == ["a.localhost"]
 
     def test_a_stopped_bench_stays_stopped(self, monkeypatch):
         log = _bench(monkeypatch, supervised=False, manager_up=False)
-        assert _reload(needed=True, sites=["a.localhost"]).ok and log == []
+        assert _resync(sites=["a.localhost"]).ok and log == []
 
 
 class TestReloadForInstalledApps:
     """The report-shaping step ``new_site`` and ``init`` share."""
 
     def test_a_failed_reload_is_a_warning_and_not_ok(self, monkeypatch):
-        _bench(monkeypatch, supervised=False, manager_up=True)
+        _bench(monkeypatch, serving={"a.localhost": "500"})
         warnings: list = []
         events: list = []
-        _restarted, ok = core_init.reload_for_installed_apps(
-            object(),
-            BENCH,
-            project="proj",
-            needed=True,
-            site="a.localhost",
-            warnings=warnings,
-            emit=events.append,
+        outcome = core_init.reload_for_installed_apps(
+            object(), BENCH, sites=["a.localhost"], warnings=warnings, emit=events.append
         )
-        assert ok is False
+        assert not outcome.ok
         assert [w.code for w in warnings] == ["site.reload_failed"]
         assert events[-1].code == "site.reload_failed"
 
     def test_restarts_are_announced(self, monkeypatch):
         _bench(monkeypatch)
         events: list = []
-        restarted, ok = core_init.reload_for_installed_apps(
-            object(),
-            BENCH,
-            project="proj",
-            needed=True,
-            site="a.localhost",
-            warnings=[],
-            emit=events.append,
+        outcome = core_init.reload_for_installed_apps(
+            object(), BENCH, sites=["a.localhost"], warnings=[], emit=events.append
         )
-        assert ok and restarted == PYTHON_PROGRAMS
-        assert [e.item for e in events if e.phase == "restart_processes"] == restarted
+        assert outcome.ok and outcome.restarted == PYTHON_PROGRAMS
+        assert [e.item for e in events if e.phase == "restart_processes"] == PYTHON_PROGRAMS
 
 
 def _cached(monkeypatch):
@@ -328,14 +301,14 @@ class TestNewSite:
         assert raised.value.code == "init.command_failed"
         assert len(_gets(container)) == 2 and _restarts(log) == []
 
-    @pytest.mark.parametrize("supervised", [True, False])
+    @pytest.mark.parametrize("serves", [True, False])
     def test_installed_apps_are_reloaded_when_a_later_step_fails(
-        self, world, container, monkeypatch, supervised  # noqa: F811
+        self, world, container, monkeypatch, serves  # noqa: F811
     ):
         new_site = _wire_new_site(monkeypatch, container)
         container.available.extend(["toolkit", "booking"])
         monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
-        log = _bench(monkeypatch, supervised=supervised, manager_up=True)
+        log = _bench(monkeypatch, serving={"shop.localhost": "200" if serves else "500"})
 
         with pytest.raises(CwcliError) as raised:
             _run_new_site(
@@ -348,14 +321,10 @@ class TestNewSite:
                 default=True,
             )
 
-        if supervised:
-            assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == []
-            assert "cwcli restart" not in raised.value.message
-        else:
-            # A bench cwcli cannot restart: the remedy rides the error every surface shows.
-            assert _restarts(log) == []
-            assert raised.value.message.startswith("use failed")
-            assert "cwcli restart proj" in raised.value.message
+        assert _restarts(log) == PYTHON_PROGRAMS and _probes(log) == ["shop.localhost"]
+        assert raised.value.message.startswith("use failed")
+        # A reload that did not serve rides the error every surface shows.
+        assert ("shop.localhost=500" in raised.value.message) is not serves
 
 
 class TestInitErpnextOnAReusedBench:
@@ -407,6 +376,36 @@ def test_the_web_ui_init_job_fails_when_the_reload_failed(monkeypatch):
     assert jobs._result_ok(result) is False
 
 
+def _checkout_returning(monkeypatch, new_site, rows, *, ok):
+    results = [core_apps.AppResult(app="toolkit", site=None, action=a, ok=r) for a, r in rows]
+    monkeypatch.setattr(
+        new_site.core_apps,
+        "checkout_app",
+        lambda project, *_a, **_k: Result(
+            status=Status.OK if ok else Status.WARNING,
+            data=core_apps.AppsReport(project=project, bench_path=BENCH, results=results, ok=ok),
+        ),
+    )
+
+
+def _toolkit_on_a_not_b(monkeypatch, container, world):  # noqa: F811
+    """a.localhost runs toolkit, b.localhost does not; the bench holds toolkit."""
+    from .test_app_deps_flows import _bench_holding_toolkit
+
+    new_site = _wire_new_site(monkeypatch, container)
+    container.available.append("toolkit")
+    container.installed = {
+        "a.localhost": ["frappe 15.0.0 version-15", "toolkit 0.23.3 master"],
+        "b.localhost": ["frappe 15.0.0 version-15"],
+    }
+    monkeypatch.setattr(
+        core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost", "b.localhost"]
+    )
+    monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
+    _bench_holding_toolkit(monkeypatch)
+    return new_site
+
+
 class TestComposedCheckout:
     """``checkout_app(reload=False)`` skips only the reload; ``new_site`` reloads on
     failure only for a checkout that actually moved the tree."""
@@ -437,24 +436,9 @@ class TestComposedCheckout:
     def test_a_failed_checkout_reloads_only_when_it_moved_the_tree(
         self, world, container, monkeypatch, rows, restarts  # noqa: F811
     ):
-        from .test_app_deps_flows import _bench_holding_toolkit
-
-        new_site = _wire_new_site(monkeypatch, container)
-        container.available.append("toolkit")
-        monkeypatch.setattr(new_site, "_directory_exists", lambda _c, path: "/apps/" in path)
-        _bench_holding_toolkit(monkeypatch)
-        results = [core_apps.AppResult(app="toolkit", site=None, action=a, ok=ok) for a, ok in rows]
-        monkeypatch.setattr(
-            new_site.core_apps,
-            "checkout_app",
-            lambda project, *_a, **_k: Result(
-                status=Status.WARNING,
-                data=core_apps.AppsReport(
-                    project=project, bench_path=BENCH, results=results, ok=False
-                ),
-            ),
-        )
-        log = _bench(monkeypatch)
+        new_site = _toolkit_on_a_not_b(monkeypatch, container, world)
+        _checkout_returning(monkeypatch, new_site, rows, ok=False)
+        log = _bench(monkeypatch, serving={"a.localhost": "200"})
 
         with pytest.raises(CwcliError) as raised:
             _run_new_site(
@@ -463,3 +447,27 @@ class TestComposedCheckout:
 
         assert raised.value.code == "new_site.checkout_failed"
         assert _restarts(log) == restarts
+        assert _probes(log) == (["a.localhost"] if restarts else [])
+
+    @pytest.mark.parametrize("a_serves", [True, False])
+    def test_a_checkout_proves_the_new_site_and_the_sites_it_moved_code_under(
+        self, world, container, monkeypatch, a_serves  # noqa: F811
+    ):
+        new_site = _toolkit_on_a_not_b(monkeypatch, container, world)
+        _checkout_returning(monkeypatch, new_site, [("fetch", True), ("checkout", True)], ok=True)
+        log = _bench(monkeypatch, serving={"a.localhost": "200" if a_serves else "500"})
+
+        result = _run_new_site(
+            monkeypatch, container, new_site, log, apps=["toolkit"], refs={"toolkit": "develop"}
+        )
+
+        assert _restarts(log) == PYTHON_PROGRAMS
+        # b.localhost does not run toolkit, so the checkout did not touch it.
+        assert _probes(log) == ["a.localhost", "shop.localhost"]
+        assert result.data.ok is a_serves
+        broke = [w for w in result.warnings if w.code == "new_site.checkout_broke_site"]
+        if a_serves:
+            assert broke == []
+        else:
+            assert len(broke) == 1
+            assert "a.localhost" in broke[0].text and "toolkit" in broke[0].text

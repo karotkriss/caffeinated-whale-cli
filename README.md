@@ -475,8 +475,9 @@ A site name that already exists on the bench is refused, and every `--app` must 
 cwcli checks the MariaDB root password with one connection before it creates the site, so a wrong one fails in seconds with nothing changed.
 Every picked app's Frappe range and required apps are checked before the site is created, exactly as for `apps install`, and the apps are installed in dependency order, so a refusal leaves no site behind.
 When new-site installs at least one app on the new site of a running bench, it restarts the running cwcli-supervised programs that run the bench's Python (`web`, `schedule`, and every worker) once, after the site and its apps are in place, because a process that started before an app reached the bench cannot import it, and cwcli cannot tell when an app already in `apps/` arrived.
-The reload succeeds when each restarted program returns to `RUNNING` and the new site answers Frappe; no other site is probed, so an unrelated site in maintenance cannot fail it.
-new-site names each restarted program (`processes_restarted` on the agent surface) and exits non-zero if the reload fails; a bench run by a manager cwcli does not supervise is not restarted, and new-site exits non-zero with `cwcli restart <project>` as the remedy.
+This is the same resynchronise step `apps install` uses: the reload succeeds when the new site answers Frappe, together with every existing site that has an app new-site checked out at another ref, because that checkout moved their code too.
+A failure on one of those existing sites is reported as the checkout breaking that site; any other site is never probed, so an unrelated site in maintenance cannot fail new-site.
+new-site names each restarted program (`processes_restarted` on the agent surface) and exits non-zero if the reload fails; a bench run by a manager cwcli does not supervise is not restarted, and new-site exits non-zero with a manual-restart remedy when a site does not answer.
 A site created with no app restarts nothing, and a stopped bench stays stopped; the same holds for the web UI's New site, restore drills, and transfers, which create sites through new-site.
 `cwcli init --reuse-bench` with `--install-erpnext` on a running bench does the same for ERPNext.
 
