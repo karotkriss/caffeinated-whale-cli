@@ -173,6 +173,7 @@ def health_key(state: InstanceState) -> tuple:
                 b.not_cwcli_supervised,
                 b.bench_present,
                 tuple((p.label, p.up, p.pid, p.state) for p in b.processes),
+                tuple((r.check, r.subject, r.state) for r in b.reasons),
             )
             for b in state.benches
         ),

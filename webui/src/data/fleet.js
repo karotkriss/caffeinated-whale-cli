@@ -25,7 +25,7 @@ import { updatesLanded } from './updates'
 import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
 import { loadPublications, publicationsLanded } from './publish'
-import { replaceHosts, applyHostLink, dropHost, hostName } from './hosts'
+import { replaceHosts, applyHostLink, dropHost, hostName, staleInstance } from './hosts'
 import { dockerCameBack } from './docker'
 
 export const fleet = reactive({
@@ -325,4 +325,24 @@ export function duration(seconds) {
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
   const h = Math.floor(s / 3600)
   return `${h}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+// --- why a bench is degraded (BenchStatus.reasons, from core.status) ---------------
+// The probe's own words: which check failed (supervisor, process, web), the state it
+// saw, and a plain sentence. `cwcli axi status` reports the same list, so a page and
+// the agent surface never disagree about the cause.
+
+export const reasonsCurrent = (inst) => !!inst && !inst.probe_error && !staleInstance(inst)
+export const reasonsOf = (inst) => (reasonsCurrent(inst) ? inst.benches || [] : []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))
+export const reasonShort = (r) => `${r.subject} ${r.state}`
+// The short form: the first reason, then `+1` per further reason (`worker:default FATAL +1`),
+// and the row word that carries it (`degraded · worker:default FATAL +1`).
+export const reasonsWord = (reasons) => (reasons?.length ? `${reasonShort(reasons[0])}${reasons.length > 1 ? ` +${reasons.length - 1}` : ''}` : '')
+export const degradedWord = (reasons) => (reasons?.length ? `degraded · ${reasonsWord(reasons)}` : 'degraded')
+// A tooltip or title: every reason's sentence, then when the probe saw them.
+export function reasonsTitle(inst) {
+  const rs = reasonsOf(inst)
+  if (!rs.length) return undefined
+  const many = (inst.benches || []).length > 1
+  return rs.map((r) => `${many ? benchName(r.bench) + ': ' : ''}${r.text}`).join(' ') + (inst.probed_at ? ` Seen ${ago(inst.probed_at * 1000)}.` : '')
 }

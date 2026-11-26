@@ -19,7 +19,7 @@ import SiteIcon from '../components/SiteIcon.vue'
 import StatusDot from '../components/StatusDot.vue'
 import DevModeBadge from '../components/DevModeBadge.vue'
 import MaintenanceAlert from '../components/MaintenanceAlert.vue'
-import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath } from '../data/fleet'
+import { instances, detailOf, loadDetail, benchName, parseApp, setFocus, sitePath, degradedWord, reasonsOf, reasonsTitle } from '../data/fleet'
 import { catalogApp } from '../data/catalog'
 import { appOpener } from '../data/app-panel'
 import { openAction } from '../data/dialog'
@@ -50,6 +50,7 @@ const rows = computed(() => {
     for (const b of detailOf(i.project, i.host)?.data?.benches || []) {
       for (const s of b.sites || []) {
         const health = i.container_running ? i.benches?.find((h) => String(h.index) === String(b.index)) : null
+        const one = health && { ...i, benches: [health] }
         const token = stale ? 'unknown' : !i.container_running ? 'offline' : health ? health.overall : 'unknown'
         out.push({
           key: `${i.key}/${b.index}/${s.name}`,
@@ -62,7 +63,8 @@ const rows = computed(() => {
           running: !!i.container_running,
           serving: token === 'running' || token === 'degraded',
           token,
-          word: stale ? 'unknown' : QUIET[token] || token,
+          word: stale ? 'unknown' : token === 'degraded' ? degradedWord(reasonsOf(one)) : QUIET[token] || token,
+          why: one ? reasonsTitle(one) : undefined,
           isDefault: s.name === b.default_site,
           maintenance: maintenanceSites(health?.maintenance).includes(s.name),
           devMode: detailOf(i.project, i.host)?.data?.dev_modes?.[`${b.path}/${s.name}`] || null,
@@ -122,8 +124,8 @@ watch(() => [...new Set(instances.value.map((i) => i.host).filter(Boolean))].sor
 const publishing = computed(() => canPublish() || rows.value.some((r) => r.pub || canPublish(r.host)))
 const columns = computed(() =>
   publishing.value
-    ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', '8.5rem', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
-    : { base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', '9rem', 'minmax(10rem,1.4fr)', '7rem', '2.5rem'] },
+    ? { base: ['minmax(0,1fr)', '4.75rem'], lg: ['minmax(13rem,1.4fr)', 'minmax(8.5rem,1fr)', 'minmax(8rem,1fr)', 'minmax(14rem,1.3fr)', '6.5rem', '4.75rem'] }
+    : { base: ['minmax(0,1fr)', '2.5rem'], lg: ['minmax(14rem,1.5fr)', 'minmax(9rem,1.2fr)', 'minmax(10rem,1.2fr)', '7rem', '2.5rem'] },
 )
 // One word for a publication: live, part-way, or failed.
 function pubWord(p) {
@@ -203,10 +205,10 @@ const hasMenu = (r) => !!r.pub || (canPublish(r.host) && isPublicName(r.site.nam
                 <Tooltip v-if="item.maintenance" text="In maintenance mode (HTTP 503 or read-only, or its scheduler stopped) until it is taken out of it"><span class="flex shrink-0"><Badge class="max-lg:hidden" size="sm" theme="red" variant="subtle" label="maintenance" /><span class="lucide-wrench size-3.5 text-ink-red-5 lg:hidden" role="img" aria-label="In maintenance mode" /></span></Tooltip>
                 <Tooltip v-if="item.pub" :text="`${item.pub.url} · ${pubWord(item.pub).text}`"><span class="lucide-globe size-3.5 shrink-0 lg:hidden" :class="pubWord(item.pub).cls" role="img" :aria-label="`Public address ${pubWord(item.pub).short}`" /></Tooltip>
               </span>
-              <span class="flex items-center gap-1.5 text-xs text-ink-gray-5"><span v-if="item.host" class="lucide-server size-3 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate">{{ whereLine(item) }}</span><span class="flex shrink-0 items-center gap-1 lg:hidden"><StatusDot :token="item.token" />{{ item.word }}</span></span>
+              <span class="flex items-center gap-1.5 text-xs text-ink-gray-5"><span v-if="item.host" class="lucide-server size-3 shrink-0 text-ink-gray-4" aria-hidden="true" /><span class="truncate">{{ whereLine(item) }}</span><span class="flex shrink-0 items-center gap-1 lg:hidden" :title="item.why"><StatusDot :token="item.token" />{{ item.word }}</span></span>
             </span>
           </ListCell>
-          <ListCell class="gap-1.5 max-lg:hidden"><StatusDot :token="item.token" /><span class="truncate text-sm text-ink-gray-6">{{ item.word }}</span></ListCell>
+          <ListCell class="gap-1.5 max-lg:hidden"><StatusDot :token="item.token" /><span class="truncate text-sm text-ink-gray-6" :title="item.why">{{ item.word }}</span></ListCell>
           <ListCell class="gap-1.5 overflow-hidden max-lg:hidden" @click.stop.prevent>
             <span v-if="!item.apps.length" class="text-sm text-ink-gray-4">frappe only</span>
             <Tooltip v-for="a in item.apps.slice(0, 6)" :key="a.name" :text="`${catalogApp(a.name).title}${a.version ? ' · ' + a.version : ''}${a.branch ? ' · ' + a.branch : ''}`">

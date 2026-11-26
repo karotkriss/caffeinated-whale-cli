@@ -12,7 +12,7 @@ import {
   CommandPaletteFooter,
 } from 'frappe-ui/experimental'
 import StatusDot from './StatusDot.vue'
-import { instances, detailOf, benchName, search, instancePath, benchPath, sitePath } from '../data/fleet'
+import { instances, detailOf, benchName, search, instancePath, benchPath, sitePath, reasonsTitle } from '../data/fleet'
 import { hostName } from '../data/hosts'
 import { paletteOpen } from '../data/palette'
 import { openAction } from '../data/dialog'
@@ -84,7 +84,7 @@ function select(value) {
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Instances">
         <CommandPaletteItem v-for="i in instances" :key="i.key" :value="{ to: instancePath(i) }" :keywords="i.host ? [hostName(i.host)] : []">
-          <template #prefix><StatusDot :token="i.overall" class="mr-2" /></template>
+          <template #prefix><StatusDot :token="i.overall" :title="reasonsTitle(i)" class="mr-2" /></template>
           {{ i.project }}
           <template v-if="i.host" #suffix><span class="text-xs text-ink-gray-5">{{ hostName(i.host) }}</span></template>
         </CommandPaletteItem>

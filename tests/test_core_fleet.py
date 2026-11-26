@@ -185,6 +185,14 @@ class TestHealthKey:
             ("not_cwcli_supervised", True),
             ("label", "staging"),
             ("index", 1),
+            (
+                "reasons",
+                [
+                    core_status.HealthReason(
+                        check="web", subject="web", state="no response", text="t"
+                    )
+                ],
+            ),
         ],
     )
     def test_stable_bench_fields_are_included(self, field, value):

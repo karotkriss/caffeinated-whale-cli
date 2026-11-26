@@ -12,6 +12,7 @@ import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
 import RemoteHostBadge from '../components/RemoteHostBadge.vue'
 import MaintenanceAlert from '../components/MaintenanceAlert.vue'
+import HealthReasons from '../components/HealthReasons.vue'
 import { instance as findInstance, loadDetail, benchName, setFocus, ago, instancePath, sitePath } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
@@ -40,7 +41,6 @@ const staleNote = computed(() => {
 })
 const tab = useTabQuery('processes')
 const logsProcess = ref(route.query.process || null)
-const down = computed(() => (health.value?.processes || []).filter((p) => !p.up))
 const name = computed(() => (bench.value ? benchName(bench.value) : `#${index}`))
 const benchUp = computed(() => ['running', 'degraded'].includes(health.value?.overall))
 const ctx = computed(() => ({ project, host, bench: String(index), benchName: name.value }))
@@ -96,14 +96,7 @@ const heroFacts = computed(() => bench.value ? [
   </div>
   <div v-else class="space-y-5 px-3 pb-20 pt-5 sm:px-5">
     <Alert v-if="stale" theme="gray" title="The last health probe failed" :description="staleNote" />
-    <Alert
-      v-if="running && benchUp && down.length"
-      theme="amber"
-      :title="`${down.map((p) => p.label).join(', ')} ${down.length > 1 ? 'are' : 'is'} down`"
-      :description="`${down[0].label} is ${down[0].state || 'down'}${down[0].state === 'FATAL' ? ': supervisord gave up restarting it' : ''}. Its log usually names the cause.`"
-      :primary-action="{ label: `Restart ${down[0].label}`, onClick: () => openAction('process.restart', { ...ctx, process: down[0].label }) }"
-      :secondary-action="{ label: 'Open its log', onClick: () => showLogs(down[0].label) }"
-    />
+    <HealthReasons v-if="running && !stale" :bench="health" :inst="inst" :ctx="ctx" :logs="showLogs" />
     <MaintenanceAlert v-if="running" :maintenance="health?.maintenance" :ctx="ctx" />
 
     <Tabs v-model="tab">
