@@ -271,7 +271,7 @@ are now the whole point. Each note below guards a real bug.
   explicitly to `supervision.web_http_code(container, port=..., site=...)`; the probe used to hardcode `localhost:8000`,
   so a healthy bench 1 read `degraded` (F3) and a dead bench 1 reported bench 0's live code (F4). An unresolved
   port is `web_port: null`/`web_port_verified: false`, NO probe, a `status.web_port_unknown` warning, and
-  `_overall(web_probed=False)` - it does NOT degrade, because degrading on an unreadable JSON file would
+  `_reasons(web_probed=False)` (no web reason, so no `degraded`) - it does NOT degrade, because degrading on an unreadable JSON file would
   manufacture a fresh F3 while fixing the old one. The instance `overall` folds the per-bench ones over the same
   four tokens (no fifth): `degraded` dominates, and a `running` bench beats a never-started `online` one.
 - **`stop --bench` is the bench-scoped inverse of `start --bench`.** It ends only that bench's supervised dev
