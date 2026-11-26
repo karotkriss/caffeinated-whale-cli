@@ -48,6 +48,7 @@ from .core import failure_causes
 from .core import init as core_init
 from .core import integrations as core_integrations
 from .core import label as core_label
+from .core import log_storage as core_log_storage
 from .core import maintenance as core_maintenance
 from .core import new_bench as core_new_bench
 from .core import new_site as core_new_site
@@ -134,6 +135,12 @@ ALLOWED_VERBS = frozenset(
         # asked to (``_follow_ups``).
         "publish-site",
         "unpublish-site",
+        # Log storage (core.log_storage): empty an instance's Docker container logs,
+        # write their rotation into its compose file, remove a bench's rotated log files.
+        # The two removals keep the core's own consent gate (the page's confirmation).
+        "truncate-docker-logs",
+        "set-docker-log-rotation",
+        "prune-bench-logs",
     }
 )
 # One public name is published in one place, so these are keyed by the name, not the
@@ -1874,6 +1881,22 @@ def _dispatch(
             site=(str(args["site"]) if args.get("site") else None),
             on_event=emit,
         )
+    if verb == "truncate-docker-logs":
+        return core_log_storage.truncate_docker_logs(project, consent=consent)
+    if verb == "set-docker-log-rotation":
+        try:
+            max_file = int(args.get("max_file") or core_log_storage.DEFAULT_MAX_FILE)
+        except (TypeError, ValueError):
+            raise CwcliError(
+                ErrorKind.USAGE, "logs.max_file_invalid", "max_file must be a whole number."
+            ) from None
+        return core_log_storage.set_docker_log_rotation(
+            project,
+            max_size=str(args.get("max_size") or core_log_storage.DEFAULT_MAX_SIZE),
+            max_file=max_file,
+        )
+    if verb == "prune-bench-logs":
+        return core_log_storage.prune_bench_logs(project, bench=bench, consent=consent)
     if verb == "prune-backups":
         return core_backup_store.prune(
             project, consent=consent, dry_run=bool(args.get("dry_run")), on_event=emit

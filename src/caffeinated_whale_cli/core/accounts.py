@@ -67,6 +67,10 @@ ADMIN_VERBS = frozenset(
         "prune-backups",
         "s3-prune",
         "self-update",
+        # Log data is deleted (or the compose file edited): an Admin's call, like backups.
+        "truncate-docker-logs",
+        "set-docker-log-rotation",
+        "prune-bench-logs",
     }
 )
 

@@ -19,6 +19,7 @@
 
 import { can, ROLE_LABEL, session } from './session'
 import { hostName } from './hosts'
+import { sizeText } from './backups'
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
@@ -301,6 +302,44 @@ export const ACTIONS = {
     },
   },
 
+  // log storage (the Storage page; core.log_storage). Admin only, like backups.
+  'logs.truncate_docker': {
+    job: true,
+    danger: true,
+    label: 'Empty Docker logs',
+    icon: 'lucide-eraser',
+    confirm: 'confirm',
+    cli: (c) => `cwcli axi storage truncate-docker-logs ${q(c.project)} --yes`,
+    says: (c) => `Empties the Docker json-file log of every container of ${c.project} and removes their rotated files (${c.dockerTotal == null ? 'size not measured' : sizeText(c.dockerTotal)}). Their \`docker logs\` history is lost; the containers keep running and nothing inside them is touched.`,
+    request: (c) => ({ verb: 'truncate-docker-logs', target: { project: c.project }, args: {}, consent: true }),
+    done: (c) => `${c.project}'s Docker logs emptied`,
+  },
+  'logs.docker_rotation': {
+    job: true,
+    label: 'Set Docker log rotation',
+    icon: 'lucide-rotate-ccw',
+    confirm: 'confirm',
+    fields: [
+      { name: 'max_size', type: 'text', label: 'Rotate each log at', placeholder: '10m', default: '10m' },
+      { name: 'max_file', type: 'text', label: 'Rotated files to keep', placeholder: '3', default: '3' },
+    ],
+    cli: (c, v) => `cwcli axi storage set-docker-log-rotation ${q(c.project)} --max-size ${q(v?.max_size || '10m')} --max-file ${q(v?.max_file || '3')}`,
+    says: (c, v) => `Writes json-file logging with max-size ${v?.max_size || '10m'} and max-file ${v?.max_file || '3'} into every service of ${c.project}'s compose file. Running containers keep their current log settings; the rotation binds when each container is next recreated.`,
+    request: (c, v) => ({ verb: 'set-docker-log-rotation', target: { project: c.project }, args: { max_size: v?.max_size || '10m', max_file: Number(v?.max_file || 3) } }),
+    done: (c) => `${c.project}'s compose file now rotates its container logs`,
+  },
+  'logs.prune_bench': {
+    job: true,
+    danger: true,
+    label: 'Remove rotated bench logs',
+    icon: 'lucide-trash-2',
+    confirm: 'confirm',
+    cli: (c) => `cwcli axi storage prune-bench-logs ${q(c.project)}${benchFlag(c)} --yes`,
+    says: (c) => `Removes the ${c.rotated} rotated log file${c.rotated === 1 ? '' : 's'} (${sizeText(c.rotatedBytes || 0)}) under ${c.benchName}'s logs/ on ${c.project}. Every current log file is kept, so the running bench loses nothing it holds open.`,
+    request: (c) => ({ verb: 'prune-bench-logs', target: { project: c.project, bench: c.bench || undefined }, args: {}, consent: true }),
+    done: (c) => `${c.benchName}'s rotated logs removed`,
+  },
+
   // app
   'app.checkout': {
     job: true,
@@ -370,7 +409,7 @@ export const ACTIONS = {
 // depends on them (removing an instance needs a live backup unless the volumes stay).
 export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
-  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' || id === 'app.uninstall' || id === 'site.unpublish' ? 'admin' : 'operator'
+  const role = id.endsWith('.remove') || id === 'delete_backup' || id === 'app.checkout_reset' || id === 'app.uninstall' || id === 'site.unpublish' || id.startsWith('logs.') ? 'admin' : 'operator'
   if (!a?.read && !can(role)) return { ok: false, role, reason: `Needs the ${ROLE_LABEL[role]} role`, detail: `You are signed in as ${ROLE_LABEL[session.user?.role] === 'Admin' ? 'an' : 'a'} ${ROLE_LABEL[session.user?.role] || 'Viewer'}; ask an Admin if you need this.` }
   const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }
