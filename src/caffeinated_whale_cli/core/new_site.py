@@ -47,9 +47,9 @@ class NewSiteReport:
     apps_installed: list[str] = field(default_factory=list)
     default_set: bool = False
     developer_mode: bool = False
-    # The bench processes cwcli restarted so they could import the installed apps
-    # (see core.supervision.resync_if_code_landed); False ``ok`` = the site was
-    # created but cwcli could not reload or verify it, named in a warning.
+    # The bench processes cwcli restarted so they load the installed apps (see
+    # core.init.reload_for_installed_apps); False ``ok`` = the site was created but
+    # cwcli could not reload or verify it, named in a warning.
     processes_restarted: list[str] = field(default_factory=list)
     ok: bool = True
 

@@ -391,6 +391,15 @@ def _target_sites(frappe_container, bench_path: str, sites: list[str] | None) ->
     return sorted(found) if found else []
 
 
+def _bench_sites_or_none(frappe_container, bench_path: str) -> list[str] | None:
+    """Every site on the bench, or None when the list cannot be read."""
+    try:
+        found = bench_sites.list_sites(frappe_container, bench_path)
+    except Exception:  # noqa: BLE001
+        return None
+    return None if found is None else sorted(found)
+
+
 def _resync_after_mutation(
     frappe_container,
     bench_path: str,
@@ -873,6 +882,7 @@ def install_apps(
         (n.target, n.ref, n) for n in deps if not n.on_bench
     ] + [(*_requested(target), None) for target in apps]
     dep_fetch_failed = False
+    landed = False
 
     # Bridge the container's git back to the host's gh/glab for private-repo
     # fetches. Inert for public repos (git only calls a credential helper on 401),
@@ -944,6 +954,7 @@ def install_apps(
                     _remove_app_dir(frappe_container, path, created, emit=emit)
                 continue
             results.append(AppResult(app=target, site=None, action="get-app", ok=True))
+            landed = True
 
             command, after_apps = _available_apps(frappe_container, path)
             emit(AppsCommand(command=command))
@@ -1030,9 +1041,13 @@ def install_apps(
 
     # Only the sites an install actually landed on: a site whose install-app failed
     # was not changed, so it has nothing to re-verify and must not fail the restart.
-    changed_sites = [
+    changed_sites: list[str] | None = [
         r.site for r in results if r.action == "install-app" and r.ok and r.site is not None
     ]
+    if landed and not changed_sites:
+        # An app fetched onto the bench changes its app set even with no site install
+        # (`--fetch-only`), so a serving bench must reload; every site then verifies.
+        changed_sites = _bench_sites_or_none(frappe_container, path)
     _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
 
     any_fail = any(not r.ok for r in results)

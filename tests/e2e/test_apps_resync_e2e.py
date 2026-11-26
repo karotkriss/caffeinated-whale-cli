@@ -397,9 +397,9 @@ def test_a_new_site_with_a_newly_fetched_app_serves_without_a_manual_restart(run
     because the web and worker processes booted before the app existed and could not
     import it. ``new-site`` must reload them, and only them, before it reports success.
 
-    The second leg is the other half of the contract: once the processes have booted
-    with the app present, another site with the same app (what a restore drill or a
-    transfer creates) must NOT cycle the live bench.
+    The second leg pins that the reload is unconditional: another site with the same
+    app, created after the processes booted with it present, still restarts them and
+    still serves.
     """
     inst = running_instance
     _ensure_serving(inst.name)
@@ -434,18 +434,11 @@ def test_a_new_site_with_a_newly_fetched_app_serves_without_a_manual_restart(run
             inst, before, verb="new-site", watcher_quiesced=watcher_quiesced
         )
 
-        # Every code-bearing process now booted with payments on the bench, so a
-        # further site with it must leave them running.
         second = _axi_new_site_with_app(inst, _NEW_SITES[1])
         assert second.returncode == 0, second.stdout + second.stderr
-        assert "processes_restarted[0]:" in second.stdout, second.stdout
+        assert "ok: true" in second.stdout, second.stdout
         assert _site_ping_code(inst, _NEW_SITES[1]) == "200"
-        _wait_supervised_stack(inst.name)
-        untouched = _program_pids(inst)
-        for name, pid in _code_bearing(after).items():
-            assert (
-                untouched.get(name) == pid
-            ), f"new-site cycled {name!r} although it already had {_APP} importable"
+        _assert_resynchronised(inst, after, verb="second new-site")
 
         for site in _NEW_SITES:
             _drop_site(inst, site)

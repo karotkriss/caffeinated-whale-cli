@@ -97,8 +97,8 @@ class InitReport:
     bench_created: bool  # False when an existing bench was reused
     site_created: bool  # False on an idempotent re-run (site already existed)
     erpnext_installed: bool
-    # The bench processes restarted so they could import ERPNext (a reused, serving
-    # bench); False ``ok`` = cwcli could not reload or verify the site, in a warning.
+    # The bench processes restarted so they load ERPNext (a reused, serving bench);
+    # False ``ok`` = cwcli could not reload or verify the site, named in a warning.
     processes_restarted: list[str] = field(default_factory=list)
     ok: bool = True
 
@@ -1175,21 +1175,22 @@ def reload_for_installed_apps(
     warnings: list[Message],
     emit: OnEvent,
 ) -> tuple[list[str], bool]:
-    """After ``apps`` were installed on ``site``, reload the bench processes that
-    booted before those apps reached the bench; return (restarted programs, ok).
+    """After ``apps`` were installed on ``site``, reload the bench's running web and
+    worker processes and verify ``site`` serves; return (restarted programs, ok).
 
     Shared by ``new_site`` and ``init``: both install apps on a fresh site of a bench
-    that may already be serving, where the web and worker processes cannot import an
-    app that arrived after they started. A failed reload is a warning and ``ok`` False,
-    never a raise: the site and its apps already exist.
+    that may already be serving, whose processes cannot import an app that reached the
+    bench after they booted. The reload is unconditional whenever an app was installed:
+    :func:`supervision.resync_after_code_change` restarts only running code-bearing
+    programs, so a stopped bench stays stopped. A failed reload is a warning and ``ok``
+    False, never a raise: the site and its apps already exist.
     """
     if not apps:
         return [], True
-    outcome = supervision.resync_if_code_landed(
+    outcome = supervision.resync_after_code_change(
         container,
         bench_path,
         sites=[site],
-        landed_paths=[f"{bench_path}/sites/apps.txt", *(f"{bench_path}/apps/{a}" for a in apps)],
         on_restart=lambda program: emit(
             InitStepStart(
                 phase="restart_processes",
@@ -1668,8 +1669,8 @@ def init_bench(
         )
         emit(InitStepEnd(phase="erpnext_install"))
         erpnext_installed = True
-    # A reused bench may already be serving, and its processes cannot import an app
-    # that reached the bench after they booted; a bench this run created is not.
+    # A reused bench may already be serving with processes that cannot import the new
+    # app; a bench this run created is not serving yet.
     restarted, reloaded = reload_for_installed_apps(
         frappe_container,
         bench_full_path,
