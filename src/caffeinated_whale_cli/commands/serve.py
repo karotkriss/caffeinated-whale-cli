@@ -40,6 +40,11 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``GET /api/v1/instances/<p>/url``         - ``core.url.probe_url`` host URL plus
   a fresh reachability probe (same-origin, serialized with the project's
   actions because it execs ``curl`` in the container)
+* ``GET /api/v1/storage/logs[?project=<p>]`` - ``core.log_storage.report``: every
+  instance's Docker container logs (driver, rotation, size) and bench log files
+  (current vs rotated), plus the host journal's usage; same-origin only (it names
+  paths). The trims are the ``truncate-docker-logs``, ``set-docker-log-rotation``,
+  ``prune-bench-logs`` and ``vacuum-journal`` jobs
 * ``GET /api/v1/doctor``                    - system-wide ``core.doctor.run_all``
 * ``GET /api/v1/config``                    - ``core.config.show_config`` (read)
 * ``GET /api/v1/cache``                     - the cache inventory (remembered projects)
@@ -268,6 +273,7 @@ from ..core import inspect as core_inspect
 from ..core import integrations as core_integrations
 from ..core import label as core_label
 from ..core import list as core_list
+from ..core import log_storage as core_log_storage
 from ..core import logs as core_logs
 from ..core import metrics as core_metrics
 from ..core import open as core_open
@@ -1329,6 +1335,16 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif path == "/api/v1/backups":
             self._send_backups(query)
+        elif path == "/api/v1/storage/logs":
+            if self._refuse_cross_origin():
+                return
+            try:
+                report = core_log_storage.report(_optional_str((query.get("project") or [None])[0]))
+            except CwcliError as e:
+                self._send_core_error(e)
+                return
+            assert report.data is not None  # OK always carries the report
+            self._send_json({"data": core_log_storage.to_dict(report.data)})
         elif path == "/api/v1/backups/download":
             key = _optional_str((query.get("key") or [None])[0])
             if not key:

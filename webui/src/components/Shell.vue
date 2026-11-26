@@ -160,6 +160,7 @@ watch(() => route.name, (name) => {
                 <template #suffix><span v-if="siteCount" class="mr-1 text-xs text-ink-gray-5">{{ siteCount }}</span></template>
               </SidebarItem>
               <SidebarItem label="Backups" icon="lucide-archive" route="/backups" :active="route.name === 'backups'" />
+              <SidebarItem label="Storage" icon="lucide-hard-drive" route="/storage" :active="route.name === 'storage'" />
               <SidebarItem label="Schedules" icon="lucide-calendar-clock" route="/schedules" :active="route.name === 'schedules'" />
               <SidebarItem label="Jobs" icon="lucide-list-checks" route="/jobs" :active="route.name === 'jobs' || route.name === 'job'">
                 <template #suffix>

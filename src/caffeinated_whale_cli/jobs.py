@@ -48,6 +48,7 @@ from .core import failure_causes
 from .core import init as core_init
 from .core import integrations as core_integrations
 from .core import label as core_label
+from .core import log_storage as core_log_storage
 from .core import maintenance as core_maintenance
 from .core import new_bench as core_new_bench
 from .core import new_site as core_new_site
@@ -75,7 +76,9 @@ from .utils.config_utils import cwcli_home
 
 ACTIVE_STATES = frozenset({"queued", "running", "interrupting"})
 # Verbs that act on the machine, not on one instance: no target.project is required.
-_PROJECTLESS_VERBS = frozenset({"self-update", "check-updates", "send-backup", "receive-backup"})
+_PROJECTLESS_VERBS = frozenset(
+    {"self-update", "check-updates", "send-backup", "receive-backup", "vacuum-journal"}
+)
 TERMINAL_STATES = frozenset({"succeeded", "failed", "interrupted", "unknown", "needs_choice"})
 ALLOWED_VERBS = frozenset(
     {
@@ -134,6 +137,13 @@ ALLOWED_VERBS = frozenset(
         # asked to (``_follow_ups``).
         "publish-site",
         "unpublish-site",
+        # Log storage (core.log_storage): empty an instance's Docker container logs,
+        # write their rotation into its compose file, remove a bench's rotated log files,
+        # trim the host journal (root only). The removals keep the core's own consent gate.
+        "truncate-docker-logs",
+        "set-docker-log-rotation",
+        "prune-bench-logs",
+        "vacuum-journal",
     }
 )
 # One public name is published in one place, so these are keyed by the name, not the
@@ -1873,6 +1883,35 @@ def _dispatch(
             project=(str(args["project"]) if args.get("project") else None),
             site=(str(args["site"]) if args.get("site") else None),
             on_event=emit,
+        )
+    if verb == "truncate-docker-logs":
+        return core_log_storage.truncate_docker_logs(project, consent=consent)
+    if verb == "set-docker-log-rotation":
+        raw_size = args.get("max_size")
+        raw_file = args.get("max_file")
+        if raw_file is None:
+            max_file = core_log_storage.DEFAULT_MAX_FILE
+        elif type(raw_file) is int:
+            max_file = raw_file
+        elif isinstance(raw_file, str) and raw_file.strip().isdigit():
+            max_file = int(raw_file)
+        else:
+            raise CwcliError(
+                ErrorKind.USAGE, "logs.max_file_invalid", "max_file must be a whole number."
+            )
+        return core_log_storage.set_docker_log_rotation(
+            project,
+            max_size=core_log_storage.DEFAULT_MAX_SIZE if raw_size is None else str(raw_size),
+            max_file=max_file,
+        )
+    if verb == "prune-bench-logs":
+        return core_log_storage.prune_bench_logs(project, bench=bench, consent=consent)
+    if verb == "vacuum-journal":
+        raw_size, raw_time = args.get("max_size"), args.get("max_time")
+        return core_log_storage.vacuum_journal(
+            max_size=core_log_storage.DEFAULT_JOURNAL_SIZE if raw_size is None else str(raw_size),
+            max_time=core_log_storage.DEFAULT_JOURNAL_TIME if raw_time is None else str(raw_time),
+            consent=consent,
         )
     if verb == "prune-backups":
         return core_backup_store.prune(

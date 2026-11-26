@@ -609,6 +609,9 @@ def _choice_error_message(choice: Choice) -> str:
         # databases and files) and deletes the bench directory; the agent must
         # consent. The --yes flag rides the `help:` line below.
         return "removing this bench drops every site on it and deletes its directory"
+    if choice.kind in ("confirm_truncate_logs", "confirm_prune_logs", "confirm_vacuum_journal"):
+        # `axi storage` only. The prompt names what is deleted; --yes rides `help:`.
+        return choice.prompt
     return f"a decision is required: {choice.prompt}"
 
 
@@ -659,6 +662,8 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "re-run with --yes to consent to permanently dropping it"))
     elif choice.kind == "confirm_remove_bench":
         typer.echo(toon.kv("help", "re-run with --yes to consent to permanently removing it"))
+    elif choice.kind in ("confirm_truncate_logs", "confirm_prune_logs", "confirm_vacuum_journal"):
+        typer.echo(toon.kv("help", "re-run with --yes to consent"))
     elif choice.kind == "confirm_reuse_bench":
         typer.echo(
             toon.kv(
@@ -3720,3 +3725,144 @@ def axi_setup() -> None:
     )
     typer.echo("\n".join(lines))
     raise typer.Exit(0)
+
+
+# --------------------------------------------------------------------------------- storage
+
+storage_app = AxiTyper(
+    help="Log storage around the instances: Docker container logs, bench logs, the host journal."
+)
+app.add_typer(storage_app, name="storage")
+
+
+def _emit_storage_result(result) -> None:
+    """One TOON document for a storage verb; a choice fork is a usage error naming its flag."""
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+    emit_result(result.data or {}, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+@storage_app.command("logs")
+def axi_storage_logs(
+    project: str = typer.Argument(None, help="One instance; omit for every instance."),
+) -> None:
+    """What the logs weigh, as TOON: each instance's Docker container logs (driver,
+    rotation, size), its bench log files (current vs rotated), and the host journal.
+
+    A read: the only container it may start is a short-lived read-only helper that
+    measures the Docker log files when the daemon's data root is not readable from
+    here. A stopped instance's bench logs are not measured (its container is down),
+    and the report says so.
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.report(project)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    assert result.data is not None
+    emit_result(core_log_storage.to_dict(result.data), warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+@storage_app.command("truncate-docker-logs")
+def axi_storage_truncate_docker_logs(
+    project: str = typer.Argument(..., help="The instance whose container logs to empty."),
+    yes: bool = typer.Option(
+        False, "--yes", help="REQUIRED consent: the containers' `docker logs` history is lost."
+    ),
+) -> None:
+    """Empty every json-file container log of the instance and remove its rotated files.
+
+    The daemon writes the log file in append mode, so emptying it is safe while the
+    containers run; nothing inside a container is touched. Without ``--yes`` this is a
+    usage error naming the flag (exit 2), never a prompt.
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.truncate_docker_logs(project, consent=yes)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    _emit_storage_result(result)
+
+
+@storage_app.command("set-docker-log-rotation")
+def axi_storage_set_docker_log_rotation(
+    project: str = typer.Argument(..., help="The instance whose compose file to update."),
+    max_size: str = typer.Option("10m", "--max-size", help="Rotate each log at this size."),
+    max_file: int = typer.Option(3, "--max-file", help="How many rotated files to keep."),
+) -> None:
+    """Write json-file log rotation (max-size, max-file) into every service of the
+    instance's compose file.
+
+    Running containers keep the log settings they were created with; the rotation
+    binds when each container is next recreated. The report's ``rotation`` column
+    shows which containers already have it live.
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.set_docker_log_rotation(
+            project, max_size=max_size, max_file=max_file
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    _emit_storage_result(result)
+
+
+@storage_app.command("prune-bench-logs")
+def axi_storage_prune_bench_logs(
+    project: str = typer.Argument(..., help="The instance whose bench logs to prune."),
+    bench: str = typer.Option(
+        None, "--bench", help="Which bench: numeric index or label. Omit for every bench."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="REQUIRED consent to remove the rotated files."),
+) -> None:
+    """Remove the rotated log files (``*.log.1``, ``*.log.2.gz``, ...) under a bench's
+    ``logs/`` and each of its ``sites/<site>/logs/``; every current log file is kept, so a running bench loses nothing it holds
+    open. A stopped instance is refused (exit 1) naming ``cwcli start``, never started.
+    Without ``--yes`` this is a usage error naming the flag (exit 2).
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.prune_bench_logs(project, bench=bench, consent=yes)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    _emit_storage_result(result)
+
+
+@storage_app.command("vacuum-journal")
+def axi_storage_vacuum_journal(
+    max_size: str = typer.Option(
+        "500M", "--max-size", help="Keep at most this much journal (500M, 2G, ...)."
+    ),
+    max_time: str = typer.Option(
+        "2weeks", "--max-time", help="Keep at most this much history (2weeks, 14d, ...)."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="REQUIRED consent: older archived journal entries are deleted."
+    ),
+) -> None:
+    """Trim the host's systemd journal (``journalctl --vacuum-size --vacuum-time``).
+
+    Root only: when cwcli does not run as root this is refused (exit 1) and the hint
+    names the ``sudo journalctl`` command to run instead. Without ``--yes`` this is a
+    usage error naming the flag (exit 2), never a prompt.
+    """
+    from ..core import log_storage as core_log_storage
+
+    try:
+        result = core_log_storage.vacuum_journal(max_size=max_size, max_time=max_time, consent=yes)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    _emit_storage_result(result)

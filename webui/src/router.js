@@ -22,6 +22,7 @@ export const router = createRouter({
     { path: '/hosts/:host/jobs/:id', name: 'host-job', component: page('Job') },
     { path: '/advisories', name: 'advisories', component: page('Advisories') },
     { path: '/backups', name: 'backups', component: page('Backups') },
+    { path: '/storage', name: 'storage', component: page('Storage') },
     { path: '/schedules', name: 'schedules', component: page('Schedules') },
     { path: '/settings/:section?', name: 'settings', component: { render: () => null } },
     { path: '/:pathMatch(.*)*', redirect: '/instances' },
