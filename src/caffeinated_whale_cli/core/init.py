@@ -1190,19 +1190,57 @@ def reload_for_added_code(
         bench_path,
         code_added=code_added,
         project=project,
-        on_restart=lambda program: emit(
-            InitStepStart(
-                phase="restart_processes",
-                item=program,
-                message=f"Restarting {program} so it loads the newly added apps",
-            )
-        ),
+        on_restart=_restart_announcer(emit),
     )
     if outcome.error:
         text = f"The site and its apps were installed, but {outcome.error}"
         warnings.append(Message("site.reload_failed", text))
         emit(InitNotice(code="site.reload_failed", text=text))
     return outcome.restarted, outcome.error is None
+
+
+def reload_before_reraise(
+    error: BaseException,
+    container,
+    bench_path: str,
+    *,
+    project: str,
+    code_added: bool,
+    emit: OnEvent,
+) -> None:
+    """Run the reload an operation that failed part-way still owes for code it added.
+
+    A failed reload is folded into ``error``'s message, the one thing every frontend
+    shows for a failed operation, so the ``cwcli restart`` remedy is never lost with
+    the discarded report. Never raises: the original error is what propagates.
+    """
+    outcome = supervision.reload_after_fetch(
+        container,
+        bench_path,
+        code_added=code_added,
+        project=project,
+        on_restart=_restart_announcer(emit),
+    )
+    if outcome.error is None:
+        return
+    text = (
+        "The running bench was not reloaded to load the app code this run added: "
+        f"{outcome.error}"
+    )
+    emit(InitNotice(code="site.reload_failed", text=text))
+    if isinstance(error, CwcliError):
+        error.message = f"{error.message} {text}"
+        error.args = (error.message,)
+
+
+def _restart_announcer(emit: OnEvent) -> Callable[[str], None]:
+    return lambda program: emit(
+        InitStepStart(
+            phase="restart_processes",
+            item=program,
+            message=f"Restarting {program} so it loads the newly added apps",
+        )
+    )
 
 
 def init_bench(
@@ -1676,13 +1714,13 @@ def init_bench(
             )
             emit(InitStepEnd(phase="erpnext_install"))
             erpnext_installed = True
-        except BaseException:
-            reload_for_added_code(
+        except BaseException as error:
+            reload_before_reraise(
+                error,
                 frappe_container,
                 bench_full_path,
                 project=project_name,
                 code_added=erpnext_added,
-                warnings=warnings,
                 emit=emit,
             )
             raise

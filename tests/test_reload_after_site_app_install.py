@@ -248,8 +248,9 @@ class TestNewSite:
         assert first_restart > last_install
         assert result.data.ok and result.data.processes_restarted == _restarts(log)
 
+    @pytest.mark.parametrize("supervised", [True, False])
     def test_a_fetch_that_landed_is_reloaded_when_creating_the_site_fails(
-        self, world, container, monkeypatch  # noqa: F811
+        self, world, container, monkeypatch, supervised  # noqa: F811
     ):
         new_site = _wire_new_site(monkeypatch, container)
         monkeypatch.setattr(
@@ -260,7 +261,7 @@ class TestNewSite:
             "_directory_exists",
             lambda _c, path: "/apps/" in path and bool(_gets(container)),
         )
-        log = _supervised_bench(monkeypatch)
+        log = _supervised_bench(monkeypatch, supervised=supervised, manager_up=True)
 
         with pytest.raises(CwcliError) as raised:
             _run_new_site(
@@ -276,7 +277,14 @@ class TestNewSite:
 
         assert raised.value.code == "init.command_failed"
         assert len(_gets(container)) == 2
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
+        if supervised:
+            assert _restarts(log) == ["web", "schedule", "worker_default"]
+            assert "cwcli restart" not in raised.value.message
+        else:
+            # A bench cwcli cannot restart: the remedy rides the error every surface shows.
+            assert _restarts(log) == []
+            assert raised.value.message.startswith("new_site failed")
+            assert "cwcli restart proj" in raised.value.message
 
     def test_a_site_with_only_bench_apps_restarts_nothing(
         self, world, container, monkeypatch  # noqa: F811
@@ -326,8 +334,9 @@ class TestInitErpnextOnAReusedBench:
         assert report.erpnext_installed and report.ok
         assert restarts == [] and report.processes_restarted == []
 
+    @pytest.mark.parametrize("supervised", [True, False])
     def test_a_fetched_erpnext_is_reloaded_when_its_install_fails(
-        self, monkeypatch, patched  # noqa: F811
+        self, monkeypatch, patched, supervised  # noqa: F811
     ):
         from .test_core_init import (
             BENCH_PATH,
@@ -338,10 +347,14 @@ class TestInitErpnextOnAReusedBench:
             use_container,
         )
 
-        log = _supervised_bench(monkeypatch)
+        log = _supervised_bench(monkeypatch, supervised=supervised, manager_up=True)
         api = FakeApi(fail_command="install-app erpnext")
         use_container(monkeypatch, FakeContainer(api=api, dirs_exist={BENCH_PATH}))
-        with pytest.raises(CwcliError):
+        with pytest.raises(CwcliError) as raised:
             core_init.init_bench(PROJECT, **bench_kwargs(reuse_bench=True, install_erpnext=True))
         assert any("get-app" in c["command"] for c in api.exec_calls)
-        assert _restarts(log) == ["web", "schedule", "worker_default"]
+        if supervised:
+            assert _restarts(log) == ["web", "schedule", "worker_default"]
+        else:
+            assert _restarts(log) == []
+            assert f"cwcli restart {PROJECT}" in raised.value.message

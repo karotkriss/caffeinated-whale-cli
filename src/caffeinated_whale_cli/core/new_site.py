@@ -29,6 +29,7 @@ from .init import (
     _directory_exists,
     _run_exec,
     _select_mariadb_flag,
+    reload_before_reraise,
     reload_for_added_code,
 )
 
@@ -326,16 +327,9 @@ def new_site(
             )
             emit(InitStepEnd(phase="developer_mode"))
             dev_set = True
-    except BaseException:
-        # Code already on a serving bench still needs its reload when a later step
-        # fails; the reload never raises, so the original error is what propagates.
-        reload_for_added_code(
-            container,
-            bench_path,
-            project=project,
-            code_added=code_added,
-            warnings=warnings,
-            emit=emit,
+    except BaseException as error:
+        reload_before_reraise(
+            error, container, bench_path, project=project, code_added=code_added, emit=emit
         )
         raise
 
