@@ -44,6 +44,7 @@ import docker
 
 from ..utils import config_utils
 from . import docker as core_docker
+from . import inspect as core_inspect
 from . import list as core_list
 from . import resolvers
 from .envelope import Choice, Message, Result, Status
@@ -120,7 +121,7 @@ class LogStorageReport:
     instances: list[InstanceLogStorage]
     journal: JournalReport
     docker_total: int | None
-    bench_total: int
+    bench_total: int | None  # None when any running instance's bench logs went unmeasured
 
 
 def to_dict(report: Any) -> dict[str, Any]:
@@ -439,16 +440,24 @@ def set_docker_log_rotation(
 
 def _bench_log_listing(container, bench_path: str) -> list[tuple[str, int]]:
     """``[(path, bytes)]`` for every regular file under ``<bench>/logs`` (one exec; the
-    bench path rides as an argv positional, never inside the script text)."""
+    bench path rides as an argv positional, never inside the script text). A logs dir
+    that is missing or unreadable raises rather than reading as an empty one."""
     code, output = container.exec_run(
         [
             "sh",
             "-c",
+            '[ -d "$1/logs" ] || exit 3; '
             'find "$1/logs" -maxdepth 1 -type f -exec stat -c "%s %n" {} + 2>/dev/null',
             "sh",
             bench_path,
         ]
     )
+    if code not in (0, None):
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "logs.bench_logs_unreadable",
+            f"The bench logs at {bench_path}/logs could not be read.",
+        )
     rows: list[tuple[str, int]] = []
     for line in (
         output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output or "")
@@ -466,6 +475,14 @@ def is_rotated(path: str) -> bool:
 
 def _cached_paths(project: str) -> list[tuple[str, int | None]]:
     rows = resolvers.cached_benches(project)
+    if not rows:
+        try:
+            core_inspect.inspect(project, refresh="auto", offer_choice=False)
+        except CwcliError:
+            raise
+        except Exception:  # noqa: BLE001 - core.inspect.resolve_bench_with_fallback's degrade
+            pass
+        rows = resolvers.cached_benches(project)
     if not rows:
         return [(resolvers.DEFAULT_BENCH_PATH, None)]
     return [(str(r["path"]), r.get("index")) for r in rows]
@@ -588,14 +605,21 @@ def journal() -> JournalReport:
             ["journalctl", "--disk-usage"], capture_output=True, text=True, timeout=15
         )
         text = (proc.stdout or proc.stderr or "").strip()
+        partial = proc.returncode != 0 or "not seeing messages" in (proc.stderr or "")
     except (OSError, subprocess.TimeoutExpired) as e:
-        text = f"journalctl --disk-usage failed: {e}"
+        text, partial = f"journalctl --disk-usage failed: {e}", True
     privileged = hasattr(os, "geteuid") and os.geteuid() == 0
+    reason = None if privileged else "Vacuuming needs root; run one of the commands."
+    if partial:
+        reason = (
+            "journalctl could not read every journal file from this account, so the "
+            "full size is unknown; run it as root or from the systemd-journal group."
+        )
     return JournalReport(
         applies=True,
-        reason=None if privileged else "Vacuuming needs root; run one of the commands.",
+        reason=reason,
         usage_text=text,
-        size=_parse_usage(text),
+        size=None if partial else _parse_usage(text),
         privileged=privileged,
         commands=list(_JOURNAL_VACUUM),
     )
@@ -614,28 +638,37 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
                 ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project}' not found."
             )
     rows: list[InstanceLogStorage] = []
+    benches_measured = True
     for inst in instances:
         running = inst.status == "running"
-        note: str | None = None
+        notes: list[str] = []
         try:
             dl: DockerLogs | None = docker_logs(inst.project_name)
         except CwcliError as e:
-            dl, note = None, e.message
+            dl = None
+            notes.append(e.message)
         benches: list[BenchLogs] = []
         if running:
             try:
                 frappe = core_docker.get_frappe_container(inst.project_name)
-                benches = [
-                    bench_logs(frappe, inst.project_name, p, i)
-                    for p, i in _cached_paths(inst.project_name)
-                ]
+                for p, i in _cached_paths(inst.project_name):
+                    try:
+                        benches.append(bench_logs(frappe, inst.project_name, p, i))
+                    except CwcliError as e:
+                        benches_measured = False
+                        notes.append(e.message)
             except CwcliError as e:
-                note = e.message
+                benches_measured = False
+                notes.append(e.message)
         else:
-            note = "Start the instance to measure its bench logs."
+            notes.append("Start the instance to measure its bench logs.")
         rows.append(
             InstanceLogStorage(
-                project=inst.project_name, running=running, docker=dl, benches=benches, note=note
+                project=inst.project_name,
+                running=running,
+                docker=dl,
+                benches=benches,
+                note=" ".join(notes) or None,
             )
         )
     docker_sizes = [r.docker.total if r.docker is not None else None for r in rows]
@@ -644,7 +677,11 @@ def report(project: str | None = None) -> Result[LogStorageReport]:
         if docker_sizes and None not in docker_sizes
         else None
     )
-    bench_total = sum(b.current_bytes + b.rotated_bytes for r in rows for b in r.benches)
+    bench_total = (
+        sum(b.current_bytes + b.rotated_bytes for r in rows for b in r.benches)
+        if benches_measured
+        else None
+    )
     return Result(
         status=Status.OK,
         data=LogStorageReport(

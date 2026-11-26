@@ -64,6 +64,7 @@ class FakeContainer:
             "Image": image,
         }
         self.listing = list(listing)  # [(path, size)] under <bench>/logs
+        self.missing_logs: set[str] = set()  # benches whose logs dir does not exist
         self.calls: list = []
 
     def reload(self):
@@ -73,6 +74,8 @@ class FakeContainer:
         self.calls.append(list(cmd))
         if cmd[0] == "sh" and "find" in cmd[2]:
             bench = cmd[-1]
+            if bench in self.missing_logs:
+                return 3, b""
             rows = [f"{s} {bench}/logs/{p}" for p, s in self.listing]
             return 0, ("\n".join(rows) + "\n").encode()
         if cmd[0] == "rm":
@@ -461,6 +464,7 @@ class TestJournal:
         class P:
             stdout = "Archived and active journals take up 1.2G in the file system.\n"
             stderr = ""
+            returncode = 0
 
         monkeypatch.setattr(ls.subprocess, "run", lambda *a, **k: P())
         monkeypatch.setattr(ls.os, "geteuid", lambda: 1000, raising=False)
@@ -471,6 +475,27 @@ class TestJournal:
             "sudo journalctl --vacuum-time=2weeks",
         ]
         assert "root" in (rep.reason or "")
+
+    def test_a_partial_read_for_an_unprivileged_account_is_unknown_not_the_partial_size(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(ls.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(ls.shutil, "which", lambda name: "/usr/bin/journalctl")
+        monkeypatch.setattr(ls.Path, "exists", lambda self: True)
+
+        class P:
+            stdout = "Archived and active journals take up 8.0M in the file system.\n"
+            stderr = (
+                "Hint: You are currently not seeing messages from other users and the system.\n"
+                "      Users in groups 'adm', 'systemd-journal' can see all messages.\n"
+            )
+            returncode = 0
+
+        monkeypatch.setattr(ls.subprocess, "run", lambda *a, **k: P())
+        monkeypatch.setattr(ls.os, "geteuid", lambda: 1000, raising=False)
+        rep = ls.journal()
+        assert rep.applies is True and rep.size is None
+        assert "8.0M" in (rep.usage_text or "") and "systemd-journal" in (rep.reason or "")
 
     def test_usage_parse(self):
         assert ls._parse_usage("take up 512.0M in the file system") == 512 * 1024**2
@@ -494,6 +519,7 @@ class TestReport:
         frappe = FakeContainer("p-frappe-1", "frappe", listing=LISTING)
         monkeypatch.setattr(ls.core_docker, "get_frappe_container", lambda p: frappe)
         monkeypatch.setattr(ls.resolvers, "cached_benches", lambda p: [])
+        monkeypatch.setattr(ls.core_inspect, "inspect", lambda *a, **k: None)
         monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
         result = ls.report()
         rep = result.data
@@ -521,6 +547,46 @@ class TestReport:
         rep = ls.report().data
         assert rep.instances[0].docker.total == 160 and rep.instances[1].docker is None
         assert rep.docker_total is None
+
+    def test_a_missing_bench_logs_dir_is_unmeasured_never_zero(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        rows = [InstanceDTO(project_name="p", status="running", ports=[])]
+        monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": rows})())
+        conts = _containers(tmp_path)
+        monkeypatch.setattr(ls.core_docker, "get_project_containers", lambda p: conts)
+        frappe = FakeContainer("p-frappe-1", "frappe", listing=LISTING)
+        frappe.missing_logs = {"/workspace/stale-bench"}
+        monkeypatch.setattr(ls.core_docker, "get_frappe_container", lambda p: frappe)
+        monkeypatch.setattr(
+            ls.resolvers,
+            "cached_benches",
+            lambda p: [
+                {"path": "/workspace/frappe-bench", "index": 0},
+                {"path": "/workspace/stale-bench", "index": 1},
+            ],
+        )
+        monkeypatch.setattr(ls, "journal", lambda: ls.JournalReport(False, "no", None, None, False))
+        rep = ls.report().data
+        (p,) = rep.instances
+        assert [b.bench_path for b in p.benches] == ["/workspace/frappe-bench"]
+        assert "/workspace/stale-bench/logs" in (p.note or "")
+        assert rep.bench_total is None
+
+    def test_a_cold_cache_is_populated_before_any_bench_is_guessed(
+        self, tmp_path, monkeypatch, projects_dir
+    ):
+        cache: list[dict] = []
+        populated = []
+
+        def fake_inspect(project, **kw):
+            populated.append((project, kw.get("offer_choice")))
+            cache.append({"path": "/workspace/real-bench", "index": 0})
+
+        monkeypatch.setattr(ls.resolvers, "cached_benches", lambda p: list(cache))
+        monkeypatch.setattr(ls.core_inspect, "inspect", fake_inspect)
+        assert ls._cached_paths("p") == [("/workspace/real-bench", 0)]
+        assert populated == [("p", False)]
 
     def test_an_unknown_project_filter_is_not_found(self, monkeypatch):
         monkeypatch.setattr(ls.core_list, "list_instances", lambda: type("R", (), {"data": []})())
