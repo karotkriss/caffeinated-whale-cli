@@ -127,3 +127,12 @@ def new_site(
         + (" (developer mode on)" if report.developer_mode else "")
     )
     console.print(f"Open it with: cwcli open {project_name}  ·  or in the web UI")
+    if report.processes_restarted:
+        console.print(
+            f"[dim]Restarted {', '.join(report.processes_restarted)} so the running bench "
+            "loads the new apps.[/dim]"
+        )
+    if not report.ok:
+        # The site exists; the reload that lets the running bench serve its apps
+        # failed (the warning above says why), and that must not exit 0.
+        raise typer.Exit(code=1)

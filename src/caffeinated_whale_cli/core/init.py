@@ -40,12 +40,12 @@ import subprocess
 import time
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..utils import config_utils, shared_home
 from ..utils.port_utils import check_ports_in_use, format_port_list
-from . import credbridge, db_password, failure_causes, resolvers
+from . import credbridge, db_password, failure_causes, resolvers, supervision
 from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -97,6 +97,10 @@ class InitReport:
     bench_created: bool  # False when an existing bench was reused
     site_created: bool  # False on an idempotent re-run (site already existed)
     erpnext_installed: bool
+    # The bench processes restarted so they load ERPNext (a reused, serving bench);
+    # False ``ok`` = cwcli could not reload or verify the site, named in a warning.
+    processes_restarted: list[str] = field(default_factory=list)
+    ok: bool = True
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1162,6 +1166,76 @@ def _install_nvm_node(container, major: str, emit: OnEvent, warnings: list[Messa
 # ------------------------------------------------------------------ stage 2: the bench
 
 
+def reload_for_installed_apps(
+    container,
+    bench_path: str,
+    *,
+    sites: list[str],
+    warnings: list[Message],
+    emit: OnEvent,
+) -> supervision.ResyncOutcome:
+    """Once an operation that installed apps has finished, reload the bench's running
+    web and worker processes and prove ``sites`` serve.
+
+    Shared by ``new_site`` and ``init``, which call it ONCE at their end with the
+    sites whose code changed: the site apps were installed on, plus any site a
+    checkout moved an app under. cwcli cannot tell when an app already in ``apps/``
+    reached the bench, so an install always reloads. The rule and its proof are
+    :func:`supervision.resync_after_code_change`, the step every app-code verb
+    shares; no site outside ``sites`` is probed, and no ``sites`` means no reload. A
+    failed reload is a warning and a not-ok outcome, never a raise: the site and its
+    apps already exist.
+    """
+    outcome = supervision.resync_after_code_change(
+        container, bench_path, sites=sites, on_restart=_restart_announcer(emit)
+    )
+    if outcome.error:
+        text = f"The site and its apps were installed, but {outcome.error}"
+        warnings.append(Message("site.reload_failed", text))
+        emit(InitNotice(code="site.reload_failed", text=text))
+    return outcome
+
+
+def reload_before_reraise(
+    error: BaseException,
+    container,
+    bench_path: str,
+    *,
+    sites: list[str],
+    emit: OnEvent,
+) -> None:
+    """Run the reload an operation that failed part-way still owes for ``sites``: the
+    site apps were already installed on, and any site a checkout moved code under.
+
+    A failed reload is folded into ``error``'s message, the one thing every frontend
+    shows for a failed operation, so the remedy is never lost with the discarded
+    report. Never raises: the original error is what propagates.
+    """
+    outcome = supervision.resync_after_code_change(
+        container, bench_path, sites=sites, on_restart=_restart_announcer(emit)
+    )
+    if outcome.error is None:
+        return
+    text = (
+        "The running bench was not reloaded to load the app code this run changed: "
+        f"{outcome.error}"
+    )
+    emit(InitNotice(code="site.reload_failed", text=text))
+    if isinstance(error, CwcliError):
+        error.message = f"{error.message} {text}"
+        error.args = (error.message,)
+
+
+def _restart_announcer(emit: OnEvent) -> Callable[[str], None]:
+    return lambda program: emit(
+        InitStepStart(
+            phase="restart_processes",
+            item=program,
+            message=f"Restarting {program} so it loads the newly added apps",
+        )
+    )
+
+
 def init_bench(
     project_name: str,
     *,
@@ -1625,6 +1699,15 @@ def init_bench(
         )
         emit(InitStepEnd(phase="erpnext_install"))
         erpnext_installed = True
+    # A reused bench may be serving with processes that cannot import ERPNext; a
+    # bench this run created is not serving yet.
+    reloaded = reload_for_installed_apps(
+        frappe_container,
+        bench_full_path,
+        sites=[site_name] if erpnext_installed and not bench_created else [],
+        warnings=warnings,
+        emit=emit,
+    )
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -1636,6 +1719,8 @@ def init_bench(
             bench_created=bench_created,
             site_created=site_created,
             erpnext_installed=erpnext_installed,
+            processes_restarted=reloaded.restarted,
+            ok=reloaded.ok,
         ),
         warnings=warnings,
     )

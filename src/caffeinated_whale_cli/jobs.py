@@ -1356,7 +1356,7 @@ def _run_init(
         warnings.extend(started_result.warnings)
     return Result(
         status=Status.WARNING if warnings else Status.OK,
-        data={"init": _plain(report), "started": _plain(started)},
+        data={"init": _plain(report), "started": _plain(started), "ok": report.ok},
         warnings=warnings,
     )
 
