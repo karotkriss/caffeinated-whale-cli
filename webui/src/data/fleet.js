@@ -25,7 +25,7 @@ import { updatesLanded } from './updates'
 import { advisoriesLanded } from './advisories'
 import { backupsLanded } from './backups'
 import { loadPublications, publicationsLanded } from './publish'
-import { replaceHosts, applyHostLink, dropHost, hostName } from './hosts'
+import { replaceHosts, applyHostLink, dropHost, hostName, staleInstance } from './hosts'
 import { dockerCameBack } from './docker'
 
 export const fleet = reactive({
@@ -332,7 +332,8 @@ export function duration(seconds) {
 // saw, and the cwcli command that addresses it. `cwcli status` renders the same list,
 // so a page and the CLI never disagree about the cause.
 
-export const reasonsOf = (inst) => (inst?.probe_error ? [] : inst?.benches || []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))
+export const reasonsCurrent = (inst) => !!inst && !inst.probe_error && !staleInstance(inst)
+export const reasonsOf = (inst) => (reasonsCurrent(inst) ? inst.benches || [] : []).flatMap((b) => (b.reasons || []).map((r) => ({ ...r, bench: b })))
 export const reasonShort = (r) => `${r.subject} ${r.state}`
 // The short form: the first reason, then `+1` per further reason (`worker:default FATAL +1`),
 // and the row word that carries it (`degraded · worker:default FATAL +1`).

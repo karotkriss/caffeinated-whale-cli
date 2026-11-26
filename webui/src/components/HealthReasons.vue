@@ -8,7 +8,7 @@
 import { computed } from 'vue'
 import { Alert, Button } from 'frappe-ui'
 import { openAction } from '../data/dialog'
-import { ago, reasonShort } from '../data/fleet'
+import { ago, reasonShort, reasonsCurrent } from '../data/fleet'
 import { can } from '../data/session'
 
 const props = defineProps({
@@ -19,7 +19,7 @@ const props = defineProps({
   logs: { type: Function, default: null }, // (process) => show its log, where a page has one
 })
 
-const reasons = computed(() => props.bench?.reasons || [])
+const reasons = computed(() => (reasonsCurrent(props.inst) ? props.bench?.reasons || [] : []))
 const seen = computed(() => (props.inst?.probed_at ? `seen ${ago(props.inst.probed_at * 1000)}` : ''))
 const title = computed(() => {
   const n = reasons.value.length
