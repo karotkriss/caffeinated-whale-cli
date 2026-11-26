@@ -138,7 +138,7 @@ def test_set_rotation_rewrites_the_compose_file_and_the_report_reads_it_back(run
             timeout=120,
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "changed: true" in r.stdout and "rotation_on_recreate" in r.stdout
+        assert "changed: true" in r.stdout and "applies_on_recreate: true" in r.stdout
         text = path.read_text()
         assert text.count('max-size: "5m"') == text.count("driver: json-file") > 0
         doc = _storage_logs(name)
