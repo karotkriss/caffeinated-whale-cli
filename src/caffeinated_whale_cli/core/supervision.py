@@ -1438,6 +1438,83 @@ def resync_after_code_change(
         )
 
 
+def reload_after_fetch(
+    container,
+    bench_path: str,
+    *,
+    code_added: bool,
+    project: str,
+    on_restart: Callable[[str], None] | None = None,
+    timeout: float = 60.0,
+    interval: float = 1.0,
+) -> ResyncOutcome:
+    """Reload a serving bench after an operation added app code to it.
+
+    A Python process computes its import path when it boots, so a web or worker
+    process that started before an app was fetched onto the bench cannot import it
+    and the sites using that app answer 500 until a restart. Only ``code_added``
+    reloads: a site that installs apps already on the bench needs none, since the
+    running processes booted with them importable.
+
+    The reload restarts only the code-bearing programs supervisord reports live, so
+    a stopped bench stays stopped, and it is judged by those programs returning to
+    ``RUNNING`` within ``timeout`` - never by probing sites, so an unrelated site in
+    maintenance or broken cannot fail the caller's operation. A bench run by a
+    manager cwcli does not own cannot be restarted here: that is reported, with
+    ``cwcli restart <project>`` as the remedy. Never raises.
+    """
+    quiet = ResyncOutcome(attempted=False, restarted=[], unserved_sites=[], error=None)
+    if not code_added:
+        return quiet
+    announce = on_restart or (lambda _program: None)
+    restarted: list[str] = []
+    remedy = f"run `cwcli restart {project}`"
+    try:
+        if not discover_stack(container, bench_path, required=True).supervisor_up:
+            if not discover_unsupervised_stack(container, bench_path, required=True).manager_up:
+                return quiet
+            return _resync_failed(
+                "the bench runs under a manager cwcli does not supervise, so cwcli could not "
+                f"reload it to load the new app code; {remedy}",
+                restarted,
+            )
+        states = supervisorctl_states(container, bench_path)
+        for program in code_bearing_programs(list(states)):
+            if states[program][0] not in _LIVE_STATES:
+                continue
+            announce(program)
+            code, output = restart_program(container, bench_path, program)
+            if code not in (0, None):
+                detail = " ".join(output.split())
+                return _resync_failed(
+                    f"restarting the bench process '{program}' failed"
+                    + (f" ({detail})" if detail else "")
+                    + f"; {remedy}",
+                    restarted,
+                )
+            restarted.append(program)
+
+        deadline = time.monotonic() + timeout
+        pending = list(restarted)
+        while pending:
+            states = supervisorctl_states(container, bench_path)
+            pending = [p for p in restarted if states.get(p, ("", None))[0] != "RUNNING"]
+            remaining = deadline - time.monotonic()
+            if not pending or remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))
+        if pending:
+            return _resync_failed(
+                "these bench processes did not return to RUNNING after the reload: "
+                f"{', '.join(pending)}; {remedy}",
+                restarted,
+            )
+        return ResyncOutcome(attempted=True, restarted=restarted, unserved_sites=[], error=None)
+    except Exception as error:  # noqa: BLE001
+        detail = getattr(error, "message", None) or str(error) or type(error).__name__
+        return _resync_failed(f"cwcli could not complete the reload: {detail}; {remedy}", restarted)
+
+
 def clear_marker(container, bench_path: str) -> None:
     """Remove the launch marker, so the bench reads as never-started, not crashed.
 

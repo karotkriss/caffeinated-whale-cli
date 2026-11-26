@@ -391,15 +391,6 @@ def _target_sites(frappe_container, bench_path: str, sites: list[str] | None) ->
     return sorted(found) if found else []
 
 
-def _bench_sites_or_none(frappe_container, bench_path: str) -> list[str] | None:
-    """Every site on the bench, or None when the list cannot be read."""
-    try:
-        found = bench_sites.list_sites(frappe_container, bench_path)
-    except Exception:  # noqa: BLE001
-        return None
-    return None if found is None else sorted(found)
-
-
 def _resync_after_mutation(
     frappe_container,
     bench_path: str,
@@ -444,6 +435,13 @@ def _resync_after_mutation(
             sites=sites,
             on_restart=lambda program: emit(AppsAnnounce(phase="restart-processes", app=program)),
         )
+    _report_resync(outcome, results, warnings)
+
+
+def _report_resync(
+    outcome: supervision.ResyncOutcome, results: list[AppResult], warnings: list[Message]
+) -> None:
+    """The ``restart-processes`` row and warning every apps verb reports for a reload."""
     if outcome.error:
         results.append(AppResult(app="bench", site=None, action="restart-processes", ok=False))
         warnings.append(
@@ -780,9 +778,17 @@ def install_apps(
     dep_sources: dict[str, str] | None = None,
     prefer_ref: str | None = None,
     check_deps: bool = True,
+    reload: bool = True,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
     """Fetch (``bench get-app``) and install app(s) on the target site(s).
+
+    A fetch adds code the bench's running processes cannot import, so when one
+    landed this reloads a serving bench once at the end: through the shared resync
+    proving each changed site serves, or, when no site install changed anything
+    (``fetch_only``), through :func:`supervision.reload_after_fetch`. Installing only
+    apps already on the bench reloads nothing. ``reload=False`` is for a composed
+    caller (``core.new_site``) that runs the single reload itself at its own end.
 
     Before anything is fetched, :mod:`core.app_deps` reads each app's declared Frappe
     range and ``required_apps`` at the ref that will land and plans the install
@@ -1039,16 +1045,28 @@ def install_apps(
                 if if_not_present and code == 0:
                     installed_by_site.setdefault(site, set()).add(app_name)
 
-    # Only the sites an install actually landed on: a site whose install-app failed
-    # was not changed, so it has nothing to re-verify and must not fail the restart.
-    changed_sites: list[str] | None = [
+    # Only a fetch adds code the running processes lack; installing an app already on
+    # the bench needs no reload. The sites an install landed on are proven to serve;
+    # a site whose install-app failed was not changed and must not fail the restart.
+    changed_sites = [
         r.site for r in results if r.action == "install-app" and r.ok and r.site is not None
     ]
-    if landed and not changed_sites:
-        # An app fetched onto the bench changes its app set even with no site install
-        # (`--fetch-only`), so a serving bench must reload; every site then verifies.
-        changed_sites = _bench_sites_or_none(frappe_container, path)
-    _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
+    if reload and landed and changed_sites:
+        _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
+    else:
+        _report_resync(
+            supervision.reload_after_fetch(
+                frappe_container,
+                path,
+                code_added=reload and landed,
+                project=project_name,
+                on_restart=lambda program: emit(
+                    AppsAnnounce(phase="restart-processes", app=program)
+                ),
+            ),
+            results,
+            warnings,
+        )
 
     any_fail = any(not r.ok for r in results)
     return Result(
@@ -1157,9 +1175,13 @@ def checkout_app(
     bench_path: str | None = None,
     reset: bool = False,
     auto_start: bool = False,
+    reload: bool = True,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
     """Fetch and check out an arbitrary ``ref`` into an app that ALREADY EXISTS.
+
+    ``reload=False`` skips the post-checkout resync for a composed caller
+    (``core.new_site``) that reloads the bench once at its own end.
 
     The gap ``install``/``update`` leave: ``install`` acquires an app with ``bench
     get-app`` when it is absent and installs it on sites, while ``update`` uses
@@ -1249,7 +1271,7 @@ def checkout_app(
     # only into `.git`, so a run that stopped there changed no code any process could
     # be serving, while a good `--reset` followed by a failed checkout did.
     app_imports: list[resolvers.AppImport] = []
-    if any(r.action in ("reset", "checkout") and r.ok for r in results):
+    if reload and any(r.action in ("reset", "checkout") and r.ok for r in results):
         _resync_after_mutation(
             frappe_container,
             path,

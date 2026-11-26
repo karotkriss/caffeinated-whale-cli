@@ -29,7 +29,7 @@ from .init import (
     _directory_exists,
     _run_exec,
     _select_mariadb_flag,
-    reload_for_installed_apps,
+    reload_for_added_code,
 )
 
 OnEvent = Callable[[Any], None]
@@ -47,9 +47,9 @@ class NewSiteReport:
     apps_installed: list[str] = field(default_factory=list)
     default_set: bool = False
     developer_mode: bool = False
-    # The bench processes cwcli restarted so they load the installed apps (see
-    # core.init.reload_for_installed_apps); False ``ok`` = the site was created but
-    # cwcli could not reload or verify it, named in a warning.
+    # The bench processes cwcli restarted so they load app code this call fetched or
+    # checked out (see core.init.reload_for_added_code); False ``ok`` = the site was
+    # created but cwcli could not reload the bench, named in a warning.
     processes_restarted: list[str] = field(default_factory=list)
     ok: bool = True
 
@@ -207,6 +207,7 @@ def new_site(
             branch=ref,
             fetch_only=True,
             check_deps=False,
+            reload=False,
             on_event=emit,
         )
         if fetched.data is None or not fetched.data.ok:
@@ -222,7 +223,9 @@ def new_site(
         # An app the bench holds at another ref moves there BEFORE the site exists (and
         # with it every site on the bench that has it); a refused or failed checkout
         # stops here with no site left behind.
-        moved = core_apps.checkout_app(project, a, at, bench_path=bench_path, on_event=emit)
+        moved = core_apps.checkout_app(
+            project, a, at, bench_path=bench_path, reload=False, on_event=emit
+        )
         if moved.data is None or not moved.data.ok:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
@@ -316,8 +319,15 @@ def new_site(
         emit(InitStepEnd(phase="developer_mode"))
         dev_set = True
 
-    restarted, reloaded = reload_for_installed_apps(
-        container, bench_path, site=site, apps=installed, warnings=warnings, emit=emit
+    # ONE reload, after every fetch, checkout and install: the inner calls above
+    # were told not to reload on their own.
+    restarted, reloaded = reload_for_added_code(
+        container,
+        bench_path,
+        project=project,
+        code_added=bool(to_fetch or to_checkout),
+        warnings=warnings,
+        emit=emit,
     )
 
     return Result(

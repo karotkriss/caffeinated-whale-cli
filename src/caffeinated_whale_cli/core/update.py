@@ -1196,6 +1196,7 @@ def _install_required(
                 bench_path=bench_path,
                 sites=sorted(sites) or None,
                 fetch_only=not sites,
+                reload=bool(sites),
                 if_not_present=True,
                 with_deps=True,
                 dep_sources=sources,

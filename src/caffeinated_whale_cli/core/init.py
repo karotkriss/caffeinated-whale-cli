@@ -1166,36 +1166,35 @@ def _install_nvm_node(container, major: str, emit: OnEvent, warnings: list[Messa
 # ------------------------------------------------------------------ stage 2: the bench
 
 
-def reload_for_installed_apps(
+def reload_for_added_code(
     container,
     bench_path: str,
     *,
-    site: str,
-    apps: list[str],
+    project: str,
+    code_added: bool,
     warnings: list[Message],
     emit: OnEvent,
 ) -> tuple[list[str], bool]:
-    """After ``apps`` were installed on ``site``, reload the bench's running web and
-    worker processes and verify ``site`` serves; return (restarted programs, ok).
+    """Once an operation that may have added app code to the bench has finished,
+    reload the bench's running web and worker processes; return (restarted, ok).
 
-    Shared by ``new_site`` and ``init``: both install apps on a fresh site of a bench
-    that may already be serving, whose processes cannot import an app that reached the
-    bench after they booted. The reload is unconditional whenever an app was installed:
-    :func:`supervision.resync_after_code_change` restarts only running code-bearing
-    programs, so a stopped bench stays stopped. A failed reload is a warning and ``ok``
-    False, never a raise: the site and its apps already exist.
+    Shared by ``new_site`` and ``init``, which call it ONCE at their end. The rule and
+    its proof live in :func:`supervision.reload_after_fetch`: only added code (a
+    fetched app, a moved checkout) reloads, and the reload is judged by the restarted
+    programs returning to RUNNING. So a restore drill, a transfer or the web UI's New
+    site reloads a live bench only when it fetched code. A failed reload is a warning
+    and ``ok`` False, never a raise: the site and its apps already exist.
     """
-    if not apps:
-        return [], True
-    outcome = supervision.resync_after_code_change(
+    outcome = supervision.reload_after_fetch(
         container,
         bench_path,
-        sites=[site],
+        code_added=code_added,
+        project=project,
         on_restart=lambda program: emit(
             InitStepStart(
                 phase="restart_processes",
                 item=program,
-                message=f"Restarting {program} so it loads the newly installed apps",
+                message=f"Restarting {program} so it loads the newly added apps",
             )
         ),
     )
@@ -1630,7 +1629,13 @@ def init_bench(
     emit(InitStepEnd(phase="finalize"))
 
     erpnext_installed = False
+    erpnext_added = False
     if install_erpnext:
+        # A bench this run created is not serving yet; on a reused one, only an
+        # ERPNext that was not already on the bench adds code its processes lack.
+        erpnext_added = not bench_created and not _directory_exists(
+            frappe_container, f"{bench_full_path}/apps/erpnext"
+        )
         emit(
             InitStepStart(
                 phase="erpnext_get",
@@ -1669,13 +1674,11 @@ def init_bench(
         )
         emit(InitStepEnd(phase="erpnext_install"))
         erpnext_installed = True
-    # A reused bench may already be serving with processes that cannot import the new
-    # app; a bench this run created is not serving yet.
-    restarted, reloaded = reload_for_installed_apps(
+    restarted, reloaded = reload_for_added_code(
         frappe_container,
         bench_full_path,
-        site=site_name,
-        apps=["erpnext"] if erpnext_installed and not bench_created else [],
+        project=project_name,
+        code_added=erpnext_added and erpnext_installed,
         warnings=warnings,
         emit=emit,
     )
