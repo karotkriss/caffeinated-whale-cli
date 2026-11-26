@@ -2,6 +2,7 @@
 
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from . import shared_home
 from .console import console, stderr_console
 
 
@@ -62,9 +64,19 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def get_sendme_install_dir() -> Path:
-    """Get the directory where sendme should be installed."""
+def _user_install_dir() -> Path:
     return Path.home() / ".local" / "bin"
+
+
+def get_sendme_install_dir() -> Path:
+    """Where cwcli installs sendme and looks for it first.
+
+    Under a shared install it is ``bin/`` in the shared cwcli home, so every member
+    and the web UI's service account (a different user, with a different home) find
+    the same binary; otherwise it is the user's ``~/.local/bin``.
+    """
+    shared = shared_home.state_dir()
+    return shared / "bin" if shared is not None else _user_install_dir()
 
 
 def get_sendme_path() -> Path:
@@ -75,15 +87,21 @@ def get_sendme_path() -> Path:
     return install_dir / "sendme"
 
 
+def _find_sendme() -> str | None:
+    """The sendme cwcli runs: the install dir first, then (shared install only) the
+    user's own ``~/.local/bin``, then PATH."""
+    candidates = [get_sendme_path()]
+    if shared_home.state_dir() is not None:
+        candidates.append(_user_install_dir() / candidates[0].name)
+    for path in candidates:
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+    return shutil.which("sendme")
+
+
 def is_sendme_installed() -> bool:
     """Check if sendme is installed and accessible."""
-    # Check in our install directory first
-    sendme_path = get_sendme_path()
-    if sendme_path.exists() and os.access(sendme_path, os.X_OK):
-        return True
-
-    # Check if it's in PATH
-    return shutil.which("sendme") is not None
+    return _find_sendme() is not None
 
 
 def get_platform_target() -> str:
@@ -145,25 +163,48 @@ def download_file_with_progress(url: str, destination: Path) -> bool:
         return False
 
 
-def install_sendme(verbose: bool = False) -> bool:
-    """
-    Install sendme binary to ~/.local/bin.
+class SendmeInstallError(Exception):
+    """The automatic sendme install did not complete; ``str(error)`` says why."""
 
-    Args:
-        verbose: Enable verbose output
 
-    Returns:
-        True if installation successful, False otherwise
-    """
-    console.print("[bold cyan]Installing sendme...[/bold cyan]")
+SENDME_RELEASES_URL = "https://github.com/n0-computer/sendme/releases/latest"
 
-    # Create install directory
+
+def manual_install_command() -> str:
+    """The exact command that installs sendme by hand where cwcli looks for it
+    (``get_sendme_install_dir()`` of the user running cwcli)."""
     install_dir = get_sendme_install_dir()
-    install_dir.mkdir(parents=True, exist_ok=True)
+    if platform.system() == "Windows":
+        return (
+            f"download sendme-*-{get_platform_target()}.zip from {SENDME_RELEASES_URL} "
+            f"and extract sendme.exe into {install_dir}"
+        )
+    quoted = shlex.quote(str(install_dir))
+    return f"mkdir -p {quoted} && cd {quoted} && curl -fsSL https://iroh.computer/sendme.sh | sh"
 
-    # Get platform target
+
+def _download_quietly(url: str, destination: Path) -> bool:
+    """``download_file_with_progress`` without the progress bar or any output; a
+    failure raises (``requests.RequestException``/``OSError``) so the caller has the reason."""
+    response = requests.get(url, stream=True, timeout=30)
+    response.raise_for_status()
+    with open(destination, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                file.write(chunk)
+    return True
+
+
+def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
+    """Download the latest sendme release into ``get_sendme_install_dir()`` and return
+    the installed binary's path. Raises ``SendmeInstallError`` naming why it failed.
+
+    ``progress=False`` prints nothing at all, for callers that own stdout (the web UI's
+    jobs, ``--json`` output); it neither shows a progress bar nor edits shell RC files.
+    """
+    install_dir = get_sendme_install_dir()
     target = get_platform_target()
-    if verbose:
+    if verbose and progress:
         stderr_console.print(f"[dim]Platform target: {target}[/dim]")
 
     # Fetch latest release info
@@ -171,7 +212,9 @@ def install_sendme(verbose: bool = False) -> bool:
     release_url = f"https://api.github.com/repos/{repo}/releases/latest"
 
     try:
-        if verbose:
+        install_dir.mkdir(parents=True, exist_ok=True)
+        shared_home.secure_dir_shared_only(install_dir)
+        if verbose and progress:
             stderr_console.print(f"[dim]Fetching release info from {release_url}[/dim]")
 
         # Authenticate when a token is available (GITHUB_TOKEN in Actions, GH_TOKEN
@@ -193,12 +236,9 @@ def install_sendme(verbose: bool = False) -> bool:
                 break
 
         if not download_url:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] No release found for platform: {target}"
-            )
-            return False
+            raise SendmeInstallError(f"No release found for platform: {target}")
 
-        if verbose:
+        if verbose and progress:
             stderr_console.print(f"[dim]Download URL: {download_url}[/dim]")
 
         # Download to temporary directory
@@ -211,14 +251,16 @@ def install_sendme(verbose: bool = False) -> bool:
             else:
                 archive_path = temp_path / "sendme.tar.gz"
 
-            # Download with progress bar
-            if not download_file_with_progress(download_url, archive_path):
-                return False
-
-            console.print("[bold green]✓[/bold green] Download complete")
+            if progress:
+                # Download with progress bar
+                if not download_file_with_progress(download_url, archive_path):
+                    raise SendmeInstallError(f"Failed to download {download_url}")
+                console.print("[bold green]✓[/bold green] Download complete")
+                console.print("[dim]Extracting...[/dim]")
+            else:
+                _download_quietly(download_url, archive_path)
 
             # Extract archive
-            console.print("[dim]Extracting...[/dim]")
             if archive_path.suffix == ".zip":
                 import zipfile
 
@@ -239,10 +281,7 @@ def install_sendme(verbose: bool = False) -> bool:
                 break
 
             if not sendme_binary or not sendme_binary.exists():
-                stderr_console.print(
-                    f"[bold red]Error:[/bold red] Could not find {binary_name} in archive"
-                )
-                return False
+                raise SendmeInstallError(f"Could not find {binary_name} in archive")
 
             # Copy to install directory
             dest_path = install_dir / binary_name
@@ -251,24 +290,44 @@ def install_sendme(verbose: bool = False) -> bool:
             # Make executable on Unix systems
             if platform.system() != "Windows":
                 os.chmod(dest_path, 0o755)
+            shared_home.apply_group(dest_path)
 
-            console.print(f"[bold green]✓[/bold green] Installed to {dest_path}")
+            return dest_path
 
-            # Setup PATH
-            setup_path(install_dir, verbose)
-
-            return True
-
+    except SendmeInstallError:
+        raise
     except requests.RequestException as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Network error: {e}")
-        return False
+        raise SendmeInstallError(f"Network error: {e}") from e
     except Exception as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Installation failed: {e}")
-        if verbose:
+        raise SendmeInstallError(f"Installation failed: {e}") from e
+
+
+def install_sendme(verbose: bool = False) -> bool:
+    """
+    Install sendme binary to ~/.local/bin.
+
+    Args:
+        verbose: Enable verbose output
+
+    Returns:
+        True if installation successful, False otherwise
+    """
+    console.print("[bold cyan]Installing sendme...[/bold cyan]")
+    try:
+        dest_path = fetch_sendme(verbose=verbose)
+    except SendmeInstallError as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose and e.__cause__ is not None:
             import traceback
 
-            stderr_console.print(traceback.format_exc())
+            stderr_console.print("".join(traceback.format_exception(e.__cause__)))
         return False
+
+    console.print(f"[bold green]✓[/bold green] Installed to {dest_path}")
+
+    # Setup PATH
+    setup_path(dest_path.parent, verbose)
+    return True
 
 
 def setup_path(install_dir: Path, verbose: bool = False):
@@ -408,9 +467,8 @@ def ensure_sendme_installed(verbose: bool = False) -> bool:
         console.print()
         stderr_console.print("[bold red]✗[/bold red] Failed to install sendme")
         stderr_console.print()
-        stderr_console.print("[bold]Manual installation:[/bold]")
-        stderr_console.print("  Visit: https://github.com/n0-computer/sendme")
-        stderr_console.print("  Or run: curl -fsSL https://iroh.computer/sendme.sh | sh")
+        stderr_console.print("[bold]Install it by hand:[/bold]")
+        stderr_console.print(f"  {manual_install_command()}", markup=False, highlight=False)
         console.print()
         return False
 
@@ -422,14 +480,4 @@ def get_sendme_command() -> str:
     Returns:
         Full path to sendme binary or 'sendme' if in PATH
     """
-    # Check our install directory first
-    sendme_path = get_sendme_path()
-    if sendme_path.exists() and os.access(sendme_path, os.X_OK):
-        return str(sendme_path)
-
-    # Check PATH
-    sendme_in_path = shutil.which("sendme")
-    if sendme_in_path:
-        return sendme_in_path
-
-    return "sendme"  # Fallback, will likely fail
+    return _find_sendme() or "sendme"  # bare-name fallback, will likely fail

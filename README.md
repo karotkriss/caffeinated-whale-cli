@@ -1975,7 +1975,7 @@ Copying the downloaded backup into the container streams through a bounded pipe 
 - **NAT traversal** - Works behind firewalls and corporate networks
 - **No cloud intermediary** - Direct peer-to-peer connections
 - **Cross-platform** - Works on macOS, Linux, and Windows
-- **Automatic setup** - sendme binary auto-installed on first use
+- **Automatic setup** - sendme binary auto-installed on the first send or receive, from the command line or the web UI, into `~/.local/bin` (on a shared install, into `bin/` of the shared cwcli home, so the web UI's service account and every member use the same copy); `cwcli doctor` names the manual install command if the download fails
 - **Multiple receivers** - Same ticket can be used by multiple machines
 
 **Use Cases:**

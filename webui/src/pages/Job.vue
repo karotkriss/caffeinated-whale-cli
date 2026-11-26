@@ -15,7 +15,7 @@ import FollowPane from '../components/FollowPane.vue'
 import JobSteps from '../components/JobSteps.vue'
 import JobState from '../components/JobState.vue'
 import DependencyTree from '../components/DependencyTree.vue'
-import { backups, loadBackups } from '../data/backups'
+import { backups, loadBackups, sizeText } from '../data/backups'
 import { openRestoreWizard } from '../data/restore-wizard'
 import { openNewBench } from '../data/new-bench-dialog'
 import { openNewSite } from '../data/new-site-dialog'
@@ -39,6 +39,17 @@ const safetyKeys = computed(() => (record.value?.events || []).filter((e) => e.t
 const safetySets = computed(() => safetyKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
 // Phase 2: x of N for a batch clone/move, the sendme ticket, and the sets a receive filed.
 const progress = computed(() => (record.value?.events || []).filter((e) => e.type === 'transfer_progress').at(-1)?.data || null)
+// sendme's own bar, read by the job runner: bytes done of total, speed, time left.
+const bytes = computed(() => (record.value?.events || []).filter((e) => e.type === 'transfer_bytes').at(-1)?.data || null)
+const bytesPct = computed(() => (bytes.value ? Math.floor((bytes.value.done / Math.max(bytes.value.total, 1)) * 100) : 0))
+const etaText = (s) => (s == null ? '' : s < 60 ? 'under a minute left' : s < 3600 ? `about ${Math.round(s / 60)} min left` : `about ${(s / 3600).toFixed(1)} h left`)
+const bytesDetail = computed(() => {
+  const b = bytes.value
+  if (!b || b.done >= b.total || !active.value) return ''
+  return [b.rate ? `${sizeText(Math.round(b.rate))}/s` : '', etaText(b.eta)].filter(Boolean).join(' · ')
+})
+// The bar shows the transfer; its readings stay out of the step list.
+const stepEvents = computed(() => (record.value?.events || []).filter((e) => e.type !== 'transfer_bytes'))
 const ticket = computed(() => (record.value?.events || []).find((e) => e.type === 'ticket')?.data?.ticket || null)
 const receivedKeys = computed(() => (record.value?.events || []).find((e) => e.type === 'received')?.data?.sets || [])
 const receivedSets = computed(() => receivedKeys.value.map((k) => (backups.data?.sets || []).find((s) => s.key === k)).filter(Boolean))
@@ -332,6 +343,10 @@ async function continueChoice(value) {
         <div class="flex items-center justify-between text-sm"><span class="text-ink-gray-8">{{ progress.done }} of {{ progress.total }} {{ progress.total === 1 ? 'site' : 'sites' }} done</span><span class="truncate text-xs text-ink-gray-5">{{ progress.done < progress.total && active ? `${progress.site} → ${progress.target}` : '' }}</span></div>
         <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-gray-2"><div class="h-full rounded-full bg-surface-gray-7 transition-[width] duration-300" :style="{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }" /></div>
       </div>
+      <div v-if="bytes" class="rounded-6 border border-outline-gray-1 bg-surface-elevation-1 px-4 py-3">
+        <div class="flex items-center justify-between gap-3 text-sm"><span class="tabular-nums text-ink-gray-8">{{ bytes.phase === 'send' ? 'Sent' : 'Received' }} {{ sizeText(bytes.done) }} of {{ sizeText(bytes.total) }} · {{ bytesPct }}%</span><span class="truncate text-xs tabular-nums text-ink-gray-5">{{ bytesDetail }}</span></div>
+        <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-gray-2" role="progressbar" :aria-valuenow="bytesPct" aria-valuemin="0" aria-valuemax="100" :aria-label="bytes.phase === 'send' ? 'Sent' : 'Received'"><div class="h-full rounded-full bg-surface-gray-7 transition-[width] duration-300" :style="{ width: `${bytesPct}%` }" /></div>
+      </div>
       <Alert v-if="ticket" class="mb-3" :theme="active ? 'blue' : 'gray'" :title="active ? 'Serving over sendme; paste this ticket on the other machine' : 'This ticket is no longer served'" description="There: Backups › Receive…, or cwcli backups receive <ticket>. Interrupt this job when the transfer is done.">
         <template #actions><span class="flex flex-wrap items-center gap-2"><code class="max-w-full break-all rounded-4 bg-surface-gray-1 px-2 py-1 font-mono text-xs text-ink-gray-8">{{ ticket }}</code><Button size="sm" variant="subtle" :icon-left="copied ? 'lucide-check' : 'lucide-copy'" :label="copied ? 'Copied' : 'Copy'" @click="copyTicket" /></span></template>
       </Alert>
@@ -438,7 +453,7 @@ async function continueChoice(value) {
           </div>
         </div>
         <Alert v-if="record.events_skipped" class="mt-3" theme="gray" :title="`${record.events_skipped} earlier ${record.events_skipped === 1 ? 'event is' : 'events are'} not shown`" description="This job wrote more than the page loads at first; the steps below are its last 400 events." :primary-action="{ label: 'Load all events', onClick: loadAll }" />
-        <JobSteps v-if="view === 'steps'" class="mt-3" :events="record.events || []" :state="record.state" />
+        <JobSteps v-if="view === 'steps'" class="mt-3" :events="stepEvents" :state="record.state" />
         <div v-else-if="!items.length" class="mt-3 rounded-6 border border-outline-gray-1 bg-surface-gray-1 px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
         <FollowPane v-else :items="items" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
           <template #default="{ item, index }">

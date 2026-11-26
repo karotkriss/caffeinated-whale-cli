@@ -541,17 +541,38 @@ def _check_sendme() -> tuple:
     Lazy-imported: ``utils/sendme_utils.py`` pulls ``rich`` at load time, and the
     core must never do that transitively (``test_core_envelope.py`` walks the
     whole load-time import graph). WARN, never FAIL, when absent - it is optional
-    and auto-installs on first ``restore --send/--receive``.
+    and installs itself on the first send or receive (CLI or web UI).
     """
-    from ..utils.sendme_utils import get_sendme_command, is_sendme_installed
+    from ..utils.sendme_utils import (
+        get_sendme_command,
+        get_sendme_path,
+        is_sendme_installed,
+        manual_install_command,
+    )
 
+    install_now = (
+        "installs itself on the first send or receive; to install it now: "
+        + manual_install_command()
+    )
     if not is_sendme_installed():
         return _outcome(
             CheckStatus.WARN,
-            "not installed (optional; needed only for `restore --send/--receive`)",
-            "auto-installs on first `cwcli restore --send/--receive`",
+            "not installed (optional; needed only to send or receive backups between machines)",
+            install_now,
         )
     resolved = get_sendme_command()
+    if shared_home.shared_mode():
+        # The web UI runs as the service account, whose home is not this user's: it
+        # finds the shared install dir or a system path, never a copy in this home.
+        shared_bin = get_sendme_path()
+        in_shared = shared_bin.exists() and os.access(shared_bin, os.X_OK)
+        if not in_shared and Path(resolved).resolve().is_relative_to(Path.home().resolve()):
+            return _outcome(
+                CheckStatus.WARN,
+                f"{resolved} is yours only; the web UI (the shared install's service account) "
+                f"looks in {shared_bin.parent}",
+                install_now,
+            )
     version = _probe_version([resolved, "--version"])
     detail = f"{resolved} ({version})" if version else resolved
     return _outcome(CheckStatus.PASS, detail)
