@@ -309,7 +309,7 @@ def fetch_sendme(*, progress: bool = True, verbose: bool = False) -> Path:
 
 def install_sendme(verbose: bool = False) -> bool:
     """
-    Install sendme binary to ~/.local/bin.
+    Install the sendme binary into ``get_sendme_install_dir()``.
 
     Args:
         verbose: Enable verbose output
