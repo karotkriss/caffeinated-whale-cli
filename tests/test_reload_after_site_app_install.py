@@ -16,9 +16,12 @@ supervisord boundary):
 
 from __future__ import annotations
 
+import pytest
+
 from caffeinated_whale_cli.core import app_deps, supervision
 from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import init as core_init
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 from .test_app_deps_flows import _gets, _wire_new_site, world  # noqa: F401 - the fixture
 from .test_core_app_deps import BOOKING
@@ -196,7 +199,7 @@ class TestAppsInstall:
         assert log == [] and [r.action for r in result.data.results] == ["get-app"]
 
 
-def _run_new_site(monkeypatch, container, new_site, log, **kwargs):  # noqa: F811
+def _run_new_site(monkeypatch, container, new_site, log, fail_phase=None, **kwargs):  # noqa: F811
     from caffeinated_whale_cli.core import db_access
 
     monkeypatch.setattr(db_access, "verify_root_password", lambda *_a, **_k: None)
@@ -206,6 +209,8 @@ def _run_new_site(monkeypatch, container, new_site, log, **kwargs):  # noqa: F81
 
     def run(_c, cmd, *, phase, **_k):
         log.append(f"{phase} {cmd}")
+        if phase == fail_phase:
+            raise CwcliError(ErrorKind.DOCKER, "init.command_failed", f"{phase} failed")
 
     monkeypatch.setattr(new_site, "_run_exec", run)
     return new_site.new_site("proj", site="shop.localhost", admin_password="a", **kwargs)
@@ -242,6 +247,36 @@ class TestNewSite:
         first_restart = min(i for i, e in enumerate(log) if e.startswith("restart "))
         assert first_restart > last_install
         assert result.data.ok and result.data.processes_restarted == _restarts(log)
+
+    def test_a_fetch_that_landed_is_reloaded_when_creating_the_site_fails(
+        self, world, container, monkeypatch  # noqa: F811
+    ):
+        new_site = _wire_new_site(monkeypatch, container)
+        monkeypatch.setattr(
+            app_deps, "find_sources", lambda module, pin=None: world.sources(module, pin)
+        )
+        monkeypatch.setattr(
+            new_site,
+            "_directory_exists",
+            lambda _c, path: "/apps/" in path and bool(_gets(container)),
+        )
+        log = _supervised_bench(monkeypatch)
+
+        with pytest.raises(CwcliError) as raised:
+            _run_new_site(
+                monkeypatch,
+                container,
+                new_site,
+                log,
+                fail_phase="new_site",
+                apps=["booking"],
+                fetch=[BOOKING],
+                with_deps=True,
+            )
+
+        assert raised.value.code == "init.command_failed"
+        assert len(_gets(container)) == 2
+        assert _restarts(log) == ["web", "schedule", "worker_default"]
 
     def test_a_site_with_only_bench_apps_restarts_nothing(
         self, world, container, monkeypatch  # noqa: F811
@@ -290,3 +325,23 @@ class TestInitErpnextOnAReusedBench:
         report, restarts = self._init(monkeypatch, dirs=(f"{BENCH}/apps/erpnext",))
         assert report.erpnext_installed and report.ok
         assert restarts == [] and report.processes_restarted == []
+
+    def test_a_fetched_erpnext_is_reloaded_when_its_install_fails(
+        self, monkeypatch, patched  # noqa: F811
+    ):
+        from .test_core_init import (
+            BENCH_PATH,
+            PROJECT,
+            FakeApi,
+            FakeContainer,
+            bench_kwargs,
+            use_container,
+        )
+
+        log = _supervised_bench(monkeypatch)
+        api = FakeApi(fail_command="install-app erpnext")
+        use_container(monkeypatch, FakeContainer(api=api, dirs_exist={BENCH_PATH}))
+        with pytest.raises(CwcliError):
+            core_init.init_bench(PROJECT, **bench_kwargs(reuse_bench=True, install_erpnext=True))
+        assert any("get-app" in c["command"] for c in api.exec_calls)
+        assert _restarts(log) == ["web", "schedule", "worker_default"]

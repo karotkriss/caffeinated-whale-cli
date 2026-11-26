@@ -1636,49 +1636,61 @@ def init_bench(
         erpnext_added = not bench_created and not _directory_exists(
             frappe_container, f"{bench_full_path}/apps/erpnext"
         )
-        emit(
-            InitStepStart(
+        try:
+            emit(
+                InitStepStart(
+                    phase="erpnext_get",
+                    item=erpnext_branch,
+                    message=f"Fetching ERPNext app (branch: {erpnext_branch})",
+                )
+            )
+            _run_exec(
+                frappe_container,
+                _build_cd_command(
+                    bench_full_path,
+                    f"bench get-app --branch {shlex.quote(erpnext_branch)} "
+                    "--resolve-deps erpnext",
+                ),
                 phase="erpnext_get",
-                item=erpnext_branch,
-                message=f"Fetching ERPNext app (branch: {erpnext_branch})",
+                emit=emit,
+                collect=not stream_output,
             )
-        )
-        _run_exec(
-            frappe_container,
-            _build_cd_command(
-                bench_full_path,
-                f"bench get-app --branch {shlex.quote(erpnext_branch)} " "--resolve-deps erpnext",
-            ),
-            phase="erpnext_get",
-            emit=emit,
-            collect=not stream_output,
-        )
-        emit(InitStepEnd(phase="erpnext_get"))
+            emit(InitStepEnd(phase="erpnext_get"))
 
-        emit(
-            InitStepStart(
-                phase="erpnext_install",
-                item=site_name,
-                message=f"Installing ERPNext on site '{site_name}'",
+            emit(
+                InitStepStart(
+                    phase="erpnext_install",
+                    item=site_name,
+                    message=f"Installing ERPNext on site '{site_name}'",
+                )
             )
-        )
-        _run_exec(
-            frappe_container,
-            _build_cd_command(
+            _run_exec(
+                frappe_container,
+                _build_cd_command(
+                    bench_full_path,
+                    f"bench --site {shlex.quote(site_name)} install-app erpnext",
+                ),
+                phase="erpnext_install",
+                emit=emit,
+                collect=not stream_output,
+            )
+            emit(InitStepEnd(phase="erpnext_install"))
+            erpnext_installed = True
+        except BaseException:
+            reload_for_added_code(
+                frappe_container,
                 bench_full_path,
-                f"bench --site {shlex.quote(site_name)} install-app erpnext",
-            ),
-            phase="erpnext_install",
-            emit=emit,
-            collect=not stream_output,
-        )
-        emit(InitStepEnd(phase="erpnext_install"))
-        erpnext_installed = True
+                project=project_name,
+                code_added=erpnext_added,
+                warnings=warnings,
+                emit=emit,
+            )
+            raise
     restarted, reloaded = reload_for_added_code(
         frappe_container,
         bench_full_path,
         project=project_name,
-        code_added=erpnext_added and erpnext_installed,
+        code_added=erpnext_added,
         warnings=warnings,
         emit=emit,
     )

@@ -197,127 +197,147 @@ def new_site(
     )
     if unverified is not None:
         warnings.append(unverified)
-    for target, ref in to_fetch:
-        # Remote picks and required apps land on the bench BEFORE the site exists: a
-        # failed fetch stops here with no site left behind.
-        fetched = core_apps.install_apps(
-            project,
-            [target],
-            bench_path=bench_path,
-            branch=ref,
-            fetch_only=True,
-            check_deps=False,
-            reload=False,
-            on_event=emit,
-        )
-        if fetched.data is None or not fetched.data.ok:
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "new_site.fetch_failed",
-                f"Fetching {target} failed; the site was not created.",
+    code_added = False
+    try:
+        for target, ref in to_fetch:
+            # Remote picks and required apps land on the bench BEFORE the site exists: a
+            # failed fetch stops here with no site left behind.
+            fetched = core_apps.install_apps(
+                project,
+                [target],
+                bench_path=bench_path,
+                branch=ref,
+                fetch_only=True,
+                check_deps=False,
+                reload=False,
+                on_event=emit,
             )
-    for a in wanted:
-        if not _directory_exists(container, f"{bench_path}/apps/{a}"):
-            raise _app_missing(project, bench_path, a)
-    for a, at in to_checkout:
-        # An app the bench holds at another ref moves there BEFORE the site exists (and
-        # with it every site on the bench that has it); a refused or failed checkout
-        # stops here with no site left behind.
-        moved = core_apps.checkout_app(
-            project, a, at, bench_path=bench_path, reload=False, on_event=emit
-        )
-        if moved.data is None or not moved.data.ok:
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "new_site.checkout_failed",
-                f"Checking out {at} in {a} failed; the site was not created.",
+            if fetched.data is None or not fetched.data.ok:
+                raise CwcliError(
+                    ErrorKind.PRECONDITION,
+                    "new_site.fetch_failed",
+                    f"Fetching {target} failed; the site was not created.",
+                )
+            code_added = True
+        for a in wanted:
+            if not _directory_exists(container, f"{bench_path}/apps/{a}"):
+                raise _app_missing(project, bench_path, a)
+        for a, at in to_checkout:
+            # An app the bench holds at another ref moves there BEFORE the site exists (and
+            # with it every site on the bench that has it); a refused or failed checkout
+            # stops here with no site left behind.
+            code_added = True
+            moved = core_apps.checkout_app(
+                project, a, at, bench_path=bench_path, reload=False, on_event=emit
             )
+            if moved.data is None or not moved.data.ok:
+                raise CwcliError(
+                    ErrorKind.PRECONDITION,
+                    "new_site.checkout_failed",
+                    f"Checking out {at} in {a} failed; the site was not created.",
+                )
 
-    major = frappe_major(container, bench_path)
-    mariadb_flag = _select_mariadb_flag(f"version-{major}" if major else "version-16")
-    env = {
-        "CWCLI_DB_ROOT_PASSWORD": db_password.resolve(project, db_root_password),
-        "CWCLI_ADMIN_PASSWORD": admin_password,
-    }
-    cmd = _build_cd_command(
-        bench_path,
-        " ".join(
-            [
-                "bench",
-                "new-site",
-                "--db-root-password",
-                '"$CWCLI_DB_ROOT_PASSWORD"',
-                "--admin-password",
-                '"$CWCLI_ADMIN_PASSWORD"',
-                mariadb_flag,
-                shlex.quote(site),
-                "--verbose",
-            ]
-        ),
-    )
-    emit(InitStepStart(phase="new_site", item=site, message=f"Creating site {site}"))
-    _run_exec(container, cmd, phase="new_site", emit=emit, environment=env, collect=True)
-    emit(InitStepEnd(phase="new_site"))
-    # Steering 041: Frappe scopes the new database user to the container's CURRENT
-    # address; widen it to '%' now, so a restart that changes the IP cannot lock
-    # the site out. A failure here is a warning, never a failed creation.
-    widened, widen_warning = db_access.widen_after_create(
-        container, bench_path, project=project, site=site, root_password=db_root_password
-    )
-    if widened:
-        emit(
-            InitStepStart(
-                phase="db_access",
-                item=site,
-                message=f"{site}: database user now connects from any host",
-            )
-        )
-        emit(InitStepEnd(phase="db_access"))
-    if widen_warning is not None:
-        warnings.append(widen_warning)
-
-    installed: list[str] = []
-    for a in wanted:
-        emit(InitStepStart(phase="install_app", item=a, message=f"Installing {a} on {site}"))
-        _run_exec(
-            container,
-            _build_cd_command(
-                bench_path, f"bench --site {shlex.quote(site)} install-app {shlex.quote(a)}"
+        major = frappe_major(container, bench_path)
+        mariadb_flag = _select_mariadb_flag(f"version-{major}" if major else "version-16")
+        env = {
+            "CWCLI_DB_ROOT_PASSWORD": db_password.resolve(project, db_root_password),
+            "CWCLI_ADMIN_PASSWORD": admin_password,
+        }
+        cmd = _build_cd_command(
+            bench_path,
+            " ".join(
+                [
+                    "bench",
+                    "new-site",
+                    "--db-root-password",
+                    '"$CWCLI_DB_ROOT_PASSWORD"',
+                    "--admin-password",
+                    '"$CWCLI_ADMIN_PASSWORD"',
+                    mariadb_flag,
+                    shlex.quote(site),
+                    "--verbose",
+                ]
             ),
-            phase="install_app",
-            emit=emit,
-            collect=True,
         )
-        emit(InitStepEnd(phase="install_app"))
-        installed.append(a)
+        emit(InitStepStart(phase="new_site", item=site, message=f"Creating site {site}"))
+        _run_exec(container, cmd, phase="new_site", emit=emit, environment=env, collect=True)
+        emit(InitStepEnd(phase="new_site"))
+        # Steering 041: Frappe scopes the new database user to the container's CURRENT
+        # address; widen it to '%' now, so a restart that changes the IP cannot lock
+        # the site out. A failure here is a warning, never a failed creation.
+        widened, widen_warning = db_access.widen_after_create(
+            container, bench_path, project=project, site=site, root_password=db_root_password
+        )
+        if widened:
+            emit(
+                InitStepStart(
+                    phase="db_access",
+                    item=site,
+                    message=f"{site}: database user now connects from any host",
+                )
+            )
+            emit(InitStepEnd(phase="db_access"))
+        if widen_warning is not None:
+            warnings.append(widen_warning)
 
-    default_set = False
-    if default:
-        emit(InitStepStart(phase="use", item=site, message=f"Making {site} the default site"))
-        _run_exec(
-            container,
-            _build_cd_command(bench_path, f"bench use {shlex.quote(site)}"),
-            phase="use",
-            emit=emit,
-            collect=True,
-        )
-        emit(InitStepEnd(phase="use"))
-        default_set = True
+        installed: list[str] = []
+        for a in wanted:
+            emit(InitStepStart(phase="install_app", item=a, message=f"Installing {a} on {site}"))
+            _run_exec(
+                container,
+                _build_cd_command(
+                    bench_path, f"bench --site {shlex.quote(site)} install-app {shlex.quote(a)}"
+                ),
+                phase="install_app",
+                emit=emit,
+                collect=True,
+            )
+            emit(InitStepEnd(phase="install_app"))
+            installed.append(a)
 
-    dev_set = False
-    if developer_mode:
-        emit(InitStepStart(phase="developer_mode", item=site, message="Turning developer mode on"))
-        _run_exec(
+        default_set = False
+        if default:
+            emit(InitStepStart(phase="use", item=site, message=f"Making {site} the default site"))
+            _run_exec(
+                container,
+                _build_cd_command(bench_path, f"bench use {shlex.quote(site)}"),
+                phase="use",
+                emit=emit,
+                collect=True,
+            )
+            emit(InitStepEnd(phase="use"))
+            default_set = True
+
+        dev_set = False
+        if developer_mode:
+            emit(
+                InitStepStart(
+                    phase="developer_mode", item=site, message="Turning developer mode on"
+                )
+            )
+            _run_exec(
+                container,
+                _build_cd_command(
+                    bench_path, f"bench --site {shlex.quote(site)} set-config developer_mode 1"
+                ),
+                phase="developer_mode",
+                emit=emit,
+                collect=True,
+            )
+            emit(InitStepEnd(phase="developer_mode"))
+            dev_set = True
+    except BaseException:
+        # Code already on a serving bench still needs its reload when a later step
+        # fails; the reload never raises, so the original error is what propagates.
+        reload_for_added_code(
             container,
-            _build_cd_command(
-                bench_path, f"bench --site {shlex.quote(site)} set-config developer_mode 1"
-            ),
-            phase="developer_mode",
+            bench_path,
+            project=project,
+            code_added=code_added,
+            warnings=warnings,
             emit=emit,
-            collect=True,
         )
-        emit(InitStepEnd(phase="developer_mode"))
-        dev_set = True
+        raise
 
     # ONE reload, after every fetch, checkout and install: the inner calls above
     # were told not to reload on their own.
@@ -325,7 +345,7 @@ def new_site(
         container,
         bench_path,
         project=project,
-        code_added=bool(to_fetch or to_checkout),
+        code_added=code_added,
         warnings=warnings,
         emit=emit,
     )
